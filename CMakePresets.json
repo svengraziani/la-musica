@@ -1,0 +1,77 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/unix-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LAMUSICA_ENABLE_TESTS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/unix-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LAMUSICA_ENABLE_TESTS": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Address Sanitizer",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/unix-asan",
+      "cacheVariables": {
+        "LAMUSICA_ENABLE_ASAN": "ON"
+      }
+    },
+    {
+      "name": "profiling",
+      "displayName": "Profiling",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/unix-profiling",
+      "cacheVariables": {
+        "LAMUSICA_ENABLE_PROFILING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "profiling",
+      "configurePreset": "profiling"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

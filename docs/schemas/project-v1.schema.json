@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dev.lamusica.schemas.project-v1",
+  "title": "LaMusica Project Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "name",
+    "tempoMap",
+    "timeSignatures",
+    "markers",
+    "assets",
+    "tracks",
+    "clips",
+    "midiClips",
+    "routing",
+    "plugins",
+    "automation",
+    "mcpAuditLog"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "tempoMap": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tempoEvent" }
+    },
+    "timeSignatures": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/timeSignatureEvent" }
+    },
+    "markers": { "type": "array", "items": { "$ref": "#/$defs/marker" } },
+    "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } },
+    "tracks": { "type": "array", "items": { "$ref": "#/$defs/track" } },
+    "clips": { "type": "array", "items": { "$ref": "#/$defs/clip" } },
+    "midiClips": { "type": "array", "items": { "$ref": "#/$defs/midiClip" } },
+    "routing": { "type": "array", "items": { "$ref": "#/$defs/routing" } },
+    "plugins": { "type": "array", "items": { "$ref": "#/$defs/plugin" } },
+    "automation": { "type": "array", "items": { "$ref": "#/$defs/automationLane" } },
+    "mcpAuditLog": { "type": "array", "items": { "$ref": "#/$defs/mcpAuditEntry" } }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 },
+    "sample": { "type": "integer", "minimum": 0 },
+    "tempoEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samplePosition", "bpm"],
+      "properties": {
+        "samplePosition": { "$ref": "#/$defs/sample" },
+        "bpm": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "timeSignatureEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samplePosition", "numerator", "denominator"],
+      "properties": {
+        "samplePosition": { "$ref": "#/$defs/sample" },
+        "numerator": { "type": "integer", "minimum": 1 },
+        "denominator": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "samplePosition"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "samplePosition": { "$ref": "#/$defs/sample" }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "relativePath", "mediaType"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "relativePath": { "type": "string", "minLength": 1 },
+        "mediaType": { "type": "string", "minLength": 1 }
+      }
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": ["audio", "midi", "instrument", "group", "return", "master"]
+        }
+      }
+    },
+    "clip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "trackId",
+        "type",
+        "startSample",
+        "lengthSamples",
+        "sourceOffsetSamples",
+        "fadeInSamples",
+        "fadeOutSamples",
+        "gainDb",
+        "muted",
+        "reversed",
+        "assetId"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "trackId": { "$ref": "#/$defs/id" },
+        "type": { "enum": ["audio", "midi", "pattern"] },
+        "startSample": { "$ref": "#/$defs/sample" },
+        "lengthSamples": { "$ref": "#/$defs/sample" },
+        "sourceOffsetSamples": { "$ref": "#/$defs/sample" },
+        "fadeInSamples": { "$ref": "#/$defs/sample" },
+        "fadeOutSamples": { "$ref": "#/$defs/sample" },
+        "gainDb": { "type": "number" },
+        "muted": { "type": "boolean" },
+        "reversed": { "type": "boolean" },
+        "assetId": { "type": "string" }
+      }
+    },
+    "midiClip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clipId", "dataId"],
+      "properties": {
+        "clipId": { "$ref": "#/$defs/id" },
+        "dataId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceTrackId", "destinationTrackId"],
+      "properties": {
+        "sourceTrackId": { "$ref": "#/$defs/id" },
+        "destinationTrackId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "trackId", "format", "identifier"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "trackId": { "$ref": "#/$defs/id" },
+        "format": { "type": "string", "minLength": 1 },
+        "identifier": { "type": "string", "minLength": 1 }
+      }
+    },
+    "automationLane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "targetId", "parameterId", "mode", "defaultValue", "regions"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "targetId": { "$ref": "#/$defs/id" },
+        "parameterId": { "type": "string", "minLength": 1 },
+        "mode": { "enum": ["off", "read", "write", "touch", "latch", "trim"] },
+        "defaultValue": { "type": "number" },
+        "regions": { "type": "array", "items": { "$ref": "#/$defs/automationRegion" } }
+      }
+    },
+    "automationRegion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startSample", "endSample", "points"],
+      "properties": {
+        "startSample": { "$ref": "#/$defs/sample" },
+        "endSample": { "$ref": "#/$defs/sample" },
+        "points": { "type": "array", "items": { "$ref": "#/$defs/automationPoint" } }
+      }
+    },
+    "automationPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samplePosition", "value", "curveToNext"],
+      "properties": {
+        "samplePosition": { "$ref": "#/$defs/sample" },
+        "value": { "type": "number" },
+        "curveToNext": { "enum": ["step", "linear"] }
+      }
+    },
+    "mcpAuditEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "toolName", "capability"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "toolName": { "type": "string", "minLength": 1 },
+        "capability": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

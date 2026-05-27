@@ -10,3 +10,18 @@ This repository currently contains the deterministic build plan. Agents should s
 4. [Task Index](docs/tasks/README.md)
 
 The product target is a full DAW, not an MVP.
+
+## Project Status
+
+Bootstrap in progress. The repository is executing the numbered task plan under [docs/tasks](docs/tasks/README.md).
+
+## Planned Build Prerequisites
+
+- macOS with a modern Xcode toolchain.
+- C++23 for LaMusica-owned code, with JUCE/plugin boundary compatibility verified by CI.
+- JUCE 8.
+- CMake or the selected committed generator once task 002 is implemented.
+
+## License
+
+LaMusica is initially licensed as `AGPL-3.0-or-later`. This aligns the open-source path with JUCE 8's AGPL/commercial licensing model. Maintainers should review licensing before distributing public binaries, bundled assets, plugin SDK integrations, or commercial variants.

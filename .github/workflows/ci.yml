@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset debug
+      - name: Build
+        run: cmake --build --preset debug
+      - name: Test
+        run: ctest --preset debug
+      - name: Formatting check
+        run: |
+          find apps libs tools tests \( -name '*.cpp' -o -name '*.hpp' -o -name '*.mm' \) -exec xcrun clang-format --dry-run --Werror {} +
+      - name: Configure ASan
+        run: cmake --preset asan
+      - name: Build ASan
+        run: cmake --build --preset asan
+      - name: Test ASan
+        run: ctest --preset asan
+      - name: Configure release
+        run: cmake --preset release
+      - name: Build release
+        run: cmake --build --preset release
+      - name: Validate examples
+        run: |
+          build/unix-release/tools/cli/lamusica_cli validate fixtures/empty.Project.lamusica
+          build/unix-release/tools/cli/lamusica_cli validate fixtures/examples/generated-tone.Project.lamusica
+      - name: Package release
+        run: cpack -G TGZ --config build/unix-release/CPackConfig.cmake
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaMusica-macos-tgz
+          path: LaMusica-*-Darwin.tar.gz
