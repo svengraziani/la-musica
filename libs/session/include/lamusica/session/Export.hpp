@@ -16,6 +16,7 @@ struct ProjectExportOptions {
     std::uint32_t frames{0};
     double sampleRate{48000.0};
     std::uint32_t channels{2};
+    std::filesystem::path projectRoot;
     audio::ExportBitDepth bitDepth{audio::ExportBitDepth::Pcm16};
     audio::DitherMode ditherMode{audio::DitherMode::None};
     bool normalizePeak{false};
@@ -29,6 +30,7 @@ struct StemExportOptions {
     std::uint32_t frames{0};
     double sampleRate{48000.0};
     std::uint32_t channels{2};
+    std::filesystem::path projectRoot;
     audio::ExportBitDepth bitDepth{audio::ExportBitDepth::Pcm16};
     audio::DitherMode ditherMode{audio::DitherMode::None};
     bool normalizePeak{false};

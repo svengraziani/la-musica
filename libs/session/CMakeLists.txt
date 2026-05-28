@@ -16,6 +16,7 @@ add_library(
   src/Export.cpp
   src/GraphCompiler.cpp
   src/PianoRoll.cpp
+  src/StarterProject.cpp
   src/Timeline.cpp
   src/Warp.cpp)
 add_library(lamusica::session ALIAS lamusica_session)

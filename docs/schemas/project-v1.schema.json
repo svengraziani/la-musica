@@ -38,6 +38,7 @@
     "clips": { "type": "array", "items": { "$ref": "#/$defs/clip" } },
     "midiClips": { "type": "array", "items": { "$ref": "#/$defs/midiClip" } },
     "routing": { "type": "array", "items": { "$ref": "#/$defs/routing" } },
+    "trackMix": { "type": "array", "items": { "$ref": "#/$defs/trackMixState" } },
     "plugins": { "type": "array", "items": { "$ref": "#/$defs/plugin" } },
     "automation": { "type": "array", "items": { "$ref": "#/$defs/automationLane" } },
     "mcpAuditLog": { "type": "array", "items": { "$ref": "#/$defs/mcpAuditEntry" } }
@@ -144,6 +145,18 @@
       "properties": {
         "sourceTrackId": { "$ref": "#/$defs/id" },
         "destinationTrackId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "trackMixState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trackId", "volumeDb", "pan", "muted", "solo"],
+      "properties": {
+        "trackId": { "$ref": "#/$defs/id" },
+        "volumeDb": { "type": "number", "minimum": -120, "maximum": 24 },
+        "pan": { "type": "number", "minimum": -1, "maximum": 1 },
+        "muted": { "type": "boolean" },
+        "solo": { "type": "boolean" }
       }
     },
     "plugin": {

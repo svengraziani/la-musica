@@ -35,12 +35,15 @@ The authoritative v1 schema is `docs/schemas/project-v1.schema.json`. A v1 manif
 - `clips`
 - `midiClips`
 - `routing`
+- `trackMix` (optional on load for compatibility with early schema-1 manifests)
 - `plugins`
 - `automation`
 - `mcpAuditLog`
 
 Missing required arrays are validation errors. Loaders must not silently synthesize absent v1
 fields except through an explicit migration path.
+`trackMix` entries are keyed by `trackId` and persist track-level volume, pan, mute, and solo state
+for graph compilation.
 
 ## Assets
 

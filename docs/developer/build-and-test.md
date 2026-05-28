@@ -56,6 +56,19 @@ Release builds use:
 ```sh
 cmake --preset release
 cmake --build --preset release
+ctest --preset release
+```
+
+The release test preset runs the same first-track smoke and CLI lifecycle gates against optimized
+binaries. A first-track-ready release currently includes 82 CTest cases, including DAW app-session
+smokes for project readiness, rendering, preferences, transpose, mix, loop, transport, arrangement,
+stems, package export/verification, recording, import packaging, and imported-clip editing. Before
+shipping, confirm the focused first-track release gates:
+
+```sh
+ctest --preset release -R first_track
+ctest --preset release -R 'lamusica_cli_.*edit_first_track|lamusica_cli_verify_edit_first_track_package'
+ctest --preset release -R lamusica_daw_app_session_preferences_first_track_smoke
 ```
 
 AddressSanitizer builds use:
@@ -76,7 +89,8 @@ cmake --build --preset profiling
 ## App Smoke
 
 ```sh
-build/unix-debug/apps/daw/LaMusica.app/Contents/MacOS/LaMusica --smoke
+build/unix-debug/apps/daw/lamusica_daw --app-session-verify-first-track-project-smoke
+build/unix-debug/apps/daw/lamusica_daw --app-session-preferences-first-track-smoke
 ```
 
 ## Formatting

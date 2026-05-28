@@ -472,7 +472,8 @@ BenchmarkReport runStressBenchmark(StressBenchmarkOptions options) {
 
     result.renderRealtimeFactor = 0.0;
     if (options.renderFrames > 0U && options.sampleRate > 0.0) {
-        const auto graph = compileProjectAudioGraph(fixture.manifest, {});
+        const auto graph = compileProjectAudioGraph(
+            fixture.manifest, {}, {.synthesizeAssetBackedClipsWithoutProjectRoot = true});
         const auto callbackAudit = auditRealtimeGraphCallback(graph,
                                                               {.sampleRate = options.sampleRate,
                                                                .maxBlockSize = options.renderFrames,

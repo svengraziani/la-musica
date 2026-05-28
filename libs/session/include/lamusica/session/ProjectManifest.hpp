@@ -80,11 +80,20 @@ struct Clip {
 struct MidiClipReference {
     std::string clipId;
     std::string dataId;
+    int transposeSemitones{0};
 };
 
 struct RoutingConnection {
     std::string sourceTrackId;
     std::string destinationTrackId;
+};
+
+struct TrackMixState {
+    std::string trackId;
+    float volumeDb{0.0F};
+    float pan{0.0F};
+    bool muted{false};
+    bool solo{false};
 };
 
 struct PluginReference {
@@ -113,6 +122,9 @@ struct McpAuditEntry {
 struct ProjectManifest {
     std::uint32_t schemaVersion{1};
     std::string name{"Untitled"};
+    bool loopEnabled{false};
+    std::int64_t loopStartSample{0};
+    std::int64_t loopEndSample{0};
     std::vector<TempoEvent> tempoMap{{}};
     std::vector<TimeSignatureEvent> timeSignatures{{}};
     std::vector<Marker> markers;
@@ -121,6 +133,7 @@ struct ProjectManifest {
     std::vector<Clip> clips;
     std::vector<MidiClipReference> midiClips;
     std::vector<RoutingConnection> routing;
+    std::vector<TrackMixState> trackMix;
     std::vector<PluginReference> plugins;
     std::vector<AutomationLane> automation;
     std::vector<McpAuditEntry> mcpAuditLog;

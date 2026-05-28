@@ -307,13 +307,15 @@ class JsonParser {
 
 void rejectUnknownTopLevelFields(const JsonValue::Object& object, std::uint32_t schemaVersion) {
     static const std::set<std::string> v1Fields{
-        "schemaVersion", "name",       "tempoMap",   "timeSignatures", "markers",
-        "assets",        "tracks",     "clips",      "midiClips",      "routing",
-        "plugins",       "automation", "mcpAuditLog"};
+        "schemaVersion", "name",           "loopEnabled", "loopStartSample", "loopEndSample",
+        "tempoMap",      "timeSignatures", "markers",     "assets",          "tracks",
+        "clips",         "midiClips",      "routing",     "trackMix",        "plugins",
+        "automation",    "mcpAuditLog"};
     static const std::set<std::string> v0Fields{
-        "schemaVersion", "projectName", "name",       "tempoMap",   "timeSignatures",
-        "markers",       "assets",      "tracks",     "clips",      "midiClips",
-        "routing",       "plugins",     "automation", "mcpAuditLog"};
+        "schemaVersion", "projectName", "name",           "loopEnabled", "loopStartSample",
+        "loopEndSample", "tempoMap",    "timeSignatures", "markers",     "assets",
+        "tracks",        "clips",       "midiClips",      "routing",     "trackMix",
+        "plugins",       "automation",  "mcpAuditLog"};
     const auto& allowed = schemaVersion == currentProjectSchemaVersion ? v1Fields : v0Fields;
     for (const auto& [key, value] : object) {
         (void)value;
@@ -414,9 +416,38 @@ void rejectUnknownTopLevelFields(const JsonValue::Object& object, std::uint32_t 
     throw std::runtime_error("Expected number for key: " + std::string{key});
 }
 
+[[nodiscard]] std::optional<std::int64_t> optionalInt64(const JsonValue::Object& object,
+                                                        std::string_view key) {
+    const auto found = object.find(std::string{key});
+    if (found == object.end()) {
+        return std::nullopt;
+    }
+    if (const auto* number = std::get_if<double>(&found->second.value)) {
+        if (!std::isfinite(*number) || std::trunc(*number) != *number ||
+            *number < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
+            *number > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+            throw std::runtime_error("Expected integer for key: " + std::string{key});
+        }
+        return static_cast<std::int64_t>(*number);
+    }
+    throw std::runtime_error("Expected integer for key: " + std::string{key});
+}
+
 [[nodiscard]] bool requireBool(const JsonValue::Object& object, std::string_view key) {
     const auto& value = requireField(object, key);
     if (const auto* boolean = std::get_if<bool>(&value.value)) {
+        return *boolean;
+    }
+    throw std::runtime_error("Expected boolean for key: " + std::string{key});
+}
+
+[[nodiscard]] std::optional<bool> optionalBool(const JsonValue::Object& object,
+                                               std::string_view key) {
+    const auto found = object.find(std::string{key});
+    if (found == object.end()) {
+        return std::nullopt;
+    }
+    if (const auto* boolean = std::get_if<bool>(&found->second.value)) {
         return *boolean;
     }
     throw std::runtime_error("Expected boolean for key: " + std::string{key});
@@ -622,6 +653,9 @@ std::string serializeProjectManifest(const ProjectManifest& manifest) {
     output << "{\n";
     output << "  \"schemaVersion\": " << manifest.schemaVersion << ",\n";
     output << "  \"name\": \"" << escapeJson(manifest.name) << "\",\n";
+    output << "  \"loopEnabled\": " << (manifest.loopEnabled ? "true" : "false") << ",\n";
+    output << "  \"loopStartSample\": " << manifest.loopStartSample << ",\n";
+    output << "  \"loopEndSample\": " << manifest.loopEndSample << ",\n";
 
     writeArray(output, "tempoMap", manifest.tempoMap,
                [](std::ostringstream& itemOutput, const TempoEvent& event) {
@@ -681,7 +715,9 @@ std::string serializeProjectManifest(const ProjectManifest& manifest) {
     writeArray(output, "midiClips", manifest.midiClips,
                [](std::ostringstream& itemOutput, const MidiClipReference& reference) {
                    itemOutput << "{\"clipId\": \"" << escapeJson(reference.clipId)
-                              << "\", \"dataId\": \"" << escapeJson(reference.dataId) << "\"}";
+                              << "\", \"dataId\": \"" << escapeJson(reference.dataId)
+                              << "\", \"transposeSemitones\": " << reference.transposeSemitones
+                              << "}";
                });
     output << ",\n";
 
@@ -690,6 +726,15 @@ std::string serializeProjectManifest(const ProjectManifest& manifest) {
                    itemOutput << "{\"sourceTrackId\": \"" << escapeJson(route.sourceTrackId)
                               << "\", \"destinationTrackId\": \""
                               << escapeJson(route.destinationTrackId) << "\"}";
+               });
+    output << ",\n";
+
+    writeArray(output, "trackMix", manifest.trackMix,
+               [](std::ostringstream& itemOutput, const TrackMixState& mix) {
+                   itemOutput << "{\"trackId\": \"" << escapeJson(mix.trackId)
+                              << "\", \"volumeDb\": " << mix.volumeDb << ", \"pan\": " << mix.pan
+                              << ", \"muted\": " << (mix.muted ? "true" : "false")
+                              << ", \"solo\": " << (mix.solo ? "true" : "false") << "}";
                });
     output << ",\n";
 
@@ -767,6 +812,9 @@ ProjectManifest parseProjectManifest(std::string_view json) {
     } else {
         manifest.name = requireString(root, "name");
     }
+    manifest.loopEnabled = optionalBool(root, "loopEnabled").value_or(false);
+    manifest.loopStartSample = optionalInt64(root, "loopStartSample").value_or(0);
+    manifest.loopEndSample = optionalInt64(root, "loopEndSample").value_or(0);
 
     manifest.tempoMap.clear();
     for (const auto& item : manifestArray(root, manifest.schemaVersion, "tempoMap")) {
@@ -822,8 +870,11 @@ ProjectManifest parseProjectManifest(std::string_view json) {
 
     for (const auto& item : manifestArray(root, manifest.schemaVersion, "midiClips")) {
         const auto& reference = itemObject(item, "midiClips");
-        manifest.midiClips.push_back({.clipId = requireString(reference, "clipId"),
-                                      .dataId = requireString(reference, "dataId")});
+        manifest.midiClips.push_back(
+            {.clipId = requireString(reference, "clipId"),
+             .dataId = requireString(reference, "dataId"),
+             .transposeSemitones =
+                 static_cast<int>(optionalInt64(reference, "transposeSemitones").value_or(0))});
     }
 
     for (const auto& item : manifestArray(root, manifest.schemaVersion, "routing")) {
@@ -831,6 +882,15 @@ ProjectManifest parseProjectManifest(std::string_view json) {
         manifest.routing.push_back(
             {.sourceTrackId = requireString(route, "sourceTrackId"),
              .destinationTrackId = requireString(route, "destinationTrackId")});
+    }
+
+    for (const auto& item : optionalArray(root, "trackMix")) {
+        const auto& mix = itemObject(item, "trackMix");
+        manifest.trackMix.push_back({.trackId = requireString(mix, "trackId"),
+                                     .volumeDb = static_cast<float>(requireDouble(mix, "volumeDb")),
+                                     .pan = static_cast<float>(requireDouble(mix, "pan")),
+                                     .muted = requireBool(mix, "muted"),
+                                     .solo = requireBool(mix, "solo")});
     }
 
     for (const auto& item : manifestArray(root, manifest.schemaVersion, "plugins")) {
@@ -911,6 +971,20 @@ void validateProjectManifest(const ProjectManifest& manifest) {
 
     if (manifest.name.empty()) {
         throw std::runtime_error("Project name must not be empty");
+    }
+    if (manifest.loopStartSample < 0 || manifest.loopEndSample < 0) {
+        throw std::runtime_error("Project loop samples must not be negative");
+    }
+    if (manifest.loopEnabled && manifest.loopEndSample <= manifest.loopStartSample) {
+        throw std::runtime_error("Project loop range must be non-empty when enabled");
+    }
+    if (manifest.loopEnabled &&
+        manifest.loopEndSample - manifest.loopStartSample >
+            static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        throw std::runtime_error("Project loop range is too large");
+    }
+    if (!manifest.loopEnabled && (manifest.loopStartSample != 0 || manifest.loopEndSample != 0)) {
+        throw std::runtime_error("Disabled project loop must use zero start and end samples");
     }
 
     if (manifest.tempoMap.empty()) {
@@ -1038,6 +1112,9 @@ void validateProjectManifest(const ProjectManifest& manifest) {
         if (reference.dataId.empty()) {
             throw std::runtime_error("MIDI clip reference data id must not be empty");
         }
+        if (reference.transposeSemitones < -24 || reference.transposeSemitones > 24) {
+            throw std::runtime_error("MIDI clip transpose must be between -24 and 24 semitones");
+        }
     }
 
     for (const auto& route : manifest.routing) {
@@ -1047,6 +1124,25 @@ void validateProjectManifest(const ProjectManifest& manifest) {
         if (!trackIds.contains(route.destinationTrackId)) {
             throw std::runtime_error("Routing destination track id is missing: " +
                                      route.destinationTrackId);
+        }
+    }
+
+    std::set<std::string> trackMixIds;
+    for (const auto& mix : manifest.trackMix) {
+        if (mix.trackId.empty()) {
+            throw std::runtime_error("Track mix track id must not be empty");
+        }
+        if (!trackIds.contains(mix.trackId)) {
+            throw std::runtime_error("Track mix references missing track id: " + mix.trackId);
+        }
+        if (!std::isfinite(mix.volumeDb) || mix.volumeDb < -120.0F || mix.volumeDb > 24.0F) {
+            throw std::runtime_error("Track mix volume must be finite and between -120 and 24 dB");
+        }
+        if (!std::isfinite(mix.pan) || mix.pan < -1.0F || mix.pan > 1.0F) {
+            throw std::runtime_error("Track mix pan must be finite and between -1 and 1");
+        }
+        if (!trackMixIds.insert(mix.trackId).second) {
+            throw std::runtime_error("Duplicate track mix id: " + mix.trackId);
         }
     }
 

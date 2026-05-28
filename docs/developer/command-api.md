@@ -36,6 +36,8 @@ serialized journals.
 Routing commands cover adding and removing manifest routing connections. Both directions validate
 track references and preserve undo state so MCP route edits stay in the shared project command
 history.
+First-track session mix edits persist track-level volume, pan, mute, and solo state in the project
+manifest so CLI/session workflows render through the same graph state used by export.
 Project metadata commands cover project renames, timeline markers, and tempo-map event insertion,
 so global project edits use the same validation, undo/redo, serialization, and replay path as
 track and clip edits.

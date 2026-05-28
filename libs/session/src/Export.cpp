@@ -43,6 +43,7 @@ ProjectExportOptions projectOptionsForStem(const StemExportOptions& options,
             .frames = options.frames,
             .sampleRate = options.sampleRate,
             .channels = options.channels,
+            .projectRoot = options.projectRoot,
             .bitDepth = options.bitDepth,
             .ditherMode = options.ditherMode,
             .normalizePeak = options.normalizePeak,
@@ -100,7 +101,7 @@ StemExportOptions makeLoopStemExportOptions(std::filesystem::path outputDirector
 
 audio::BounceResult exportProjectMixToWav(const ProjectManifest& manifest, const MixerState& mixer,
                                           const ProjectExportOptions& options) {
-    auto graph = compileProjectAudioGraph(manifest, mixer);
+    auto graph = compileProjectAudioGraph(manifest, mixer, {.projectRoot = options.projectRoot});
     return audio::bounceGraphToWav(graph, bounceOptionsForPath(options.outputPath, options));
 }
 
@@ -122,7 +123,8 @@ std::vector<StemExportResult> exportProjectStemsToWav(const ProjectManifest& man
             throw std::runtime_error("Stem export references unknown track: " + trackId);
         }
 
-        auto graph = compileProjectAudioGraph(manifest, mixer);
+        auto graph =
+            compileProjectAudioGraph(manifest, mixer, {.projectRoot = options.projectRoot});
         graph.outputNodeId = trackNodeId(trackId);
         if (!hasNode(graph, graph.outputNodeId)) {
             throw std::runtime_error("Stem export graph is missing track node: " + trackId);

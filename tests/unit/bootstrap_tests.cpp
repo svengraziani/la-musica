@@ -27,6 +27,7 @@
 #include "lamusica/session/Project.hpp"
 #include "lamusica/session/ProjectDocument.hpp"
 #include "lamusica/session/ProjectManifest.hpp"
+#include "lamusica/session/StarterProject.hpp"
 #include "lamusica/session/Timeline.hpp"
 #include "lamusica/session/Warp.hpp"
 
@@ -37,8 +38,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <numbers>
 #include <ranges>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -49,6 +52,19 @@ void require(bool condition, std::string_view message) {
         std::cerr << "FAILED: " << message << '\n';
         std::exit(1);
     }
+}
+
+std::string replaceFirst(std::string value, std::string_view from, std::string_view to) {
+    const auto position = value.find(from);
+    require(position != std::string::npos, "test fixture replacement source exists");
+    value.replace(position, from.size(), to);
+    return value;
+}
+
+void writeTextFile(const std::filesystem::path& path, std::string_view content) {
+    std::ofstream output{path};
+    require(static_cast<bool>(output), "test fixture text file opens for writing");
+    output << content;
 }
 
 } // namespace
@@ -106,9 +122,12 @@ int main() {
         .nodes = {{.id = "osc",
                    .kind = lamusica::audio::GraphNodeKind::Sine,
                    .frequencyHz = 440.0,
-                   .gain = 0.25F},
-                  {.id = "bus", .kind = lamusica::audio::GraphNodeKind::Bus},
-                  {.id = "master", .kind = lamusica::audio::GraphNodeKind::Output}},
+                   .gain = 0.25F,
+                   .noteSequence = {}},
+                  {.id = "bus", .kind = lamusica::audio::GraphNodeKind::Bus, .noteSequence = {}},
+                  {.id = "master",
+                   .kind = lamusica::audio::GraphNodeKind::Output,
+                   .noteSequence = {}}},
         .connections = {{.sourceNodeId = "osc", .destinationNodeId = "bus", .gain = 1.0F},
                         {.sourceNodeId = "bus", .destinationNodeId = "master", .gain = 0.5F}},
         .outputNodeId = "master"};
@@ -127,6 +146,29 @@ int main() {
         std::sin((440.0 * 2.0 * std::numbers::pi) / 48000.0) * 0.25 * 0.5 * 0.5 * 0.5);
     require(std::abs(graphOutput[2] - expectedGraphSample) < 0.000001F,
             "audio graph applies source, bus, connection, and output gains");
+    lamusica::audio::GraphNode noteSequenceNode;
+    noteSequenceNode.id = "note-sequence";
+    noteSequenceNode.kind = lamusica::audio::GraphNodeKind::Sine;
+    noteSequenceNode.noteSequence = {
+        {.startSample = 0, .lengthSamples = 8, .frequencyHz = 12000.0, .velocity = 1.0F}};
+    lamusica::audio::AudioGraph noteSequenceGraph{
+        .nodes = {noteSequenceNode}, .connections = {}, .outputNodeId = "note-sequence"};
+    const auto noteSequenceActive =
+        lamusica::audio::renderGraphRange(noteSequenceGraph, {.outputPath = "unused.wav",
+                                                              .startSample = 0,
+                                                              .frames = 4,
+                                                              .sampleRate = 48000.0,
+                                                              .channels = 2});
+    require(std::abs(noteSequenceActive.interleavedSamples[2]) > 0.5F,
+            "audio graph note sequence renders active MIDI-style notes");
+    const auto noteSequenceRest =
+        lamusica::audio::renderGraphRange(noteSequenceGraph, {.outputPath = "unused.wav",
+                                                              .startSample = 8,
+                                                              .frames = 4,
+                                                              .sampleRate = 48000.0,
+                                                              .channels = 2});
+    require(lamusica::audio::peakAbsoluteSample(noteSequenceRest) == 0.0F,
+            "audio graph note sequence is silent outside note ranges");
     lamusica::audio::AudioEngine graphEngine{{.sampleRate = 48000.0, .maxBlockSize = 64}};
     const auto graphRendered = graphEngine.renderGraphOffline(graph, 64);
     require(graphRendered.frames == 64, "audio engine renders graph offline");
@@ -185,6 +227,31 @@ int main() {
     require(std::abs(pannedCompiledRender.interleavedSamples[2]) <
                 std::abs(pannedCompiledRender.interleavedSamples[3]),
             "session graph compiler applies mixer pan to matching track buses");
+    graphManifest.trackMix.push_back({.trackId = "audio-track",
+                                      .volumeDb = -12.0F,
+                                      .pan = -0.5F,
+                                      .muted = false,
+                                      .solo = false});
+    const auto persistedTrackMixGraph =
+        lamusica::session::compileProjectAudioGraph(graphManifest, lamusica::session::MixerState{});
+    const auto persistedTrackMixNode = std::ranges::find_if(
+        persistedTrackMixGraph.nodes,
+        [](const lamusica::audio::GraphNode& node) { return node.id == "track:audio-track"; });
+    require(persistedTrackMixNode != persistedTrackMixGraph.nodes.end() &&
+                std::abs(persistedTrackMixNode->gain - lamusica::session::dbToLinearGain(-12.0F)) <
+                    0.0001F &&
+                persistedTrackMixNode->pan == -0.5F,
+            "session graph compiler applies persisted track mix to track buses");
+    graphManifest.trackMix.push_back({.trackId = "master-track", .solo = true});
+    const auto soloTrackMixGraph =
+        lamusica::session::compileProjectAudioGraph(graphManifest, lamusica::session::MixerState{});
+    const auto soloTrackMixNode =
+        std::ranges::find_if(soloTrackMixGraph.nodes, [](const lamusica::audio::GraphNode& node) {
+            return node.id == "track:audio-track";
+        });
+    require(soloTrackMixNode != soloTrackMixGraph.nodes.end() && soloTrackMixNode->gain == 0.0F,
+            "session graph compiler mutes non-solo persisted track mix buses during solo");
+    graphManifest.trackMix.clear();
     lamusica::session::MixerState invertedGraphMixer;
     lamusica::session::addChannel(invertedGraphMixer,
                                   {.id = "audio-track",
@@ -1680,8 +1747,11 @@ int main() {
         .nodes = {{.id = "osc",
                    .kind = lamusica::audio::GraphNodeKind::Sine,
                    .frequencyHz = 220.0,
-                   .gain = 0.25F},
-                  {.id = "master", .kind = lamusica::audio::GraphNodeKind::Output}},
+                   .gain = 0.25F,
+                   .noteSequence = {}},
+                  {.id = "master",
+                   .kind = lamusica::audio::GraphNodeKind::Output,
+                   .noteSequence = {}}},
         .connections = {{.sourceNodeId = "osc", .destinationNodeId = "master", .gain = 1.0F}},
         .outputNodeId = "master"};
     const auto bounceJob = renderQueue.enqueueGraphBounce(editSession, "bounce-1", mcpBounceGraph,
@@ -2085,8 +2155,11 @@ int main() {
         .nodes = {{.id = "audit-osc",
                    .kind = lamusica::audio::GraphNodeKind::Sine,
                    .frequencyHz = 220.0,
-                   .gain = 0.1F},
-                  {.id = "audit-master", .kind = lamusica::audio::GraphNodeKind::Output}},
+                   .gain = 0.1F,
+                   .noteSequence = {}},
+                  {.id = "audit-master",
+                   .kind = lamusica::audio::GraphNodeKind::Output,
+                   .noteSequence = {}}},
         .connections = {{.sourceNodeId = "audit-osc",
                          .destinationNodeId = "audit-master",
                          .gain = 1.0F}},
@@ -2168,10 +2241,22 @@ int main() {
     require(
         std::filesystem::exists(projectPath / lamusica::session::ProjectDocument::manifestFileName),
         "created document writes manifest");
+    require(!std::filesystem::exists(
+                projectPath /
+                (std::string{lamusica::session::ProjectDocument::manifestFileName} + ".tmp")),
+            "project document save does not leave a temporary manifest");
 
     const auto reopened = lamusica::session::ProjectDocument::open(projectPath);
     require(reopened.project().name() == "Lifecycle", "project document reopens saved name");
     require(reopened.manifest().schemaVersion == 1, "project document reopens schema version");
+    bool rejectedProjectOverwrite = false;
+    try {
+        (void)lamusica::session::ProjectDocument::createEmpty(projectPath, "Overwrite");
+    } catch (const std::exception&) {
+        rejectedProjectOverwrite = true;
+    }
+    require(rejectedProjectOverwrite,
+            "project document creation refuses to overwrite an existing project bundle");
 
     document.close();
     require(!document.isOpen(), "document closes");
@@ -2330,6 +2415,112 @@ int main() {
     require(migratedManifest.name == "Old", "project manifest migrates legacy project name");
     require(migratedManifest.tempoMap.size() == 1 && migratedManifest.timeSignatures.size() == 1,
             "project manifest migration creates default musical metadata");
+    const auto starterManifest =
+        lamusica::session::makeFirstTrackStarterManifest("Starter Session");
+    require(lamusica::session::isFirstTrackStarterManifest(starterManifest),
+            "session creates reusable first-track starter manifest");
+    require(starterManifest.tracks.size() == 3 && starterManifest.clips.size() == 2 &&
+                starterManifest.routing.size() == 2 && starterManifest.plugins.size() == 3 &&
+                starterManifest.automation.size() == 3 && starterManifest.midiClips.size() == 1,
+            "first-track starter includes tracks clips routing plugins automation and MIDI refs");
+    require(lamusica::session::arrangementEndSample(starterManifest) == 96000,
+            "first-track starter reports arrangement end sample");
+    require(lamusica::session::renderableArrangementFrames(starterManifest) == 96000,
+            "first-track starter reports renderable frame count");
+    const auto starterReadiness = lamusica::session::inspectFirstTrackReadiness(starterManifest);
+    require(
+        starterReadiness.starterStructureReady && starterReadiness.firstTrackEditable &&
+            starterReadiness.renderable && starterReadiness.renderFrames == 96000 &&
+            starterReadiness.pluginCount == 3 && starterReadiness.automationLaneCount == 3 &&
+            starterReadiness.midiClipReferenceCount == 1 &&
+            starterReadiness.starterMidiNoteCount == 8 &&
+            starterReadiness.starterBassTransposeSemitones == 0 && starterReadiness.loopReady &&
+            starterReadiness.loopStartSample == 0 && starterReadiness.loopEndSample == 96000 &&
+            starterReadiness.missingRequirements.empty() &&
+            lamusica::session::firstTrackStarterRequirementIds().size() == 19,
+        "first-track readiness reports structure renderability plugins automation MIDI and loop");
+    auto incompleteStarterManifest = starterManifest;
+    incompleteStarterManifest.routing.clear();
+    incompleteStarterManifest.plugins.erase(incompleteStarterManifest.plugins.begin());
+    incompleteStarterManifest.loopEnabled = false;
+    const auto incompleteStarterReadiness =
+        lamusica::session::inspectFirstTrackReadiness(incompleteStarterManifest);
+    require(!incompleteStarterReadiness.starterStructureReady &&
+                !incompleteStarterReadiness.loopReady &&
+                std::ranges::find(incompleteStarterReadiness.missingRequirements,
+                                  "route.drums-master") !=
+                    incompleteStarterReadiness.missingRequirements.end() &&
+                std::ranges::find(incompleteStarterReadiness.missingRequirements,
+                                  "route.bass-master") !=
+                    incompleteStarterReadiness.missingRequirements.end() &&
+                std::ranges::find(incompleteStarterReadiness.missingRequirements,
+                                  "plugin.drum-starter-sampler") !=
+                    incompleteStarterReadiness.missingRequirements.end() &&
+                std::ranges::find(incompleteStarterReadiness.missingRequirements, "loop.intro") !=
+                    incompleteStarterReadiness.missingRequirements.end(),
+            "first-track readiness reports actionable missing starter requirements");
+    auto looplessStarterManifest = starterManifest;
+    looplessStarterManifest.loopEnabled = false;
+    looplessStarterManifest.loopStartSample = 0;
+    looplessStarterManifest.loopEndSample = 0;
+    const auto looplessStarterReadiness =
+        lamusica::session::inspectFirstTrackReadiness(looplessStarterManifest);
+    require(!looplessStarterReadiness.starterStructureReady &&
+                looplessStarterReadiness.firstTrackEditable &&
+                looplessStarterReadiness.renderable && !looplessStarterReadiness.loopReady &&
+                looplessStarterReadiness.missingRequirements.size() == 1 &&
+                looplessStarterReadiness.missingRequirements.front() == "loop.intro",
+            "first-track readiness reports loopless starter projects are editable but not "
+            "package-ready");
+    const auto starterBassMidi = lamusica::session::makeFirstTrackStarterBassMidi();
+    require(starterBassMidi.clipId == "bass-pattern" && starterBassMidi.notes.size() == 8 &&
+                starterBassMidi.notes.front().pitch == 36 &&
+                starterBassMidi.notes.front().startSample == 0 &&
+                starterBassMidi.notes.back().startSample == 90000 &&
+                std::ranges::any_of(starterBassMidi.metadata,
+                                    [](const lamusica::session::MidiMetadata& metadata) {
+                                        return metadata.key == "dataId" &&
+                                               metadata.value == "starter-bass-midi";
+                                    }),
+            "first-track starter includes concrete reusable bass MIDI content");
+    require(lamusica::session::makeFirstTrackStarterMidiClips().front().notes.size() == 8,
+            "first-track starter exposes all reusable MIDI clips");
+    const auto starterGraph = lamusica::session::compileProjectAudioGraph(
+        starterManifest, lamusica::session::MixerState{});
+    const auto starterBassNode =
+        std::ranges::find_if(starterGraph.nodes, [](const lamusica::audio::GraphNode& node) {
+            return node.id == "clip:bass-pattern";
+        });
+    require(starterBassNode != starterGraph.nodes.end() &&
+                starterBassNode->noteSequence.size() == 8 &&
+                starterBassNode->noteSequence.front().startSample == 0 &&
+                starterBassNode->noteSequence.back().startSample == 90000,
+            "first-track starter bass MIDI compiles into timed graph notes");
+    auto transposedStarterManifest = starterManifest;
+    transposedStarterManifest.midiClips.front().transposeSemitones = 12;
+    const auto transposedReadiness =
+        lamusica::session::inspectFirstTrackReadiness(transposedStarterManifest);
+    const auto transposedStarterGraph = lamusica::session::compileProjectAudioGraph(
+        transposedStarterManifest, lamusica::session::MixerState{});
+    const auto transposedBassNode = std::ranges::find_if(
+        transposedStarterGraph.nodes,
+        [](const lamusica::audio::GraphNode& node) { return node.id == "clip:bass-pattern"; });
+    require(transposedReadiness.starterBassTransposeSemitones == 12 &&
+                transposedBassNode != transposedStarterGraph.nodes.end() &&
+                transposedBassNode->noteSequence.size() == 8 &&
+                std::abs((transposedBassNode->noteSequence.front().frequencyHz /
+                          starterBassNode->noteSequence.front().frequencyHz) -
+                         2.0) < 0.001,
+            "first-track starter bass transpose persists into compiled graph notes");
+    const auto starterSummary = lamusica::session::summarizeFirstTrackArrangement(starterManifest);
+    require(
+        starterSummary.tempoBpm == 120.0 && starterSummary.timeSignatureNumerator == 4 &&
+            starterSummary.timeSignatureDenominator == 4 && starterSummary.sectionCount == 2 &&
+            starterSummary.audioTrackCount == 1 && starterSummary.midiTrackCount == 1 &&
+            starterSummary.masterTrackCount == 1 && starterSummary.firstSectionName == "Intro" &&
+            starterSummary.finalSectionName == "Verse" && starterSummary.firstSectionSample == 0 &&
+            starterSummary.finalSectionSample == 96000,
+        "first-track arrangement summary reports tempo meter sections and track roles");
 
     const auto exampleDocument = lamusica::session::ProjectDocument::open(
         "fixtures/examples/generated-tone.Project.lamusica");
@@ -2341,15 +2532,42 @@ int main() {
         lamusica::session::ProjectDocument::open("fixtures/tutorials/first-song.Project.lamusica");
     require(tutorialDocument.manifest().markers.size() == 2 &&
                 tutorialDocument.manifest().tracks.size() == 3 &&
-                tutorialDocument.manifest().clips.size() == 2,
-            "project document opens redistributable tutorial fixture");
+                tutorialDocument.manifest().clips.size() == 2 &&
+                tutorialDocument.manifest().plugins.size() == 3 &&
+                tutorialDocument.manifest().automation.size() == 3 &&
+                tutorialDocument.manifest().midiClips.size() == 1 &&
+                tutorialDocument.manifest().midiClips.front().dataId == "starter-bass-midi" &&
+                lamusica::session::isFirstTrackStarterManifest(tutorialDocument.manifest()),
+            "project document opens first-track-ready tutorial fixture");
     lamusica::session::ApplicationSession appSession;
+    bool rejectedProjectVerificationWithoutOpenProject = false;
+    try {
+        (void)appSession.verifyFirstTrackProject();
+    } catch (const std::exception&) {
+        rejectedProjectVerificationWithoutOpenProject = true;
+    }
+    require(rejectedProjectVerificationWithoutOpenProject,
+            "application shell rejects first-track project verification without an open project");
     const auto appShellProject =
         std::filesystem::temp_directory_path() / "lamusica-app-shell.Project.lamusica";
     std::filesystem::remove_all(appShellProject);
     appSession.createProject(appShellProject, "App Shell");
+    const auto unreadyFirstTrackVerification = appSession.verifyFirstTrackProject();
     require(appSession.status().hasOpenProject && appSession.status().projectName == "App Shell",
             "application shell session creates an open project");
+    require(!appSession.status().firstTrackReady && appSession.status().trackCount == 0 &&
+                !appSession.status().firstTrackEditable &&
+                !unreadyFirstTrackVerification.firstTrackReady &&
+                !unreadyFirstTrackVerification.firstTrackEditable &&
+                !unreadyFirstTrackVerification.starterStructureReady &&
+                !unreadyFirstTrackVerification.renderable &&
+                !unreadyFirstTrackVerification.loopEnabled &&
+                unreadyFirstTrackVerification.renderFrames == 0 &&
+                unreadyFirstTrackVerification.trackCount == 0 &&
+                unreadyFirstTrackVerification.clipCount == 0 &&
+                unreadyFirstTrackVerification.missingRequirements.size() ==
+                    lamusica::session::firstTrackStarterRequirementIds().size(),
+            "application shell reports empty project is not first-track ready");
     appSession.saveProject();
     appSession.closeProject();
     require(!appSession.status().hasOpenProject, "application shell session closes project");
@@ -2357,12 +2575,814 @@ int main() {
     require(appSession.status().projectPath == appShellProject &&
                 appSession.recentProjects().front() == appShellProject,
             "application shell session reopens and tracks recent project");
+    require(!std::filesystem::exists(
+                appShellProject /
+                (std::string{lamusica::session::ProjectDocument::manifestFileName} + ".tmp")),
+            "application shell save does not leave a temporary project manifest");
     appSession.closeProject();
     require(appSession.recoverLastProject(appShellProject),
             "application shell startup recovers last project");
     std::filesystem::remove_all(appShellProject);
     require(!appSession.recoverLastProject(appShellProject),
             "application shell startup ignores missing recovery project");
+    const auto appFirstTrackProject =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track.Project.lamusica";
+    std::filesystem::remove_all(appFirstTrackProject);
+    appSession.createFirstTrackProject(appFirstTrackProject, "App First Track");
+    const auto readyFirstTrackVerification = appSession.verifyFirstTrackProject();
+    require(
+        appSession.status().firstTrackReady && appSession.status().starterStructureReady &&
+            appSession.status().firstTrackEditable && appSession.status().renderable &&
+            appSession.status().trackCount == 3 && appSession.status().clipCount == 2 &&
+            appSession.status().pluginCount == 3 && appSession.status().automationLaneCount == 3 &&
+            appSession.status().starterMidiNoteCount == 8 &&
+            appSession.status().starterBassTransposeSemitones == 0 &&
+            appSession.status().drumClipGainDb == -9.0F &&
+            appSession.status().bassClipGainDb == 0.0F && appSession.status().loopEnabled &&
+            appSession.status().loopStartSample == 0 &&
+            appSession.status().loopEndSample == 96000 && appSession.status().loopFrames == 96000 &&
+            appSession.status().renderFrames == 96000 && appSession.status().tempoBpm == 120.0 &&
+            appSession.status().timeSignatureNumerator == 4 &&
+            appSession.status().timeSignatureDenominator == 4 &&
+            appSession.status().firstSectionName == "Intro" &&
+            appSession.status().finalSectionName == "Verse" &&
+            readyFirstTrackVerification.projectPath == appFirstTrackProject &&
+            readyFirstTrackVerification.projectName == "App First Track" &&
+            readyFirstTrackVerification.firstTrackReady &&
+            readyFirstTrackVerification.firstTrackEditable &&
+            readyFirstTrackVerification.starterStructureReady &&
+            readyFirstTrackVerification.renderable && readyFirstTrackVerification.loopEnabled &&
+            readyFirstTrackVerification.loopFrames == 96000 &&
+            readyFirstTrackVerification.renderFrames == 96000 &&
+            readyFirstTrackVerification.trackCount == 3 &&
+            readyFirstTrackVerification.clipCount == 2 &&
+            readyFirstTrackVerification.pluginCount == 3 &&
+            readyFirstTrackVerification.automationLaneCount == 3 &&
+            readyFirstTrackVerification.starterMidiNoteCount == 8 &&
+            readyFirstTrackVerification.missingRequirements.empty(),
+        "application shell status reports first-track readiness");
+    const auto appFirstTrackMix =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track.wav";
+    std::filesystem::remove(appFirstTrackMix);
+    const auto appFirstTrackBounce = appSession.exportCurrentMix(appFirstTrackMix);
+    require(appFirstTrackBounce.outputPath == appFirstTrackMix &&
+                appFirstTrackBounce.frames == appSession.status().renderFrames &&
+                appFirstTrackBounce.peakAfterNormalization > 0.0F &&
+                appSession.status().lastMixExportPath == appFirstTrackMix &&
+                appSession.status().lastMixExportFrames == appFirstTrackBounce.frames &&
+                appSession.status().lastMixExportPeak == appFirstTrackBounce.peakAfterNormalization,
+            "application shell exports the current first-track mix");
+    std::filesystem::remove(appFirstTrackMix);
+    appSession.transposeFirstTrackBass(12);
+    require(appSession.status().starterBassTransposeSemitones == 12 &&
+                appSession.status().firstTrackReady,
+            "application shell transposes first-track bass MIDI");
+    appSession.openProject(appFirstTrackProject);
+    require(appSession.status().starterBassTransposeSemitones == 12,
+            "application shell persists first-track bass transpose");
+    appSession.setClipGain("drum-loop", -18.0F);
+    appSession.setClipGain("bass-pattern", -3.0F);
+    require(appSession.status().drumClipGainDb == -18.0F &&
+                appSession.status().bassClipGainDb == -3.0F && appSession.status().canUndo &&
+                appSession.status().undoDepth >= 2,
+            "application shell edits first-track clip gains");
+    require(appSession.undoLastEdit() && appSession.status().drumClipGainDb == -18.0F &&
+                appSession.status().bassClipGainDb == 0.0F && appSession.status().canRedo,
+            "application shell undoes the latest first-track edit");
+    require(appSession.redoLastEdit() && appSession.status().drumClipGainDb == -18.0F &&
+                appSession.status().bassClipGainDb == -3.0F && appSession.status().canUndo,
+            "application shell redoes the latest first-track edit");
+    appSession.setFirstTrackTrackMix("drums", -9.0F, -0.25F, false, false);
+    const auto appTrackMix = appSession.firstTrackTrackMix();
+    const auto appDrumMix = std::ranges::find_if(
+        appTrackMix, [](const lamusica::session::FirstTrackTrackMixSummary& mix) {
+            return mix.trackId == "drums";
+        });
+    require(appDrumMix != appTrackMix.end() && appDrumMix->trackName == "Generated Drums" &&
+                appDrumMix->volumeDb == -9.0F && appDrumMix->pan == -0.25F && !appDrumMix->muted &&
+                !appDrumMix->solo && appSession.status().canUndo,
+            "application shell edits first-track track mix");
+    const auto undoTrackMixSucceeded = appSession.undoLastEdit();
+    const auto undoneTrackMix = appSession.firstTrackTrackMix();
+    const auto undoneDrumMix = std::ranges::find_if(
+        undoneTrackMix, [](const lamusica::session::FirstTrackTrackMixSummary& mix) {
+            return mix.trackId == "drums";
+        });
+    require(undoTrackMixSucceeded && undoneDrumMix != undoneTrackMix.end() &&
+                undoneDrumMix->volumeDb == 0.0F && appSession.status().canRedo,
+            "application shell undoes first-track track mix edits");
+    const auto redoTrackMixSucceeded = appSession.redoLastEdit();
+    const auto redoneTrackMix = appSession.firstTrackTrackMix();
+    const auto redoneDrumMix = std::ranges::find_if(
+        redoneTrackMix, [](const lamusica::session::FirstTrackTrackMixSummary& mix) {
+            return mix.trackId == "drums";
+        });
+    require(redoTrackMixSucceeded && redoneDrumMix != redoneTrackMix.end() &&
+                redoneDrumMix->volumeDb == -9.0F,
+            "application shell redoes first-track track mix edits");
+    const auto mixedFirstTrackGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{});
+    const auto mixedDrumNode = std::ranges::find_if(
+        mixedFirstTrackGraph.nodes,
+        [](const lamusica::audio::GraphNode& node) { return node.id == "clip:drum-loop"; });
+    const auto mixedBassNode = std::ranges::find_if(
+        mixedFirstTrackGraph.nodes,
+        [](const lamusica::audio::GraphNode& node) { return node.id == "clip:bass-pattern"; });
+    const auto mixedDrumTrackNode = std::ranges::find_if(
+        mixedFirstTrackGraph.nodes,
+        [](const lamusica::audio::GraphNode& node) { return node.id == "track:drums"; });
+    require(
+        mixedDrumNode != mixedFirstTrackGraph.nodes.end() &&
+            mixedBassNode != mixedFirstTrackGraph.nodes.end() &&
+            mixedDrumTrackNode != mixedFirstTrackGraph.nodes.end() &&
+            std::abs(mixedDrumNode->gain - lamusica::session::dbToLinearGain(-18.0F)) < 0.0001F &&
+            std::abs(mixedBassNode->gain - lamusica::session::dbToLinearGain(-3.0F)) < 0.0001F &&
+            std::abs(mixedDrumTrackNode->gain - lamusica::session::dbToLinearGain(-9.0F)) <
+                0.0001F &&
+            mixedDrumTrackNode->pan == -0.25F,
+        "application shell first-track clip and track gains affect compiled graph");
+    appSession.openProject(appFirstTrackProject);
+    const auto persistedTrackMix = appSession.firstTrackTrackMix();
+    const auto persistedDrumMix = std::ranges::find_if(
+        persistedTrackMix, [](const lamusica::session::FirstTrackTrackMixSummary& mix) {
+            return mix.trackId == "drums";
+        });
+    require(appSession.status().drumClipGainDb == -18.0F &&
+                appSession.status().bassClipGainDb == -3.0F &&
+                persistedDrumMix != persistedTrackMix.end() && persistedDrumMix->volumeDb == -9.0F,
+            "application shell persists first-track clip and track gains");
+    appSession.clearLoopRegion();
+    require(!appSession.status().loopEnabled && appSession.status().loopFrames == 0,
+            "application shell clears first-track loop region");
+    appSession.setFirstTrackLoopToIntro();
+    require(appSession.status().loopEnabled && appSession.status().loopStartSample == 0 &&
+                appSession.status().loopEndSample == 96000 &&
+                appSession.status().loopFrames == 96000,
+            "application shell restores first-track intro loop region");
+    const auto appFirstTrackLoop =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-loop.wav";
+    std::filesystem::remove(appFirstTrackLoop);
+    const auto appFirstTrackLoopBounce = appSession.exportCurrentLoop(appFirstTrackLoop);
+    require(appFirstTrackLoopBounce.outputPath == appFirstTrackLoop &&
+                appFirstTrackLoopBounce.frames == appSession.status().loopFrames &&
+                appFirstTrackLoopBounce.peakAfterNormalization > 0.0F,
+            "application shell exports the current first-track loop");
+    std::filesystem::remove(appFirstTrackLoop);
+    appSession.openProject(appFirstTrackProject);
+    require(appSession.status().loopEnabled && appSession.status().loopFrames == 96000,
+            "application shell persists first-track loop region");
+    appSession.seek(95936);
+    appSession.play();
+    require(appSession.status().transportPlaying && appSession.status().playheadSample == 95936,
+            "application shell starts first-track transport from requested playhead");
+    const auto auditionBlock = appSession.auditionCurrentMixBlock(128);
+    require(auditionBlock.frames == 128 && auditionBlock.channels == 2 &&
+                lamusica::audio::peakAbsoluteSample(auditionBlock) > 0.0F &&
+                appSession.status().playheadSample == 64,
+            "application shell auditions first-track mix and wraps through loop");
+    appSession.stop();
+    require(!appSession.status().transportPlaying && appSession.status().playheadSample == 64,
+            "application shell stops first-track transport without losing playhead");
+    appSession.extendFirstTrackArrangementToVerse();
+    require(appSession.status().firstTrackReady && appSession.status().renderFrames == 192000 &&
+                appSession.status().loopEnabled && appSession.status().loopFrames == 96000,
+            "application shell extends first-track starter into a verse arrangement");
+    const auto extendedFirstTrackGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{});
+    const auto extendedBassNode = std::ranges::find_if(
+        extendedFirstTrackGraph.nodes,
+        [](const lamusica::audio::GraphNode& node) { return node.id == "clip:bass-pattern"; });
+    require(extendedBassNode != extendedFirstTrackGraph.nodes.end() &&
+                extendedBassNode->noteSequence.size() == 16 &&
+                extendedBassNode->noteSequence.back().startSample == 186000,
+            "application shell first-track verse extension repeats starter bass notes");
+    const auto duplicatedBass =
+        appSession.duplicateClip("bass-pattern", "bass-pattern-copy", 96000);
+    const auto duplicatedBassGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{});
+    const auto duplicatedBassNode =
+        std::ranges::find_if(duplicatedBassGraph.nodes, [](const lamusica::audio::GraphNode& node) {
+            return node.id == "clip:bass-pattern-copy";
+        });
+    require(duplicatedBass.clipId == "bass-pattern-copy" && duplicatedBass.trackId == "bass" &&
+                duplicatedBassNode != duplicatedBassGraph.nodes.end() &&
+                duplicatedBassNode->startSample == 96000 &&
+                duplicatedBassNode->noteSequence.size() == 16 && appSession.status().canUndo,
+            "application shell duplicates first-track MIDI clips with playable note references");
+    const auto removedBassDuplicate = appSession.removeClip("bass-pattern-copy");
+    const auto removedBassDuplicateGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{});
+    require(removedBassDuplicate.clipId == "bass-pattern-copy" &&
+                removedBassDuplicate.removedMidiReferenceCount == 1 &&
+                std::ranges::none_of(removedBassDuplicateGraph.nodes,
+                                     [](const lamusica::audio::GraphNode& node) {
+                                         return node.id == "clip:bass-pattern-copy";
+                                     }) &&
+                std::ranges::none_of(appSession.currentDocument()->manifest().midiClips,
+                                     [](const lamusica::session::MidiClipReference& reference) {
+                                         return reference.clipId == "bass-pattern-copy";
+                                     }),
+            "application shell removes duplicated first-track MIDI clips and references");
+    require(appSession.undoLastEdit(), "application shell undoes first-track MIDI clip removal");
+    require(appSession.undoLastEdit(), "application shell undoes first-track MIDI clip duplicate");
+    appSession.openProject(appFirstTrackProject);
+    require(appSession.status().renderFrames == 192000 && appSession.status().firstTrackReady,
+            "application shell persists first-track verse extension");
+    const auto appFirstTrackStems =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-stems";
+    std::filesystem::remove_all(appFirstTrackStems);
+    const auto appStemExports = appSession.exportCurrentStems(appFirstTrackStems);
+    require(appStemExports.size() == 2 &&
+                std::ranges::all_of(appStemExports,
+                                    [&appSession](const lamusica::session::StemExportResult& stem) {
+                                        return stem.bounce.frames ==
+                                                   appSession.status().renderFrames &&
+                                               stem.bounce.peakAfterNormalization > 0.0F &&
+                                               std::filesystem::exists(stem.bounce.outputPath);
+                                    }) &&
+                appSession.status().lastStemExportDirectory == appFirstTrackStems &&
+                appSession.status().lastStemExportCount == 2 &&
+                appSession.status().lastStemExportFrames == 192000,
+            "application shell exports first-track drums and bass stems");
+    std::filesystem::remove_all(appFirstTrackStems);
+    lamusica::session::FirstTrackRecordingOptions punchOptions;
+    punchOptions.countInBars = 2;
+    punchOptions.punchInSample = 48000;
+    punchOptions.punchOutSample = 96000;
+    const auto punchPlan = appSession.prepareFirstTrackRecording(punchOptions);
+    require(punchPlan.timelineStartSample == 48000 && punchPlan.recordFrames == 48000 &&
+                punchPlan.countInBars == 2 && punchPlan.countInSamples == 192000 &&
+                punchPlan.prerollStartSample == 0 && punchPlan.punchEnabled &&
+                punchPlan.punchInSample == 48000 && punchPlan.punchOutSample == 96000,
+            "application shell plans first-track punch recording with count-in");
+    lamusica::session::FirstTrackRecordingOptions takeOptions;
+    takeOptions.frames = 48000;
+    takeOptions.startSample = 96000;
+    const auto appRecording = appSession.recordFirstTrackTake(takeOptions);
+    require(appRecording.trackId == "recorded-takes" && appRecording.committed.frames == 48000 &&
+                appRecording.committed.channels == 2 &&
+                std::filesystem::exists(appRecording.committed.path) &&
+                appRecording.timelineStartSample == 96000 && appRecording.countInSamples == 96000 &&
+                appRecording.prerollStartSample == 0 && !appRecording.punchEnabled &&
+                appSession.status().lastRecordingPath == appRecording.committed.path &&
+                appSession.status().lastRecordingFrames == 48000 &&
+                appSession.status().lastRecordingStartSample == 96000 &&
+                appSession.status().lastRecordingCountInSamples == 96000 &&
+                appSession.status().lastRecordingPrerollStartSample == 0 &&
+                !appSession.status().lastRecordingPunchEnabled &&
+                appSession.status().lastRecordingAssetId == appRecording.assetId &&
+                appSession.status().lastRecordingClipId == appRecording.clipId &&
+                appSession.status().recordedTakeCount == 1 && appSession.status().trackCount == 4 &&
+                appSession.status().clipCount == 3,
+            "application shell records a first-track audio take into the project");
+    appSession.openProject(appFirstTrackProject);
+    require(appSession.status().recordedTakeCount == 1 && appSession.status().trackCount == 4 &&
+                appSession.status().clipCount == 3 &&
+                std::ranges::any_of(appSession.currentDocument()->manifest().assets,
+                                    [&appRecording](const lamusica::session::Asset& asset) {
+                                        return asset.id == appRecording.assetId &&
+                                               asset.mediaType == "audio/wav";
+                                    }) &&
+                std::ranges::any_of(appSession.currentDocument()->manifest().clips,
+                                    [&appRecording](const lamusica::session::Clip& clip) {
+                                        return clip.id == appRecording.clipId &&
+                                               clip.trackId == "recorded-takes" &&
+                                               clip.assetId == appRecording.assetId &&
+                                               clip.startSample == 96000;
+                                    }),
+            "application shell persists the first-track recorded take");
+    const auto recordedTakeGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{},
+        {.projectRoot = appFirstTrackProject});
+    const auto recordedTakeNode = std::ranges::find_if(
+        recordedTakeGraph.nodes, [&appRecording](const lamusica::audio::GraphNode& node) {
+            return node.id == "clip:" + appRecording.clipId;
+        });
+    require(recordedTakeNode != recordedTakeGraph.nodes.end() &&
+                recordedTakeNode->kind == lamusica::audio::GraphNodeKind::Sample &&
+                recordedTakeNode->startSample == 96000 && recordedTakeNode->sampleFrames == 48000 &&
+                recordedTakeNode->sampleChannels == 2 && !recordedTakeNode->samples.empty(),
+            "application shell renders first-track recorded takes from project audio assets");
+    appSession.setClipFades(appRecording.clipId, 1024, 2048);
+    const auto fadedTakeGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{},
+        {.projectRoot = appFirstTrackProject});
+    const auto fadedTakeNode = std::ranges::find_if(
+        fadedTakeGraph.nodes, [&appRecording](const lamusica::audio::GraphNode& node) {
+            return node.id == "clip:" + appRecording.clipId;
+        });
+    require(fadedTakeNode != fadedTakeGraph.nodes.end() && fadedTakeNode->fadeInSamples == 1024 &&
+                fadedTakeNode->fadeOutSamples == 2048 && appSession.status().canUndo,
+            "application shell edits first-track take fades nondestructively");
+    require(appSession.undoLastEdit(), "application shell undoes first-track take fade edits");
+    appSession.setClipReversed(appRecording.clipId, true);
+    const auto reversedTakeGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{},
+        {.projectRoot = appFirstTrackProject});
+    const auto reversedTakeNode = std::ranges::find_if(
+        reversedTakeGraph.nodes, [&appRecording](const lamusica::audio::GraphNode& node) {
+            return node.id == "clip:" + appRecording.clipId;
+        });
+    require(reversedTakeNode != reversedTakeGraph.nodes.end() && reversedTakeNode->reversed &&
+                appSession.status().canUndo,
+            "application shell reverses first-track takes nondestructively");
+    require(appSession.undoLastEdit(), "application shell undoes first-track take reverse edits");
+    const auto recordedTakes = appSession.recordedFirstTrackTakes();
+    const auto lastTakeFadeRoute = appSession.routeMenuCommand("project.softenLastTakeFades");
+    const auto lastTakeMuteRoute = appSession.routeMenuCommand("project.toggleLastTakeMute");
+    const auto lastTakeReverseRoute = appSession.routeMenuCommand("project.toggleLastTakeReverse");
+    const auto lastTakeTrimRoute = appSession.routeMenuCommand("project.trimLastTakeToLoop");
+    const auto lastTakeDuplicateRoute =
+        appSession.routeMenuCommand("project.duplicateLastTakeAtPlayhead");
+    const auto lastTakeRemoveRoute = appSession.routeMenuCommand("project.removeLastTake");
+    const auto recordedTrackMixRoute = appSession.routeMenuCommand("project.recordedTrackVolumeUp");
+    require(recordedTakes.size() == 1 && recordedTakes.front().clipId == appRecording.clipId &&
+                recordedTakes.front().assetId == appRecording.assetId &&
+                recordedTakes.front().startSample == 96000 &&
+                recordedTakes.front().frames == 48000 &&
+                recordedTakes.front().fadeInSamples == 128 &&
+                recordedTakes.front().fadeOutSamples == 128 && !recordedTakes.front().reversed &&
+                !recordedTakes.front().muted && recordedTakes.front().mediaAvailable &&
+                lastTakeFadeRoute.handled && lastTakeFadeRoute.enabled &&
+                lastTakeMuteRoute.handled && lastTakeMuteRoute.enabled &&
+                lastTakeReverseRoute.handled && lastTakeReverseRoute.enabled &&
+                lastTakeTrimRoute.handled && lastTakeTrimRoute.enabled &&
+                lastTakeDuplicateRoute.handled && lastTakeDuplicateRoute.enabled &&
+                lastTakeRemoveRoute.handled && lastTakeRemoveRoute.enabled &&
+                recordedTrackMixRoute.handled && recordedTrackMixRoute.enabled,
+            "application shell summarizes and routes focused first-track recorded take edits");
+    appSession.setClipTiming(appRecording.clipId, 120000, 24000, 12000);
+    const auto retimedTakeGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{},
+        {.projectRoot = appFirstTrackProject});
+    const auto retimedTakeNode = std::ranges::find_if(
+        retimedTakeGraph.nodes, [&appRecording](const lamusica::audio::GraphNode& node) {
+            return node.id == "clip:" + appRecording.clipId;
+        });
+    require(retimedTakeNode != retimedTakeGraph.nodes.end() &&
+                retimedTakeNode->startSample == 120000 && retimedTakeNode->lengthSamples == 24000 &&
+                retimedTakeNode->sourceOffsetSamples == 12000 && appSession.status().canUndo,
+            "application shell retimes first-track takes nondestructively");
+    require(appSession.undoLastEdit(), "application shell undoes first-track take timing edits");
+    const auto duplicatedTake =
+        appSession.duplicateClip(appRecording.clipId, "recorded-take-1-copy", 144000);
+    require(duplicatedTake.clipId == "recorded-take-1-copy" &&
+                duplicatedTake.assetId == appRecording.assetId &&
+                duplicatedTake.startSample == 144000 && appSession.status().clipCount == 4,
+            "application shell duplicates first-track recorded takes nondestructively");
+    const auto removedTakeDuplicate = appSession.removeClip("recorded-take-1-copy");
+    require(
+        removedTakeDuplicate.clipId == "recorded-take-1-copy" &&
+            removedTakeDuplicate.assetId == appRecording.assetId &&
+            appSession.status().clipCount == 3 && appSession.status().recordedTakeCount == 1,
+        "application shell removes duplicated first-track recorded takes without deleting media");
+    require(appSession.undoLastEdit() && appSession.status().clipCount == 4,
+            "application shell undo restores first-track recorded take removal");
+    require(appSession.undoLastEdit() && appSession.status().clipCount == 3,
+            "application shell undo removes first-track recorded take duplicate");
+    appSession.setFirstTrackTakeMuted(appRecording.clipId, true);
+    require(appSession.status().mutedRecordedTakeCount == 1 && appSession.status().canUndo,
+            "application shell mutes first-track recorded takes nondestructively");
+    const auto mutedTakeGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{},
+        {.projectRoot = appFirstTrackProject});
+    require(std::ranges::none_of(mutedTakeGraph.nodes,
+                                 [&appRecording](const lamusica::audio::GraphNode& node) {
+                                     return node.id == "clip:" + appRecording.clipId;
+                                 }),
+            "application shell excludes muted first-track takes from the render graph");
+    require(appSession.undoLastEdit() && appSession.status().mutedRecordedTakeCount == 0,
+            "application shell undo restores first-track take mute state");
+    const auto appImportSource =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-import-source.wav";
+    lamusica::audio::AudioEngine appImportEngine{{}};
+    auto appImportAudio = appImportEngine.renderSineOffline(24000, 523.25, 0.35F);
+    lamusica::audio::writePcm16Wav(appImportSource, appImportAudio, 48000.0);
+    const auto appImport = appSession.importAudioFileToFirstTrack(appImportSource, 24000);
+    require(appImport.trackId == "imported-audio" && appImport.frames == 24000 &&
+                appImport.channels == 2 && std::filesystem::exists(appImport.copiedPath) &&
+                appSession.status().lastImportPath == appImport.copiedPath &&
+                appSession.status().lastImportFrames == 24000 &&
+                appSession.status().lastImportAssetId == appImport.assetId &&
+                appSession.status().lastImportClipId == appImport.clipId &&
+                appSession.status().importedAudioClipCount == 1 &&
+                appSession.status().trackCount == 5 && appSession.status().clipCount == 4,
+            "application shell imports an audio file into the first-track project");
+    appSession.openProject(appFirstTrackProject);
+    appSession.setClipTiming(appImport.clipId, 36000, 12000, 6000);
+    const auto importedAudioGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{},
+        {.projectRoot = appFirstTrackProject});
+    const auto importedAudioNode = std::ranges::find_if(
+        importedAudioGraph.nodes, [&appImport](const lamusica::audio::GraphNode& node) {
+            return node.id == "clip:" + appImport.clipId;
+        });
+    require(importedAudioNode != importedAudioGraph.nodes.end() &&
+                importedAudioNode->kind == lamusica::audio::GraphNodeKind::Sample &&
+                importedAudioNode->startSample == 36000 &&
+                importedAudioNode->lengthSamples == 12000 &&
+                importedAudioNode->sourceOffsetSamples == 6000 &&
+                importedAudioNode->sampleFrames == 24000 &&
+                importedAudioNode->sampleChannels == 2 && !importedAudioNode->samples.empty(),
+            "application shell renders retimed first-track imported audio from project assets");
+    appSession.setClipMuted(appImport.clipId, true);
+    const auto mutedImportGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{},
+        {.projectRoot = appFirstTrackProject});
+    require(std::ranges::none_of(mutedImportGraph.nodes,
+                                 [&appImport](const lamusica::audio::GraphNode& node) {
+                                     return node.id == "clip:" + appImport.clipId;
+                                 }) &&
+                appSession.status().canUndo,
+            "application shell mutes imported first-track clips nondestructively");
+    require(appSession.undoLastEdit(), "application shell undoes imported first-track clip mute");
+    appSession.setClipReversed(appImport.clipId, true);
+    const auto duplicatedImport =
+        appSession.duplicateClip(appImport.clipId, "imported-audio-copy", 72000);
+    const auto duplicatedImportGraph = lamusica::session::compileProjectAudioGraph(
+        appSession.currentDocument()->manifest(), lamusica::session::MixerState{},
+        {.projectRoot = appFirstTrackProject});
+    const auto duplicatedImportNode = std::ranges::find_if(
+        duplicatedImportGraph.nodes, [](const lamusica::audio::GraphNode& node) {
+            return node.id == "clip:imported-audio-copy";
+        });
+    require(duplicatedImport.clipId == "imported-audio-copy" &&
+                duplicatedImport.assetId == appImport.assetId &&
+                duplicatedImportNode != duplicatedImportGraph.nodes.end() &&
+                duplicatedImportNode->kind == lamusica::audio::GraphNodeKind::Sample &&
+                duplicatedImportNode->startSample == 72000 &&
+                duplicatedImportNode->lengthSamples == 12000 &&
+                duplicatedImportNode->sourceOffsetSamples == 6000 && duplicatedImportNode->reversed,
+            "application shell duplicates retimed and reversed first-track imported audio");
+    const auto firstTrackClips = appSession.firstTrackClips();
+    const auto lastImportFadeRoute = appSession.routeMenuCommand("project.softenLastImportFades");
+    const auto lastImportMuteRoute = appSession.routeMenuCommand("project.toggleLastImportMute");
+    const auto lastImportReverseRoute =
+        appSession.routeMenuCommand("project.toggleLastImportReverse");
+    const auto lastImportTrimRoute = appSession.routeMenuCommand("project.trimLastImportToLoop");
+    const auto lastImportDuplicateRoute =
+        appSession.routeMenuCommand("project.duplicateLastImportAtPlayhead");
+    const auto lastImportRemoveRoute = appSession.routeMenuCommand("project.removeLastImport");
+    const auto importedTrackMixRoute = appSession.routeMenuCommand("project.importedTrackVolumeUp");
+    const auto listedDrumClip = std::ranges::find_if(
+        firstTrackClips, [](const lamusica::session::FirstTrackClipSummary& clip) {
+            return clip.clipId == "drum-loop";
+        });
+    const auto listedBassClip = std::ranges::find_if(
+        firstTrackClips, [](const lamusica::session::FirstTrackClipSummary& clip) {
+            return clip.clipId == "bass-pattern";
+        });
+    const auto listedRecordedClip = std::ranges::find_if(
+        firstTrackClips, [&appRecording](const lamusica::session::FirstTrackClipSummary& clip) {
+            return clip.clipId == appRecording.clipId;
+        });
+    const auto listedImportedClip = std::ranges::find_if(
+        firstTrackClips, [&appImport](const lamusica::session::FirstTrackClipSummary& clip) {
+            return clip.clipId == appImport.clipId;
+        });
+    const auto listedDuplicatedImport = std::ranges::find_if(
+        firstTrackClips, [](const lamusica::session::FirstTrackClipSummary& clip) {
+            return clip.clipId == "imported-audio-copy";
+        });
+    require(firstTrackClips.size() == 5 && listedDrumClip != firstTrackClips.end() &&
+                listedDrumClip->type == lamusica::session::ClipType::Audio &&
+                listedDrumClip->trackId == "drums" && listedBassClip != firstTrackClips.end() &&
+                listedBassClip->type == lamusica::session::ClipType::Midi &&
+                listedBassClip->trackId == "bass" && listedRecordedClip != firstTrackClips.end() &&
+                listedRecordedClip->assetBacked && listedRecordedClip->mediaAvailable &&
+                listedRecordedClip->fadeInSamples == 128 &&
+                listedRecordedClip->fadeOutSamples == 128 &&
+                listedImportedClip != firstTrackClips.end() && listedImportedClip->assetBacked &&
+                listedImportedClip->mediaAvailable && listedImportedClip->startSample == 36000 &&
+                listedImportedClip->lengthSamples == 12000 &&
+                listedImportedClip->sourceOffsetSamples == 6000 && listedImportedClip->reversed &&
+                listedDuplicatedImport != firstTrackClips.end() &&
+                listedDuplicatedImport->assetId == appImport.assetId &&
+                listedDuplicatedImport->startSample == 72000 &&
+                listedDuplicatedImport->lengthSamples == 12000 &&
+                listedDuplicatedImport->sourceOffsetSamples == 6000 &&
+                listedDuplicatedImport->reversed && lastImportFadeRoute.handled &&
+                lastImportFadeRoute.enabled && lastImportMuteRoute.handled &&
+                lastImportMuteRoute.enabled && lastImportReverseRoute.handled &&
+                lastImportReverseRoute.enabled && lastImportTrimRoute.handled &&
+                lastImportTrimRoute.enabled && lastImportDuplicateRoute.handled &&
+                lastImportDuplicateRoute.enabled && lastImportRemoveRoute.handled &&
+                lastImportRemoveRoute.enabled && importedTrackMixRoute.handled &&
+                importedTrackMixRoute.enabled,
+            "application shell lists and routes focused first-track imported clip edits");
+    bool rejectedAssetGraphWithoutProjectRoot = false;
+    try {
+        (void)lamusica::session::compileProjectAudioGraph(appSession.currentDocument()->manifest(),
+                                                          lamusica::session::MixerState{});
+    } catch (const std::exception&) {
+        rejectedAssetGraphWithoutProjectRoot = true;
+    }
+    const auto appCustomExportPath =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-custom-export.wav";
+    std::filesystem::remove(appCustomExportPath);
+    const auto appCustomExport =
+        appSession.exportCurrentMix({.outputPath = appCustomExportPath,
+                                     .startSample = 24000,
+                                     .frames = 24000,
+                                     .sampleRate = 48000.0,
+                                     .channels = 2,
+                                     .bitDepth = lamusica::audio::ExportBitDepth::Pcm16,
+                                     .ditherMode = lamusica::audio::DitherMode::Triangular,
+                                     .normalizePeak = true,
+                                     .normalizeTargetPeak = 0.98F});
+    require(rejectedAssetGraphWithoutProjectRoot && appCustomExport.frames == 24000 &&
+                std::filesystem::exists(appCustomExportPath) &&
+                appSession.status().lastMixExportPath == appCustomExportPath,
+            "application shell custom export resolves imported audio from the open project root");
+    std::filesystem::remove(appCustomExportPath);
+    const auto appFirstTrackPackage =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-package";
+    std::filesystem::remove_all(appFirstTrackPackage);
+    const auto appPackageExport = appSession.exportFirstTrackPackage(appFirstTrackPackage);
+    const auto appPackageVerification = appSession.verifyFirstTrackPackage(appFirstTrackPackage);
+    std::ifstream appPackageManifestFile{appPackageExport.manifestPath};
+    const std::string appPackageManifestJson{std::istreambuf_iterator<char>{appPackageManifestFile},
+                                             std::istreambuf_iterator<char>{}};
+    require(
+        appPackageExport.outputDirectory == appFirstTrackPackage &&
+            appPackageVerification.packageDirectory == appFirstTrackPackage &&
+            appPackageVerification.manifestPath == appPackageExport.manifestPath &&
+            appPackageVerification.projectName == "App First Track" &&
+            appPackageVerification.renderFrames == 192000 &&
+            appPackageVerification.loopFrames == appSession.status().loopFrames &&
+            appPackageVerification.stemCount == 4 && appPackageVerification.trackCount == 5 &&
+            appPackageVerification.clipCount == 5 &&
+            appPackageVerification.projectSnapshotPath ==
+                appFirstTrackPackage / "project" / "project.json" &&
+            appPackageVerification.projectAssetCount == 2 &&
+            appPackageVerification.recordedTakeCount == 1 &&
+            appPackageVerification.importedAudioClipCount == 2 &&
+            appPackageVerification.projectSnapshotVerified &&
+            appPackageExport.manifestPath == appFirstTrackPackage / "first-track-package.json" &&
+            appPackageExport.mix.frames == 192000 &&
+            appPackageExport.loop.frames == appSession.status().loopFrames &&
+            appPackageExport.mix.peakAfterNormalization > 0.0F &&
+            appPackageExport.loop.peakAfterNormalization > 0.0F &&
+            std::filesystem::exists(appPackageExport.manifestPath) &&
+            std::filesystem::exists(appFirstTrackPackage / "project" / "project.json") &&
+            std::filesystem::exists(appFirstTrackPackage / "project" / "Assets" /
+                                    (appRecording.assetId + ".wav")) &&
+            std::filesystem::exists(appFirstTrackPackage / "project" / "Assets" /
+                                    (appImport.assetId + ".wav")) &&
+            !std::filesystem::exists(appFirstTrackPackage / "project" / "project.json.tmp") &&
+            !std::filesystem::exists(appFirstTrackPackage / "first-track-package.json.tmp") &&
+            appPackageManifestJson.find("\"kind\": \"lamusica.firstTrackPackage\"") !=
+                std::string::npos &&
+            appPackageManifestJson.find("\"projectName\": \"App First Track\"") !=
+                std::string::npos &&
+            appPackageManifestJson.find("\"projectSnapshotPath\": \"project/project.json\"") !=
+                std::string::npos &&
+            appPackageManifestJson.find("\"projectAssetCount\": 2") != std::string::npos &&
+            appPackageManifestJson.find("\"projectAssets\": [") != std::string::npos &&
+            appPackageManifestJson.find("\"id\": \"" + appRecording.assetId + "\"") !=
+                std::string::npos &&
+            appPackageManifestJson.find("\"id\": \"" + appImport.assetId + "\"") !=
+                std::string::npos &&
+            appPackageManifestJson.find("\"path\": \"first-track-mix.wav\"") != std::string::npos &&
+            appPackageManifestJson.find("\"path\": \"first-track-intro-loop.wav\"") !=
+                std::string::npos &&
+            appPackageManifestJson.find("\"path\": \"stems/drums.wav\"") != std::string::npos &&
+            appPackageManifestJson.find("\"checksum\": \"fnv1a64:") != std::string::npos &&
+            appPackageManifestJson.find("\"recordedTakeCount\": 1") != std::string::npos &&
+            appPackageManifestJson.find("\"importedAudioClipCount\": 2") != std::string::npos &&
+            appPackageManifestJson.find("\"trackId\": \"imported-audio\"") != std::string::npos &&
+            std::filesystem::exists(appPackageExport.mix.outputPath) &&
+            std::filesystem::exists(appPackageExport.loop.outputPath) &&
+            appPackageExport.stems.size() == 4 &&
+            std::ranges::all_of(appPackageExport.stems,
+                                [&appSession](const lamusica::session::StemExportResult& stem) {
+                                    return stem.bounce.frames == appSession.status().renderFrames &&
+                                           stem.bounce.peakAfterNormalization > 0.0F &&
+                                           std::filesystem::exists(stem.bounce.outputPath);
+                                }) &&
+            appSession.status().lastPackageExportDirectory == appFirstTrackPackage &&
+            appSession.status().lastPackageManifestPath == appPackageExport.manifestPath &&
+            appSession.status().lastPackageVerified &&
+            appSession.status().lastPackageVerifiedDirectory == appFirstTrackPackage &&
+            appSession.status().lastPackageMixFrames == 192000 &&
+            appSession.status().lastPackageLoopFrames == appSession.status().loopFrames &&
+            appSession.status().lastPackageStemCount == 4,
+        "application shell exports a complete first-track handoff package with a manifest");
+    const auto movedAppFirstTrackPackage =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-package-moved";
+    std::filesystem::remove_all(movedAppFirstTrackPackage);
+    std::filesystem::copy(appFirstTrackPackage, movedAppFirstTrackPackage,
+                          std::filesystem::copy_options::recursive);
+    const auto inconsistentAppFirstTrackPackage =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-package-inconsistent";
+    std::filesystem::remove_all(inconsistentAppFirstTrackPackage);
+    std::filesystem::copy(appFirstTrackPackage, inconsistentAppFirstTrackPackage,
+                          std::filesystem::copy_options::recursive);
+    const auto unsafeAppFirstTrackPackage =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-package-unsafe";
+    std::filesystem::remove_all(unsafeAppFirstTrackPackage);
+    std::filesystem::copy(appFirstTrackPackage, unsafeAppFirstTrackPackage,
+                          std::filesystem::copy_options::recursive);
+    const auto missingSnapshotAssetPackage =
+        std::filesystem::temp_directory_path() /
+        "lamusica-app-first-track-package-missing-snapshot-asset";
+    std::filesystem::remove_all(missingSnapshotAssetPackage);
+    std::filesystem::copy(appFirstTrackPackage, missingSnapshotAssetPackage,
+                          std::filesystem::copy_options::recursive);
+    const auto inconsistentRecordedCountPackage =
+        std::filesystem::temp_directory_path() /
+        "lamusica-app-first-track-package-inconsistent-recorded-count";
+    std::filesystem::remove_all(inconsistentRecordedCountPackage);
+    std::filesystem::copy(appFirstTrackPackage, inconsistentRecordedCountPackage,
+                          std::filesystem::copy_options::recursive);
+    const auto inconsistentImportCountPackage =
+        std::filesystem::temp_directory_path() /
+        "lamusica-app-first-track-package-inconsistent-import-count";
+    std::filesystem::remove_all(inconsistentImportCountPackage);
+    std::filesystem::copy(appFirstTrackPackage, inconsistentImportCountPackage,
+                          std::filesystem::copy_options::recursive);
+    const auto tamperedSnapshotAssetPackage =
+        std::filesystem::temp_directory_path() /
+        "lamusica-app-first-track-package-tampered-snapshot-asset";
+    std::filesystem::remove_all(tamperedSnapshotAssetPackage);
+    std::filesystem::copy(appFirstTrackPackage, tamperedSnapshotAssetPackage,
+                          std::filesystem::copy_options::recursive);
+    const auto tamperedAppFirstTrackPackage =
+        std::filesystem::temp_directory_path() / "lamusica-app-first-track-package-tampered";
+    std::filesystem::remove_all(tamperedAppFirstTrackPackage);
+    std::filesystem::copy(appFirstTrackPackage, tamperedAppFirstTrackPackage,
+                          std::filesystem::copy_options::recursive);
+    std::filesystem::remove_all(appFirstTrackPackage);
+    const auto movedAppPackageVerification =
+        appSession.verifyFirstTrackPackage(movedAppFirstTrackPackage);
+    require(movedAppPackageVerification.packageDirectory == movedAppFirstTrackPackage &&
+                movedAppPackageVerification.projectName == "App First Track" &&
+                movedAppPackageVerification.renderFrames == 192000 &&
+                movedAppPackageVerification.loopFrames == appSession.status().loopFrames &&
+                movedAppPackageVerification.stemCount == 4 &&
+                movedAppPackageVerification.trackCount == 5 &&
+                movedAppPackageVerification.clipCount == 5 &&
+                movedAppPackageVerification.projectSnapshotVerified &&
+                movedAppPackageVerification.projectAssetCount == 2 &&
+                movedAppPackageVerification.recordedTakeCount == 1 &&
+                movedAppPackageVerification.importedAudioClipCount == 2 &&
+                appSession.status().lastPackageVerifiedDirectory == movedAppFirstTrackPackage,
+            "application shell verifies a first-track package after moving the handoff folder");
+    std::filesystem::remove_all(movedAppFirstTrackPackage);
+
+    writeTextFile(inconsistentAppFirstTrackPackage / "first-track-package.json",
+                  replaceFirst(appPackageManifestJson, "\"renderFrames\": 192000",
+                               "\"renderFrames\": 191999"));
+    bool rejectedInconsistentPackage = false;
+    try {
+        (void)appSession.verifyFirstTrackPackage(inconsistentAppFirstTrackPackage);
+    } catch (const std::exception&) {
+        rejectedInconsistentPackage = true;
+    }
+    require(rejectedInconsistentPackage,
+            "application shell rejects first-track packages with inconsistent render frames");
+    std::filesystem::remove_all(inconsistentAppFirstTrackPackage);
+
+    writeTextFile(unsafeAppFirstTrackPackage / "first-track-package.json",
+                  replaceFirst(appPackageManifestJson, "\"path\": \"first-track-mix.wav\"",
+                               "\"path\": \"../first-track-mix.wav\""));
+    bool rejectedUnsafePackage = false;
+    try {
+        (void)appSession.verifyFirstTrackPackage(unsafeAppFirstTrackPackage);
+    } catch (const std::exception&) {
+        rejectedUnsafePackage = true;
+    }
+    require(rejectedUnsafePackage,
+            "application shell rejects first-track packages with unsafe relative audio paths");
+    std::filesystem::remove_all(unsafeAppFirstTrackPackage);
+
+    std::filesystem::remove(missingSnapshotAssetPackage / "project" / "Assets" /
+                            (appImport.assetId + ".wav"));
+    bool rejectedMissingSnapshotAsset = false;
+    try {
+        (void)appSession.verifyFirstTrackPackage(missingSnapshotAssetPackage);
+    } catch (const std::exception&) {
+        rejectedMissingSnapshotAsset = true;
+    }
+    require(rejectedMissingSnapshotAsset,
+            "application shell rejects first-track packages with missing project snapshot assets");
+    std::filesystem::remove_all(missingSnapshotAssetPackage);
+
+    writeTextFile(inconsistentRecordedCountPackage / "first-track-package.json",
+                  replaceFirst(appPackageManifestJson, "\"recordedTakeCount\": 1",
+                               "\"recordedTakeCount\": 0"));
+    bool rejectedRecordedCountMismatch = false;
+    try {
+        (void)appSession.verifyFirstTrackPackage(inconsistentRecordedCountPackage);
+    } catch (const std::exception&) {
+        rejectedRecordedCountMismatch = true;
+    }
+    require(rejectedRecordedCountMismatch,
+            "application shell rejects first-track packages with mismatched recorded take counts");
+    std::filesystem::remove_all(inconsistentRecordedCountPackage);
+
+    writeTextFile(inconsistentImportCountPackage / "first-track-package.json",
+                  replaceFirst(appPackageManifestJson, "\"importedAudioClipCount\": 2",
+                               "\"importedAudioClipCount\": 0"));
+    bool rejectedImportCountMismatch = false;
+    try {
+        (void)appSession.verifyFirstTrackPackage(inconsistentImportCountPackage);
+    } catch (const std::exception&) {
+        rejectedImportCountMismatch = true;
+    }
+    require(rejectedImportCountMismatch,
+            "application shell rejects first-track packages with mismatched imported audio counts");
+    std::filesystem::remove_all(inconsistentImportCountPackage);
+
+    auto tamperedSnapshotAsset = lamusica::audio::readPcm16Wav(
+        tamperedSnapshotAssetPackage / "project" / "Assets" / (appImport.assetId + ".wav"));
+    require(!tamperedSnapshotAsset.audio.interleavedSamples.empty(),
+            "first-track package test snapshot asset contains samples");
+    tamperedSnapshotAsset.audio.interleavedSamples.front() =
+        tamperedSnapshotAsset.audio.interleavedSamples.front() == 0.25F ? 0.125F : 0.25F;
+    lamusica::audio::writePcm16Wav(tamperedSnapshotAssetPackage / "project" / "Assets" /
+                                       (appImport.assetId + ".wav"),
+                                   tamperedSnapshotAsset.audio, tamperedSnapshotAsset.sampleRate);
+    bool rejectedTamperedSnapshotAssetPackage = false;
+    try {
+        (void)appSession.verifyFirstTrackPackage(tamperedSnapshotAssetPackage);
+    } catch (const std::exception&) {
+        rejectedTamperedSnapshotAssetPackage = true;
+    }
+    require(
+        rejectedTamperedSnapshotAssetPackage,
+        "application shell rejects first-track packages with tampered snapshot asset checksums");
+    std::filesystem::remove_all(tamperedSnapshotAssetPackage);
+
+    auto tamperedMix =
+        lamusica::audio::readPcm16Wav(tamperedAppFirstTrackPackage / "first-track-mix.wav");
+    require(!tamperedMix.audio.interleavedSamples.empty(),
+            "first-track package test mix contains samples");
+    tamperedMix.audio.interleavedSamples.front() =
+        tamperedMix.audio.interleavedSamples.front() == 0.25F ? 0.125F : 0.25F;
+    lamusica::audio::writePcm16Wav(tamperedAppFirstTrackPackage / "first-track-mix.wav",
+                                   tamperedMix.audio, tamperedMix.sampleRate);
+    bool rejectedTamperedPackage = false;
+    try {
+        (void)appSession.verifyFirstTrackPackage(tamperedAppFirstTrackPackage);
+    } catch (const std::exception&) {
+        rejectedTamperedPackage = true;
+    }
+    require(rejectedTamperedPackage,
+            "application shell rejects first-track packages with tampered audio checksums");
+    std::filesystem::remove_all(tamperedAppFirstTrackPackage);
+
+    std::filesystem::remove(appImport.copiedPath);
+    appSession.openProject(appFirstTrackProject);
+    const auto missingMediaVerification = appSession.verifyFirstTrackProject();
+    const auto missingMediaRecordRoute =
+        appSession.routeMenuCommand("project.recordFirstTrackTake");
+    const auto missingMediaPackageRoute =
+        appSession.routeMenuCommand("project.exportFirstTrackPackage");
+    const auto missingMediaMixRoute = appSession.routeMenuCommand("project.exportMix");
+    const auto missingMediaLoopRoute = appSession.routeMenuCommand("project.exportLoop");
+    const auto missingMediaStemRoute = appSession.routeMenuCommand("project.exportStems");
+    const auto missingMediaRelinkRoute =
+        appSession.routeMenuCommand("project.relinkFirstTrackMedia");
+    bool rejectedMissingMediaMixExport = false;
+    try {
+        (void)appSession.exportCurrentMix(std::filesystem::temp_directory_path() /
+                                          "lamusica-missing-media-mix.wav");
+    } catch (const std::exception&) {
+        rejectedMissingMediaMixExport = true;
+    }
+    require(!appSession.status().mediaReady && !appSession.status().firstTrackReady &&
+                !appSession.status().firstTrackEditable && !missingMediaVerification.mediaReady &&
+                !missingMediaVerification.firstTrackReady &&
+                !missingMediaVerification.firstTrackEditable &&
+                missingMediaVerification.mediaError.find("Could not open WAV input file") !=
+                    std::string::npos &&
+                appSession.status().missingMediaAssetId == appImport.assetId &&
+                !missingMediaRecordRoute.enabled && !missingMediaPackageRoute.enabled &&
+                !missingMediaMixRoute.enabled && !missingMediaLoopRoute.enabled &&
+                !missingMediaStemRoute.enabled && missingMediaRelinkRoute.enabled &&
+                rejectedMissingMediaMixExport,
+            "application shell reports missing first-track media before record or export");
+    const auto relinkedMedia =
+        appSession.relinkFirstTrackAudioAsset(appImport.assetId, appImportSource);
+    const auto relinkedMediaVerification = appSession.verifyFirstTrackProject();
+    const auto relinkedMediaPackageRoute =
+        appSession.routeMenuCommand("project.exportFirstTrackPackage");
+    const auto relinkedMediaRelinkRoute =
+        appSession.routeMenuCommand("project.relinkFirstTrackMedia");
+    require(relinkedMedia.assetId == appImport.assetId && relinkedMedia.frames == 24000 &&
+                relinkedMedia.channels == 2 && std::filesystem::exists(relinkedMedia.copiedPath) &&
+                relinkedMedia.mediaReady && appSession.status().mediaReady &&
+                appSession.status().firstTrackReady && appSession.status().firstTrackEditable &&
+                appSession.status().missingMediaAssetId.empty() &&
+                relinkedMediaVerification.mediaReady && relinkedMediaVerification.firstTrackReady &&
+                relinkedMediaVerification.firstTrackEditable && relinkedMediaPackageRoute.enabled &&
+                !relinkedMediaRelinkRoute.enabled,
+            "application shell relinks missing first-track media and restores readiness");
+
+    std::filesystem::remove(appImportSource);
+    std::filesystem::remove_all(appFirstTrackPackage);
+    std::filesystem::remove_all(appFirstTrackProject);
     lamusica::session::ApplicationPreferences appPreferences{
         .audioDeviceId = "built-in-output",
         .enabledMidiInputIds = {"keyboard"},
@@ -2404,6 +3424,100 @@ int main() {
     require(playRoute.handled && playRoute.enabled &&
                 appSession.focusedPanel() == lamusica::session::ApplicationPanel::Transport,
             "application shell transport commands route to transport panel");
+    const auto unreadyImportAudioRoute = appSession.routeMenuCommand("project.importAudio");
+    const auto unreadyPackageRoute = appSession.routeMenuCommand("project.exportFirstTrackPackage");
+    const auto unreadyVerifyRoute = appSession.routeMenuCommand("project.verifyFirstTrackProject");
+    require(unreadyVerifyRoute.handled && unreadyVerifyRoute.enabled &&
+                unreadyImportAudioRoute.handled && !unreadyImportAudioRoute.enabled &&
+                unreadyPackageRoute.handled && !unreadyPackageRoute.enabled,
+            "application shell disables first-track creation commands until project is ready");
+    appSession.closeProject();
+    std::filesystem::remove_all(appShellRoutingProject);
+    const auto nonStarterIntroProject =
+        std::filesystem::temp_directory_path() / "lamusica-non-starter-intro.Project.lamusica";
+    std::filesystem::remove_all(nonStarterIntroProject);
+    lamusica::session::ProjectManifest nonStarterIntroManifest;
+    nonStarterIntroManifest.name = "Non Starter Intro";
+    nonStarterIntroManifest.markers = {
+        {.id = "intro-marker", .name = "Intro", .samplePosition = 0}};
+    nonStarterIntroManifest.tracks = {
+        {.id = "audio-track", .name = "Audio", .type = lamusica::session::TrackType::Audio}};
+    nonStarterIntroManifest.clips = {{.id = "audio-clip",
+                                      .trackId = "audio-track",
+                                      .type = lamusica::session::ClipType::Audio,
+                                      .lengthSamples = 48000}};
+    (void)lamusica::session::ProjectDocument::create(nonStarterIntroProject,
+                                                     nonStarterIntroManifest);
+    appSession.openProject(nonStarterIntroProject);
+    const auto nonStarterLoopIntroRoute = appSession.routeMenuCommand("project.loopIntro");
+    bool rejectedNonStarterIntroLoop = false;
+    try {
+        appSession.setFirstTrackLoopToIntro();
+    } catch (const std::exception&) {
+        rejectedNonStarterIntroLoop = true;
+    }
+    require(nonStarterLoopIntroRoute.handled && !nonStarterLoopIntroRoute.enabled &&
+                rejectedNonStarterIntroLoop,
+            "application shell disables first-track intro loop repair for non-starter projects");
+    appSession.closeProject();
+    std::filesystem::remove_all(nonStarterIntroProject);
+    appSession.createFirstTrackProject(appShellRoutingProject, "App Routing");
+    const auto exportMixRoute = appSession.routeMenuCommand("project.exportMix");
+    const auto exportLoopRoute = appSession.routeMenuCommand("project.exportLoop");
+    const auto exportStemsRoute = appSession.routeMenuCommand("project.exportStems");
+    const auto importAudioRoute = appSession.routeMenuCommand("project.importAudio");
+    const auto recordRoute = appSession.routeMenuCommand("project.recordFirstTrackTake");
+    const auto packageRoute = appSession.routeMenuCommand("project.exportFirstTrackPackage");
+    const auto verifyPackageRoute = appSession.routeMenuCommand("project.verifyFirstTrackPackage");
+    const auto loopIntroRoute = appSession.routeMenuCommand("project.loopIntro");
+    const auto arrangeRoute = appSession.routeMenuCommand("project.extendIntroToVerse");
+    const auto transposeRoute = appSession.routeMenuCommand("project.transposeBassUpOctave");
+    const auto mixRoute = appSession.routeMenuCommand("project.drumsGainDown");
+    const auto emptyRecordedTrackRoute =
+        appSession.routeMenuCommand("project.recordedTrackVolumeUp");
+    const auto emptyImportedTrackRoute =
+        appSession.routeMenuCommand("project.importedTrackVolumeUp");
+    const auto emptyLastTakeRoute = appSession.routeMenuCommand("project.toggleLastTakeMute");
+    const auto emptyLastImportRoute = appSession.routeMenuCommand("project.toggleLastImportMute");
+    const auto initialUndoRoute = appSession.routeMenuCommand("edit.undo");
+    const auto initialRedoRoute = appSession.routeMenuCommand("edit.redo");
+    require(exportMixRoute.handled && exportMixRoute.enabled && exportLoopRoute.handled &&
+                exportLoopRoute.enabled && exportStemsRoute.handled && exportStemsRoute.enabled &&
+                importAudioRoute.handled && importAudioRoute.enabled && recordRoute.handled &&
+                recordRoute.enabled && packageRoute.handled && packageRoute.enabled &&
+                verifyPackageRoute.handled && verifyPackageRoute.enabled &&
+                loopIntroRoute.handled && loopIntroRoute.enabled && arrangeRoute.handled &&
+                arrangeRoute.enabled && transposeRoute.handled && transposeRoute.enabled &&
+                mixRoute.handled && mixRoute.enabled && emptyRecordedTrackRoute.handled &&
+                !emptyRecordedTrackRoute.enabled && emptyImportedTrackRoute.handled &&
+                !emptyImportedTrackRoute.enabled && emptyLastTakeRoute.handled &&
+                !emptyLastTakeRoute.enabled && emptyLastImportRoute.handled &&
+                !emptyLastImportRoute.enabled && initialUndoRoute.handled &&
+                !initialUndoRoute.enabled && initialRedoRoute.handled && !initialRedoRoute.enabled,
+            "application shell routes first-track project commands when the starter is ready");
+    appSession.clearLoopRegion();
+    const auto clearedLoopExportRoute = appSession.routeMenuCommand("project.exportLoop");
+    const auto clearedPackageRoute = appSession.routeMenuCommand("project.exportFirstTrackPackage");
+    const auto restoreLoopRoute = appSession.routeMenuCommand("project.loopIntro");
+    const auto clearedImportAudioRoute = appSession.routeMenuCommand("project.importAudio");
+    const auto clearedRecordRoute = appSession.routeMenuCommand("project.recordFirstTrackTake");
+    const auto clearedArrangeRoute = appSession.routeMenuCommand("project.extendIntroToVerse");
+    const auto clearedTransposeRoute = appSession.routeMenuCommand("project.transposeBassUpOctave");
+    const auto clearedMixRoute = appSession.routeMenuCommand("project.drumsGainDown");
+    const auto clearedUndoRoute = appSession.routeMenuCommand("edit.undo");
+    require(!clearedLoopExportRoute.enabled && !clearedPackageRoute.enabled &&
+                restoreLoopRoute.enabled && clearedImportAudioRoute.enabled &&
+                clearedRecordRoute.enabled && clearedArrangeRoute.enabled &&
+                clearedTransposeRoute.enabled && clearedMixRoute.enabled &&
+                clearedUndoRoute.handled && clearedUndoRoute.enabled,
+            "application shell disables loop-dependent exports while keeping first-track edits "
+            "available");
+    const auto looplessRecording = appSession.recordFirstTrackTake(12000);
+    require(looplessRecording.committed.frames == 12000 &&
+                appSession.status().recordedTakeCount == 1 && !appSession.status().loopEnabled &&
+                appSession.status().firstTrackEditable && !appSession.status().firstTrackReady,
+            "application shell records first-track takes while the loop is cleared");
+    appSession.setFirstTrackLoopToIntro();
     bool rejectedUnsafeMcpPreferences = false;
     try {
         appSession.setPreferences({.mcpEnabled = false, .allowMcpProjectMutation = true});
@@ -4615,8 +5729,11 @@ int main() {
         .nodes = {{.id = "osc",
                    .kind = lamusica::audio::GraphNodeKind::Sine,
                    .frequencyHz = 440.0,
-                   .gain = 0.25F},
-                  {.id = "master", .kind = lamusica::audio::GraphNodeKind::Output}},
+                   .gain = 0.25F,
+                   .noteSequence = {}},
+                  {.id = "master",
+                   .kind = lamusica::audio::GraphNodeKind::Output,
+                   .noteSequence = {}}},
         .connections = {{.sourceNodeId = "osc", .destinationNodeId = "master", .gain = 1.0F}},
         .outputNodeId = "master"};
     const auto bounceResult =

@@ -64,6 +64,53 @@ float engineNodeChannelGain(const GraphNode& node, std::uint32_t channel,
     return 1.0F;
 }
 
+bool engineNodeActiveAtSample(const GraphNode& node, std::int64_t absoluteSample) noexcept {
+    return node.lengthSamples <= 0 || (absoluteSample >= node.startSample &&
+                                       absoluteSample < node.startSample + node.lengthSamples);
+}
+
+float engineClipEnvelopeGain(const GraphNode& node, std::int64_t relativeSample) noexcept {
+    float gain = 1.0F;
+    if (node.fadeInSamples > 0 && relativeSample < node.fadeInSamples) {
+        gain *= static_cast<float>(relativeSample) / static_cast<float>(node.fadeInSamples);
+    }
+    if (node.fadeOutSamples > 0 && node.lengthSamples > 0) {
+        const auto samplesUntilEnd = node.lengthSamples - relativeSample;
+        if (samplesUntilEnd < node.fadeOutSamples) {
+            gain *= std::max(0.0F, static_cast<float>(samplesUntilEnd) /
+                                       static_cast<float>(node.fadeOutSamples));
+        }
+    }
+    return gain;
+}
+
+float engineSampleNodeValue(const GraphNode& node, std::int64_t absoluteSample,
+                            std::uint32_t channel) noexcept {
+    if (node.sampleChannels == 0 || node.sampleFrames == 0 || node.samples.empty() ||
+        !engineNodeActiveAtSample(node, absoluteSample)) {
+        return 0.0F;
+    }
+
+    const auto relativeSample = absoluteSample - node.startSample;
+    auto sourceFrame = node.sourceOffsetSamples + relativeSample;
+    if (node.reversed) {
+        sourceFrame = node.sourceOffsetSamples + (node.lengthSamples - 1 - relativeSample);
+    }
+    if (sourceFrame < 0 || sourceFrame >= static_cast<std::int64_t>(node.sampleFrames)) {
+        return 0.0F;
+    }
+
+    const auto sourceChannel =
+        std::min<std::uint32_t>(channel, node.sampleChannels == 1 ? 0 : node.sampleChannels - 1);
+    const auto index =
+        static_cast<std::size_t>(sourceFrame) * static_cast<std::size_t>(node.sampleChannels) +
+        static_cast<std::size_t>(sourceChannel);
+    if (index >= node.samples.size()) {
+        return 0.0F;
+    }
+    return node.samples[index] * engineClipEnvelopeGain(node, relativeSample) * node.gain;
+}
+
 std::size_t graphNodeIndex(const AudioGraph& graph, std::string_view nodeId) noexcept {
     for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
         if (graph.nodes[index].id == nodeId) {
@@ -422,13 +469,42 @@ void AudioEngine::renderGraphBlock(const AudioGraph& graph, std::span<float> int
             for (std::uint32_t frame = 0; frame < frames; ++frame) {
                 const auto absoluteSample =
                     transport_.samplePosition + static_cast<std::int64_t>(frame);
-                const auto value =
-                    static_cast<float>(std::sin((static_cast<double>(absoluteSample) *
-                                                 node.frequencyHz * 2.0 * std::numbers::pi) /
-                                                config_.sampleRate) *
-                                       node.gain);
+                float value = 0.0F;
+                if (!engineNodeActiveAtSample(node, absoluteSample)) {
+                    value = 0.0F;
+                } else if (node.noteSequence.empty()) {
+                    const auto relativeSample = absoluteSample - node.startSample;
+                    value = static_cast<float>(
+                        std::sin((static_cast<double>(relativeSample) * node.frequencyHz * 2.0 *
+                                  std::numbers::pi) /
+                                 config_.sampleRate) *
+                        node.gain * engineClipEnvelopeGain(node, relativeSample));
+                } else {
+                    for (const auto& note : node.noteSequence) {
+                        if (absoluteSample < note.startSample ||
+                            absoluteSample >= note.startSample + note.lengthSamples) {
+                            continue;
+                        }
+                        const auto noteSample = absoluteSample - note.startSample;
+                        value += static_cast<float>(
+                                     std::sin((static_cast<double>(noteSample) * note.frequencyHz *
+                                               2.0 * std::numbers::pi) /
+                                              config_.sampleRate) *
+                                     note.velocity) *
+                                 node.gain;
+                    }
+                }
                 for (std::uint32_t channel = 0; channel < config_.outputChannels; ++channel) {
                     buffer[sampleCount(frame, config_.outputChannels) + channel] += value;
+                }
+            }
+        } else if (node.kind == GraphNodeKind::Sample) {
+            for (std::uint32_t frame = 0; frame < frames; ++frame) {
+                const auto absoluteSample =
+                    transport_.samplePosition + static_cast<std::int64_t>(frame);
+                for (std::uint32_t channel = 0; channel < config_.outputChannels; ++channel) {
+                    buffer[sampleCount(frame, config_.outputChannels) + channel] +=
+                        engineSampleNodeValue(node, absoluteSample, channel);
                 }
             }
         }

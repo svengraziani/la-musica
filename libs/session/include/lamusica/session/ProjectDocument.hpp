@@ -20,6 +20,7 @@ class ProjectDocument {
 
     [[nodiscard]] const Project& project() const noexcept;
     [[nodiscard]] const ProjectManifest& manifest() const noexcept;
+    [[nodiscard]] ProjectManifest& mutableManifest() noexcept;
     [[nodiscard]] const std::filesystem::path& path() const noexcept;
     [[nodiscard]] bool isOpen() const noexcept;
 

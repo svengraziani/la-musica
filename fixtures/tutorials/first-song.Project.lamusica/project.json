@@ -1,6 +1,9 @@
 {
   "schemaVersion": 1,
   "name": "First Song Tutorial",
+  "loopEnabled": true,
+  "loopStartSample": 0,
+  "loopEndSample": 96000,
   "tempoMap": [
     {"samplePosition": 0, "bpm": 120}
   ],
@@ -48,13 +51,89 @@
     }
   ],
   "midiClips": [
-    {"clipId": "bass-pattern", "dataId": "tutorial-bass-midi"}
+    {"clipId": "bass-pattern", "dataId": "starter-bass-midi"}
   ],
   "routing": [
     {"sourceTrackId": "drums", "destinationTrackId": "master"},
     {"sourceTrackId": "bass", "destinationTrackId": "master"}
   ],
-  "plugins": [],
-  "automation": [],
+  "plugins": [
+    {
+      "id": "drum-starter-sampler",
+      "trackId": "drums",
+      "format": "built_in",
+      "identifier": "lamusica.devices.drum-starter"
+    },
+    {
+      "id": "bass-starter-synth",
+      "trackId": "bass",
+      "format": "built_in",
+      "identifier": "lamusica.devices.bass-starter"
+    },
+    {
+      "id": "master-starter-limiter",
+      "trackId": "master",
+      "format": "built_in",
+      "identifier": "lamusica.devices.clean-limiter"
+    }
+  ],
+  "automation": [
+    {
+      "id": "drums-volume-automation",
+      "targetKind": "mixer",
+      "targetId": "drums",
+      "parameterId": "volumeDb",
+      "mode": "read",
+      "defaultValue": -9,
+      "regions": [
+        {
+          "startSample": 0,
+          "endSample": 96000,
+          "points": [
+            {"samplePosition": 0, "value": -12, "curveToNext": "linear"},
+            {"samplePosition": 24000, "value": -9, "curveToNext": "linear"},
+            {"samplePosition": 96000, "value": -8, "curveToNext": "linear"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bass-filter-automation",
+      "targetKind": "plugin",
+      "targetId": "bass-starter-synth",
+      "parameterId": "filterCutoff",
+      "mode": "read",
+      "defaultValue": 0.35,
+      "regions": [
+        {
+          "startSample": 0,
+          "endSample": 96000,
+          "points": [
+            {"samplePosition": 0, "value": 0.25, "curveToNext": "linear"},
+            {"samplePosition": 48000, "value": 0.45, "curveToNext": "linear"},
+            {"samplePosition": 96000, "value": 0.6, "curveToNext": "linear"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "master-limiter-threshold",
+      "targetKind": "plugin",
+      "targetId": "master-starter-limiter",
+      "parameterId": "thresholdDb",
+      "mode": "read",
+      "defaultValue": -1,
+      "regions": [
+        {
+          "startSample": 0,
+          "endSample": 96000,
+          "points": [
+            {"samplePosition": 0, "value": -1, "curveToNext": "linear"},
+            {"samplePosition": 96000, "value": -1, "curveToNext": "linear"}
+          ]
+        }
+      ]
+    }
+  ],
   "mcpAuditLog": []
 }

@@ -7,6 +7,9 @@ LaMusica release artifacts are produced from the `release` preset.
 ```sh
 cmake --preset release
 cmake --build --preset release
+ctest --preset release
+ctest --preset release -R first_track
+ctest --preset release -R lamusica_daw_app_session_preferences_first_track_smoke
 cpack --config build/unix-release/CPackConfig.cmake
 ```
 
@@ -49,6 +52,7 @@ Verify redistributable examples before publishing a package:
 ```sh
 build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/examples
 build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/tutorials
+build/unix-release/tools/cli/lamusica_cli verify-first-track-project fixtures/tutorials/first-song.Project.lamusica
 ```
 
 ## Sign

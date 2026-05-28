@@ -70,6 +70,16 @@
       }
     },
     {
+      "name": "release",
+      "configurePreset": "release",
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
       "name": "asan",
       "configurePreset": "asan",
       "execution": {

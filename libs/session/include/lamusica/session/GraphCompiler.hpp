@@ -4,6 +4,7 @@
 #include "lamusica/session/Mixer.hpp"
 #include "lamusica/session/ProjectManifest.hpp"
 
+#include <filesystem>
 #include <string>
 
 namespace lamusica::session {
@@ -11,6 +12,8 @@ namespace lamusica::session {
 struct GraphCompileOptions {
     bool includeMutedClips{false};
     bool synthesizeMissingMaster{true};
+    bool synthesizeAssetBackedClipsWithoutProjectRoot{false};
+    std::filesystem::path projectRoot;
 };
 
 struct MixerGraphUpdatePlan {

@@ -16,9 +16,9 @@ Install signed public releases from the LaMusica disk image by dragging `LaMusic
 `/Applications`. The app should launch from Finder without Xcode, CMake, or other developer tools.
 Unsigned nightly archives are contributor artifacts and may require local security approval.
 
-Packaged command-line tools live beside the app distribution and can validate projects or check MCP
-daemon health. Example and tutorial projects shipped with the package use generated or empty media
-references so they can open without external sample packs.
+Packaged command-line tools live beside the app distribution and can validate projects, verify
+first-track readiness, or check MCP daemon health. Example and tutorial projects shipped with the
+package use generated or empty media references so they can open without external sample packs.
 
 ## Recording
 
@@ -36,10 +36,107 @@ guess.
 
 The native shell keeps preferences for the selected audio device, enabled MIDI inputs, plugin
 search paths, MCP availability and mutation scope, keyboard shortcuts, user-folder scanning privacy,
-and diagnostics sharing. MCP project mutation cannot be enabled unless MCP itself is enabled.
+and diagnostics sharing. The Preferences window reflects the current session preference state across
+Audio, MIDI, Plugins, MCP, Shortcuts, and Privacy tabs. MCP project mutation cannot be enabled
+unless MCP itself is enabled.
 Menu commands route through the focused primary panel: Browser, Timeline, Inspector, Mixer, or
 Transport. View commands move focus to their target panel, project commands require an open project,
-and transport commands focus the transport area before toggling playback state.
+transport commands focus the transport area before toggling playback state, and first-track export,
+recording, import, transpose, and starter-mix commands are only enabled once the open project passes
+the first-track readiness checks. Focused first-track take, import, and collected-track mixer
+commands are also routed through the session layer so shortcuts and menu validation share the same
+enabled-state rules as the native menus.
+New Project creates a reusable first-track starter session with generated drums, generated bass, a
+master track, section markers, clips, routing, built-in starter devices, MIDI clip references, and
+automation lanes, so the first saved project can be rendered without external assets.
+The starter MIDI reference resolves to an eight-note C-minor bass phrase for the generated bass
+track, giving the first project concrete editable musical material rather than an empty MIDI slot.
+Readiness reports include tempo, meter, section names, section positions, and track-role counts, so
+smoke checks verify the starter session is musically shaped, not just structurally present.
+The bundled first-song tutorial project uses the same starter devices and automation lanes as New
+Project, so examples and newly created sessions exercise the same first-track path.
+The native shell surfaces that readiness in its transport, browser, timeline, inspector, and mixer
+panels after creating or opening a project, and the Project menu can export the current open mix to
+a WAV file from the same session layer.
+The Project menu also includes first-track bass transpose commands, which save a persisted MIDI
+reference transform and update the generated bass render without changing the clip timing.
+Starter mix commands adjust the generated drum and bass clip gains in 3 dB steps. The Project menu
+also exposes first-track track-mix commands for generated drums, generated bass, recorded takes, and
+imported audio track volume, pan, mute, and solo state. First-track track mix edits persist for
+generated and collected tracks, and both edit types feed the same compiled graph used by export.
+Undo and Redo are available for first-track session edits such as gain changes, bass transpose, loop
+changes, verse extension, recorded-take placement, and imported-audio placement.
+The starter project also saves an enabled loop over the first-track arrangement, with menu commands
+to restore the Intro loop and export only the current loop region.
+Transport play, stop, seek, playhead, and loop-wrap state are owned by the session layer, so the
+first-track starter can be auditioned through the same compiled mix graph used for export.
+The first-track arrangement can also extend the Intro material into a Verse section, repeating the
+starter bass phrase across the longer render while keeping the intro loop available for focused
+practice and loop export.
+First-track recording creates a project-local WAV asset, adds a Recorded Takes audio track when
+needed, places the take as an audio clip, and saves the project so the first session can move from
+generated starter material to captured audio.
+Reopened projects restore the latest recorded take and imported clip targets, so focused menu edits
+remain available after closing and reopening a first-track session.
+Before committing a take, LaMusica can prepare a first-track recording plan with the target timeline
+start, frame count, count-in length, preroll start, and punch range metadata. The native Record command
+uses the loop start when a loop is enabled and otherwise records at the playhead. The command-line
+recording command can commit the same planned start, count-in, and punch in/out range that the
+planning command previews.
+First-track clips can be listed with their clip id, track, type, timeline position, fade, gain,
+mute, reverse, source offset, asset id, media path, and media availability. Recorded first-track
+takes have a focused listing with their clip id, asset id, timeline start, frame count, mute state,
+media path, and media availability. Muting a take is nondestructive, participates in Undo/Redo, and
+removes that take from the render graph without deleting the underlying WAV.
+Any first-track clip can also be muted nondestructively, including starter clips and imported audio,
+so arrangement ideas can be A/B checked without deleting material.
+Clip fades are also nondestructive first-track edits, so recorded and imported clips can have their
+fade-in and fade-out sample lengths adjusted to smooth take boundaries before export.
+Clip reverse is a nondestructive first-track edit as well, allowing recorded or imported clips to
+play backward for transitions and texture while keeping the original media unchanged.
+Clip timing edits are nondestructive too: recorded and imported clips can be moved on the timeline,
+trimmed to a shorter visible length, or given a source offset while the project keeps the original
+WAV asset intact.
+Clip duplication is also available for first-track arranging, including duplicated starter MIDI
+references, recorded takes, and imported audio clips, so repeated hooks or phrases can be built
+without re-recording or copying media files.
+Unwanted first-track clips can be removed nondestructively as timeline edits. Removing a MIDI clip
+also removes its MIDI data reference, while referenced WAV assets stay in project media for undo or
+later reuse.
+First-track audio import accepts PCM16 WAV files, copies the source into the project `Assets`
+folder, adds an Imported Audio track when needed, places the imported clip on the timeline, and
+renders that clip through mix, stem, and package exports. The Project menu exposes Import Audio so
+the selected WAV lands at the current playhead in the first-track session. It also includes focused
+last-import actions for fades, mute toggle, reverse toggle, trim-to-loop,
+duplicate-at-playhead, and remove.
+First-track stem export writes separate generated drum and bass WAV files for handoff, remixing, or
+checking the mix outside the app.
+First-track package export writes the full mix, the intro loop, all starter stems, and a portable
+project snapshot with copied project-local assets into one handoff folder, along with a package
+manifest that records project metadata, render lengths, loop range, stems, imported audio, and
+recorded takes so the first session can be checked or shared without repeating separate exports.
+Package manifests use paths relative to the handoff folder, so a verified folder can be moved as a
+unit. The command-line tools can export and verify that handoff folder with
+`lamusica_cli export-first-track-package` and `lamusica_cli verify-first-track-package`; package
+verification reports the embedded project snapshot, copied project asset count, recorded take count,
+and imported audio count after checking them against the snapshot, including checksums for copied
+project-local assets.
+The Project menu can also verify that the open project is first-track ready, verify a first-track
+package folder, and surface the verified package state in the mixer panel after checking the
+manifest, its render lengths and stem counts, and the referenced WAV files, including per-file
+checksums when present.
+Verification distinguishes editable starter sessions from package-ready sessions: if the intro loop
+is cleared, recording, import, arrangement, transpose, and starter-mix actions remain available, and
+restoring the Intro loop makes loop and package export ready again.
+Verification also checks project-local audio referenced by recorded or imported clips; missing WAV
+files mark the session as not media-ready and disable first-track record/package actions until the
+media is restored. A missing first-track WAV can be relinked from a valid PCM16 WAV source, which
+copies the replacement back into the project bundle and restores readiness when all referenced media
+is present again.
+The DAW executable also supports noninteractive first-track smoke workflows for release checks:
+`lamusica_daw --create-first-track MyFirstTrack.Project.lamusica "My First Track"` followed by
+`lamusica_daw --inspect-project MyFirstTrack.Project.lamusica` and
+`lamusica_daw --render-project MyFirstTrack.Project.lamusica first-track.wav`.
 
 ## Editing
 
@@ -150,6 +247,27 @@ kits, templates, and recent files so project-local and explicitly granted source
 ## Current Command-Line Workflows
 
 - Validate a project: `lamusica_cli validate fixtures/empty.Project.lamusica`
+- Verify first-track readiness: `lamusica_cli verify-first-track-project MyFirstTrack.Project.lamusica`
+  prints the starter structure, render, loop, and missing-requirement counts. When verification
+  fails, it also lists the missing requirement ids to repair before recording or packaging.
+- Create a starter track: `lamusica_cli create-first-track MyFirstTrack.Project.lamusica "My First Track"`
+- List editable first-track clips: `lamusica_cli list-first-track-clips MyFirstTrack.Project.lamusica`
+- Edit the starter: `lamusica_cli transpose-first-track-bass MyFirstTrack.Project.lamusica 12`,
+  `lamusica_cli set-first-track-clip-gain MyFirstTrack.Project.lamusica drum-loop -18`,
+  `lamusica_cli set-first-track-track-mix MyFirstTrack.Project.lamusica drums -12 0.25 false false`,
+  `lamusica_cli set-first-track-loop-intro MyFirstTrack.Project.lamusica`, and
+  `lamusica_cli extend-first-track-verse MyFirstTrack.Project.lamusica`
+- List first-track track mix: `lamusica_cli list-first-track-track-mix MyFirstTrack.Project.lamusica`
+- Capture or collect audio:
+  `lamusica_cli record-first-track-take MyFirstTrack.Project.lamusica 48000` and
+  `lamusica_cli import-first-track-audio MyFirstTrack.Project.lamusica vocal.wav 48000`
+- Punch-record a section:
+  `lamusica_cli record-first-track-take MyFirstTrack.Project.lamusica 48000 0 2 48000 96000`
+- Repair missing first-track media:
+  `lamusica_cli relink-first-track-audio MyFirstTrack.Project.lamusica imported-audio-1 vocal.wav`
+- Render an arrangement: `lamusica_cli render-project fixtures/tutorials/first-song.Project.lamusica first-song.wav`
+- Export a first-track handoff folder: `lamusica_cli export-first-track-package MyFirstTrack.Project.lamusica first-track-package`
+- Verify a first-track handoff folder: `lamusica_cli verify-first-track-package first-track-package`
 - Render a test tone: `lamusica_cli render-test-tone /tmp/lamusica-test-tone.wav`
 - Check daemon health: `lamusica_mcpd`
 

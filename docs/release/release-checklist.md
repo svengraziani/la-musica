@@ -4,13 +4,20 @@
 
 - Configure: `cmake --preset release`
 - Build: `cmake --build --preset release`
-- Test: `ctest --preset debug`
+- Test debug: `ctest --preset debug`
+- Test release: `ctest --preset release`
 - Formatting: `find apps libs tools tests \( -name '*.cpp' -o -name '*.hpp' -o -name '*.mm' \) -exec xcrun clang-format --dry-run --Werror {} +`
 - Package: `cpack --config build/unix-release/CPackConfig.cmake`
 - Headless package verification: `cpack -G TGZ --config build/unix-release/CPackConfig.cmake`
 - Package contents: `cmake -DPACKAGE=LaMusica-0.1.0-Darwin.tar.gz -P cmake/VerifyPackage.cmake`
 - Example verification: `build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/examples`
 - Tutorial verification: `build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/tutorials`
+- Full CTest gate: confirm debug and release each report 82/82 tests passing.
+- First-track readiness: `ctest --preset release -R first_track`
+- First-track preferences gate:
+  `ctest --preset release -R lamusica_daw_app_session_preferences_first_track_smoke`
+- First-track CLI workflow:
+  `ctest --preset release -R 'lamusica_cli_.*edit_first_track|lamusica_cli_verify_edit_first_track_package'`
 
 ## macOS Packaging
 
@@ -33,6 +40,7 @@
 - Include only redistributable assets.
 - Verify example projects load without missing assets: `lamusica_cli verify-examples fixtures/examples`.
 - Verify tutorial projects load without missing assets: `lamusica_cli verify-examples fixtures/tutorials`.
+- Verify the first-track tutorial is ready: `lamusica_cli verify-first-track-project fixtures/tutorials/first-song.Project.lamusica`.
 - Keep generated caches out of source distributions.
 
 ## MCP

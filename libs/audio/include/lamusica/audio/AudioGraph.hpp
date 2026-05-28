@@ -12,8 +12,16 @@ namespace lamusica::audio {
 enum class GraphNodeKind {
     Silence,
     Sine,
+    Sample,
     Bus,
     Output,
+};
+
+struct GraphNote {
+    std::int64_t startSample{0};
+    std::int64_t lengthSamples{0};
+    double frequencyHz{440.0};
+    float velocity{1.0F};
 };
 
 struct GraphNode {
@@ -23,6 +31,16 @@ struct GraphNode {
     float gain{1.0F};
     float pan{0.0F};
     bool phaseInverted{false};
+    std::int64_t startSample{0};
+    std::int64_t lengthSamples{0};
+    std::int64_t sourceOffsetSamples{0};
+    std::int64_t fadeInSamples{0};
+    std::int64_t fadeOutSamples{0};
+    bool reversed{false};
+    std::uint32_t sampleChannels{0};
+    std::uint32_t sampleFrames{0};
+    std::vector<float> samples;
+    std::vector<GraphNote> noteSequence;
 };
 
 struct GraphConnection {
