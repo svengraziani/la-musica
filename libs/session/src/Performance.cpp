@@ -1,6 +1,7 @@
 #include "lamusica/session/Performance.hpp"
 
 #include "lamusica/audio/AudioEngine.hpp"
+#include "lamusica/audio/AudioGraph.hpp"
 #include "lamusica/session/GraphCompiler.hpp"
 
 #include <algorithm>
@@ -104,6 +105,17 @@ template <typename Function> double elapsedMilliseconds(Function&& function) {
     function();
     const auto finished = std::chrono::steady_clock::now();
     return std::chrono::duration<double, std::milli>{finished - started}.count();
+}
+
+std::size_t callbackSampleCount(std::uint32_t frames, std::uint32_t channels) noexcept {
+    return static_cast<std::size_t>(frames) * static_cast<std::size_t>(channels);
+}
+
+double blockDeadlineMilliseconds(std::uint32_t frames, double sampleRate) noexcept {
+    if (frames == 0U || sampleRate <= 0.0) {
+        return 0.0;
+    }
+    return (static_cast<double>(frames) / sampleRate) * 1000.0;
 }
 
 } // namespace
@@ -238,6 +250,28 @@ RealtimeSafetyReport validateRealtimeCallbackPolicy(std::span<const std::string>
     return report;
 }
 
+RealtimeCallbackAudit auditRealtimeGraphCallback(const audio::AudioGraph& graph,
+                                                 audio::EngineConfig config, std::uint32_t frames) {
+    RealtimeCallbackAudit audit;
+    audit.frames = frames;
+    audit.operations = {"realtime_command_queue", "bounded_graph_schedule",
+                        "preallocated_audio_buffers"};
+    audit.policy = validateRealtimeCallbackPolicy(audit.operations);
+
+    audio::AudioEngine engine{config};
+    std::vector<float> output(callbackSampleCount(frames, config.outputChannels));
+    const auto startPosition = engine.transport().samplePosition;
+    (void)engine.enqueueCommand({.type = audio::RealtimeCommandType::Play});
+    audit.callbackMilliseconds =
+        elapsedMilliseconds([&] { engine.renderGraphBlock(graph, output, frames); });
+    audit.callbackCompleted = true;
+    audit.transportAdvanced =
+        engine.transport().samplePosition == startPosition + static_cast<std::int64_t>(frames);
+    audit.withinBlockDeadline =
+        audit.callbackMilliseconds <= blockDeadlineMilliseconds(frames, config.sampleRate);
+    return audit;
+}
+
 std::size_t estimateStressProjectMemoryBytes(const StressProjectFixture& fixture) {
     const auto& manifest = fixture.manifest;
     std::size_t bytes = sizeof(ProjectManifest);
@@ -284,9 +318,12 @@ std::size_t estimateStressProjectDiskBytes(const StressProjectFixture& fixture) 
 
 bool thresholdsArePositive(BenchmarkThresholds thresholds) noexcept {
     return thresholds.maxStartupMilliseconds > 0.0 && thresholds.maxPluginScanMilliseconds > 0.0 &&
-           thresholds.maxCpuWorkMilliseconds > 0.0 && thresholds.maxSaveLoadMilliseconds > 0.0 &&
-           thresholds.maxQueryMilliseconds > 0.0 && thresholds.maxRenderRealtimeFactor > 0.0 &&
-           thresholds.maxEstimatedMemoryBytes > 0U && thresholds.maxEstimatedDiskBytes > 0U;
+           thresholds.maxCpuWorkMilliseconds > 0.0 && thresholds.maxEditMilliseconds > 0.0 &&
+           thresholds.maxSaveLoadMilliseconds > 0.0 && thresholds.maxQueryMilliseconds > 0.0 &&
+           thresholds.maxMcpQueryMilliseconds > 0.0 &&
+           thresholds.maxRealtimeCallbackMilliseconds > 0.0 &&
+           thresholds.maxRenderRealtimeFactor > 0.0 && thresholds.maxEstimatedMemoryBytes > 0U &&
+           thresholds.maxEstimatedDiskBytes > 0U;
 }
 
 MachineContext currentMachineContext() {
@@ -318,11 +355,21 @@ BenchmarkReport evaluateBenchmarkResult(BenchmarkResult result, BenchmarkThresho
     if (result.cpuWorkMilliseconds > thresholds.maxCpuWorkMilliseconds) {
         report.regressions.push_back("cpu_work");
     }
+    if (result.editMilliseconds > thresholds.maxEditMilliseconds) {
+        report.regressions.push_back("edit");
+    }
     if (result.saveLoadMilliseconds > thresholds.maxSaveLoadMilliseconds) {
         report.regressions.push_back("save_load");
     }
     if (result.queryMilliseconds > thresholds.maxQueryMilliseconds) {
         report.regressions.push_back("query");
+    }
+    if (result.mcpQueryMilliseconds > thresholds.maxMcpQueryMilliseconds) {
+        report.regressions.push_back("mcp_query");
+    }
+    if (!result.realtimeCallbackSafe ||
+        result.realtimeCallbackMilliseconds > thresholds.maxRealtimeCallbackMilliseconds) {
+        report.regressions.push_back("realtime_callback");
     }
     if (result.renderRealtimeFactor > thresholds.maxRenderRealtimeFactor) {
         report.regressions.push_back("render");
@@ -364,6 +411,20 @@ BenchmarkReport runStressBenchmark(StressBenchmarkOptions options) {
         validateProjectManifest(parsed);
     });
 
+    result.editMilliseconds = elapsedMilliseconds([&fixture] {
+        auto edited = fixture.manifest;
+        for (std::size_t clipIndex = 0; clipIndex < edited.clips.size(); ++clipIndex) {
+            if (clipIndex % 3U == 0U) {
+                edited.clips[clipIndex].startSample += 120;
+            }
+        }
+        for (std::size_t markerIndex = 0; markerIndex < edited.markers.size(); ++markerIndex) {
+            edited.markers[markerIndex].samplePosition +=
+                static_cast<std::int64_t>(markerIndex * 24U);
+        }
+        validateProjectManifest(edited);
+    });
+
     std::size_t queryAccumulator = 0;
     const auto queryWork = [&fixture, &queryAccumulator] {
         for (const auto& track : fixture.manifest.tracks) {
@@ -394,9 +455,33 @@ BenchmarkReport runStressBenchmark(StressBenchmarkOptions options) {
         }
     });
 
+    std::size_t mcpAccumulator = 0;
+    result.mcpQueryMilliseconds = elapsedMilliseconds([&fixture, &mcpAccumulator] {
+        for (const auto& auditEntry : fixture.manifest.mcpAuditLog) {
+            mcpAccumulator += auditEntry.id.size();
+            mcpAccumulator += auditEntry.toolName.size();
+            mcpAccumulator += auditEntry.capability.size();
+        }
+        for (const auto& track : fixture.manifest.tracks) {
+            mcpAccumulator += track.name.size();
+        }
+        for (const auto& lane : fixture.manifest.automation) {
+            mcpAccumulator += lane.targetId.size();
+        }
+    });
+
     result.renderRealtimeFactor = 0.0;
     if (options.renderFrames > 0U && options.sampleRate > 0.0) {
         const auto graph = compileProjectAudioGraph(fixture.manifest, {});
+        const auto callbackAudit = auditRealtimeGraphCallback(graph,
+                                                              {.sampleRate = options.sampleRate,
+                                                               .maxBlockSize = options.renderFrames,
+                                                               .outputChannels = 2},
+                                                              options.renderFrames);
+        result.realtimeCallbackMilliseconds = callbackAudit.callbackMilliseconds;
+        result.realtimeCallbackSafe = callbackAudit.callbackCompleted &&
+                                      callbackAudit.transportAdvanced &&
+                                      callbackAudit.policy.violations.empty();
         const auto renderMilliseconds = elapsedMilliseconds([&] {
             audio::AudioEngine engine{{.sampleRate = options.sampleRate,
                                        .maxBlockSize = options.renderFrames,

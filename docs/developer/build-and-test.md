@@ -107,7 +107,8 @@ and tutorial projects.
 
 - Architecture: `docs/architecture/architecture-baseline.md`
 - Dependencies: `docs/developer/dependencies.md`
-- Project format: `docs/schemas/project-v1.schema.json`
+- Project format: `docs/developer/project-format.md`
+- Project schema: `docs/schemas/project-v1.schema.json`
 - Command API: `docs/developer/command-api.md`
 - MCP tools: `docs/developer/mcp-tools.md`
 - Performance policy: `docs/performance/realtime-policy.md`

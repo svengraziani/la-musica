@@ -16,7 +16,9 @@ Every edit result includes:
 - `message`
 - `preview`
 
-Mutation requires an attached project with the `edit` capability.
+Mutation requires an attached project with the `edit` capability. The safe flow for every edit
+family is `validate`, `preview`, `apply`, `undo`, and `redo`; validate and preview never mutate
+state, while apply records the command in the relevant undo history only after validation succeeds.
 
 Destructive tools such as `remove_clip`, `remove_routing_connection`, and `remove_plugin_insert` return
 `confirmationRequired: true` from preview/apply attempts and do not mutate until the caller repeats

@@ -102,6 +102,9 @@ class PluginEditHistory {
 [[nodiscard]] EditToolResult previewCommand(const DaemonSession& session,
                                             const session::ProjectManifest& manifest,
                                             const commands::ICommand& command);
+[[nodiscard]] EditToolResult validateCommand(const DaemonSession& session,
+                                             const session::ProjectManifest& manifest,
+                                             const commands::ICommand& command);
 [[nodiscard]] EditToolResult applyCommand(const DaemonSession& session,
                                           session::ProjectManifest& manifest,
                                           commands::CommandHistory& history,
@@ -116,6 +119,9 @@ class PluginEditHistory {
 [[nodiscard]] EditToolResult previewMidiCommand(const DaemonSession& session,
                                                 const commands::MidiClipStore& store,
                                                 const MidiEditCommand& command);
+[[nodiscard]] EditToolResult validateMidiCommand(const DaemonSession& session,
+                                                 const commands::MidiClipStore& store,
+                                                 const MidiEditCommand& command);
 [[nodiscard]] EditToolResult applyMidiCommand(const DaemonSession& session,
                                               commands::MidiClipStore& store,
                                               MidiEditHistory& history, MidiEditCommand command);
@@ -128,6 +134,9 @@ class PluginEditHistory {
 [[nodiscard]] EditToolResult previewAutomationCommand(const DaemonSession& session,
                                                       const commands::AutomationLaneStore& store,
                                                       const AutomationEditCommand& command);
+[[nodiscard]] EditToolResult validateAutomationCommand(const DaemonSession& session,
+                                                       const commands::AutomationLaneStore& store,
+                                                       const AutomationEditCommand& command);
 [[nodiscard]] EditToolResult applyAutomationCommand(const DaemonSession& session,
                                                     commands::AutomationLaneStore& store,
                                                     AutomationEditHistory& history,
@@ -141,6 +150,9 @@ class PluginEditHistory {
 [[nodiscard]] EditToolResult previewMixerCommand(const DaemonSession& session,
                                                  const session::MixerState& mixer,
                                                  const MixerEditCommand& command);
+[[nodiscard]] EditToolResult validateMixerCommand(const DaemonSession& session,
+                                                  const session::MixerState& mixer,
+                                                  const MixerEditCommand& command);
 [[nodiscard]] EditToolResult applyMixerCommand(const DaemonSession& session,
                                                session::MixerState& mixer,
                                                MixerEditHistory& history, MixerEditCommand command);
@@ -153,6 +165,9 @@ class PluginEditHistory {
 [[nodiscard]] EditToolResult previewPluginCommand(const DaemonSession& session,
                                                   const commands::PluginInsertChainStore& store,
                                                   const PluginEditCommand& command);
+[[nodiscard]] EditToolResult validatePluginCommand(const DaemonSession& session,
+                                                   const commands::PluginInsertChainStore& store,
+                                                   const PluginEditCommand& command);
 [[nodiscard]] EditToolResult applyPluginCommand(const DaemonSession& session,
                                                 commands::PluginInsertChainStore& store,
                                                 PluginEditHistory& history,

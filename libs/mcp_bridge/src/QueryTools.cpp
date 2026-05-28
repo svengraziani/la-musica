@@ -22,6 +22,7 @@ std::string escapeJson(std::string_view value) {
 template <typename Values, typename Writer>
 void writePagedArray(std::ostringstream& output, const Values& values, QueryPage page,
                      Writer writer) {
+    page.limit = std::min(page.limit, maxQueryPageLimit);
     const auto begin = std::min(page.offset, values.size());
     const auto end = std::min(values.size(), begin + page.limit);
     output << "\"offset\":" << begin << ",\"limit\":" << page.limit

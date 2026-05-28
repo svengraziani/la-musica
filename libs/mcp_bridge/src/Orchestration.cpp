@@ -194,21 +194,36 @@ const std::vector<WorkflowTemplate>& WorkflowTemplateLibrary::templates() const 
 WorkflowPlan createHarmonizeMidiPlan(const session::MidiClipData& clip, int intervalSemitones,
                                      std::uint32_t seed) {
     WorkflowPlan plan{.id = "harmonize-" + clip.clipId, .name = "Harmonize MIDI", .seed = seed};
+    commands::MidiClipStore store;
+    store.getOrCreate(clip.clipId) = clip;
     auto notes = session::notesInPlaybackOrder(clip);
     for (std::size_t index = 0; index < notes.size(); ++index) {
         const auto& note = notes[index];
-        plan.steps.push_back(
-            {.id = "harmonize-note-" + std::to_string(index),
-             .description = "Add harmony for note " + note.id,
-             .commandName = "add_midi_note",
-             .commandPreview = "Add MIDI note pitch " +
-                               std::to_string(static_cast<int>(note.pitch) + intervalSemitones),
-             .validationOk = static_cast<int>(note.pitch) + intervalSemitones >= 0 &&
-                             static_cast<int>(note.pitch) + intervalSemitones <= 127,
-             .validationMessage = static_cast<int>(note.pitch) + intervalSemitones >= 0 &&
-                                          static_cast<int>(note.pitch) + intervalSemitones <= 127
-                                      ? "MIDI note can be added"
-                                      : "Harmony pitch would be outside 0-127"});
+        const auto harmonyPitch = static_cast<int>(note.pitch) + intervalSemitones;
+        if (harmonyPitch < 0 || harmonyPitch > 127) {
+            plan.steps.push_back(
+                {.id = "harmonize-note-" + std::to_string(index),
+                 .description = "Add harmony for note " + note.id,
+                 .commandName = "add_midi_note",
+                 .commandPreview = "Add MIDI note pitch " + std::to_string(harmonyPitch),
+                 .validationOk = false,
+                 .validationMessage = "Harmony pitch would be outside 0-127"});
+            continue;
+        }
+
+        auto harmonyNote = note;
+        harmonyNote.id = note.id + "-harmony";
+        harmonyNote.pitch = static_cast<std::uint8_t>(harmonyPitch);
+        const commands::AddMidiNoteCommand command{
+            "workflow-harmony-" + std::to_string(index),
+            "workflow-harmony-audit-" + std::to_string(index), clip.clipId, harmonyNote};
+        const auto validation = command.validate(store);
+        plan.steps.push_back({.id = "harmonize-note-" + std::to_string(index),
+                              .description = "Add harmony for note " + note.id,
+                              .commandName = command.metadata().name,
+                              .commandPreview = command.preview(store),
+                              .validationOk = validation.ok,
+                              .validationMessage = validation.message});
     }
     return plan;
 }
@@ -228,17 +243,27 @@ WorkflowPlan createDrumVariationPlan(const session::PatternClip& pattern,
                                      std::uint32_t seedOffset) {
     const auto variation = session::duplicatePatternVariation(
         pattern, pattern.id + "-variation", pattern.name + " Variation", seedOffset);
+    commands::PatternClipStore store;
+    try {
+        store.add(pattern);
+    } catch (const std::exception&) {
+    }
+    const commands::DuplicatePatternVariationCommand command{"workflow-pattern-variation",
+                                                             "workflow-pattern-variation-audit",
+                                                             pattern.id,
+                                                             variation.id,
+                                                             variation.name,
+                                                             seedOffset};
+    const auto validation = command.validate(store);
     return {.id = "drum-variation-" + pattern.id,
             .name = "Create Drum Variation",
             .seed = variation.seed,
             .steps = {{.id = "duplicate-pattern",
                        .description = "Duplicate pattern as variation",
-                       .commandName = "duplicate_pattern_variation",
-                       .commandPreview = "Create pattern " + variation.id},
-                      {.id = "set-variation-seed",
-                       .description = "Set deterministic variation seed",
-                       .commandName = "set_pattern_seed",
-                       .commandPreview = "Set seed " + std::to_string(variation.seed)}}};
+                       .commandName = command.metadata().name,
+                       .commandPreview = command.preview(store),
+                       .validationOk = validation.ok,
+                       .validationMessage = validation.message}}};
 }
 
 WorkflowPlanCreationResult createDrumVariationPlan(const DaemonSession& session,
@@ -250,6 +275,34 @@ WorkflowPlanCreationResult createDrumVariationPlan(const DaemonSession& session,
     return {.allowed = true,
             .message = "workflow plan created",
             .plan = createDrumVariationPlan(pattern, seedOffset)};
+}
+
+WorkflowPlan createArrangeSectionsPlan(const session::ProjectManifest& manifest,
+                                       const std::vector<WorkflowSectionMarker>& sections,
+                                       std::uint32_t seed) {
+    WorkflowPlan plan{.id = "arrange-sections", .name = "Arrange Sections", .seed = seed};
+    for (std::size_t index = 0; index < sections.size(); ++index) {
+        const auto& section = sections[index];
+        const commands::AddMarkerCommand command{
+            "workflow-section-" + std::to_string(index),
+            "workflow-section-audit-" + std::to_string(index),
+            {.id = section.id, .name = section.name, .samplePosition = section.samplePosition}};
+        plan.steps.push_back(validatedStep("section-marker-" + std::to_string(index),
+                                           "Create section marker " + section.name, command,
+                                           manifest));
+    }
+    return plan;
+}
+
+WorkflowPlanCreationResult
+createArrangeSectionsPlan(const DaemonSession& session, const session::ProjectManifest& manifest,
+                          const std::vector<WorkflowSectionMarker>& sections, std::uint32_t seed) {
+    if (!canCreateWorkflowPlan(session)) {
+        return deniedWorkflowPlan("MCP orchestration capability is required");
+    }
+    return {.allowed = true,
+            .message = "workflow plan created",
+            .plan = createArrangeSectionsPlan(manifest, sections, seed)};
 }
 
 WorkflowPlan

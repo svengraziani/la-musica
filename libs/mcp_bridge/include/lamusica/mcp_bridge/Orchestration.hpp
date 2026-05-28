@@ -47,6 +47,12 @@ struct WorkflowTemplate {
     std::string workflowType;
 };
 
+struct WorkflowSectionMarker {
+    std::string id;
+    std::string name;
+    std::int64_t samplePosition{0};
+};
+
 struct WorkflowPlanReview {
     bool approveAllValid{false};
     std::vector<std::string> approvedStepIds;
@@ -91,6 +97,12 @@ class WorkflowTemplateLibrary {
 [[nodiscard]] WorkflowPlanCreationResult
 createDrumVariationPlan(const DaemonSession& session, const session::PatternClip& pattern,
                         std::uint32_t seedOffset);
+[[nodiscard]] WorkflowPlan
+createArrangeSectionsPlan(const session::ProjectManifest& manifest,
+                          const std::vector<WorkflowSectionMarker>& sections, std::uint32_t seed);
+[[nodiscard]] WorkflowPlanCreationResult
+createArrangeSectionsPlan(const DaemonSession& session, const session::ProjectManifest& manifest,
+                          const std::vector<WorkflowSectionMarker>& sections, std::uint32_t seed);
 [[nodiscard]] WorkflowPlan
 createSongStructureLabelPlan(const session::ProjectManifest& manifest,
                              const std::vector<std::pair<std::string, std::string>>& trackLabels,

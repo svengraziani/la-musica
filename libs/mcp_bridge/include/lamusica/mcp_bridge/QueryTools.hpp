@@ -12,6 +12,8 @@
 
 namespace lamusica::mcp_bridge {
 
+inline constexpr std::size_t maxQueryPageLimit = 500;
+
 struct QueryPage {
     std::size_t offset{0};
     std::size_t limit{100};

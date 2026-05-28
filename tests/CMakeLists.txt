@@ -4,8 +4,19 @@ target_link_libraries(
   PRIVATE lamusica::mcp_bridge)
 lamusica_configure_target(lamusica_unit_tests)
 
+add_executable(lamusica_mcp_fixture_client fixtures/mcp_fixture_client.cpp)
+lamusica_configure_target(lamusica_mcp_fixture_client)
+
 add_test(NAME lamusica_unit_tests COMMAND lamusica_unit_tests)
 set_tests_properties(lamusica_unit_tests PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+
+add_test(NAME lamusica_mcpd_fixture_client
+         COMMAND lamusica_mcp_fixture_client $<TARGET_FILE:lamusica_mcpd>
+                 "${PROJECT_SOURCE_DIR}/fixtures/empty.Project.lamusica")
+add_test(NAME lamusica_mcpd_health COMMAND lamusica_mcpd --health)
+set_tests_properties(lamusica_mcpd_health
+                     PROPERTIES PASS_REGULAR_EXPRESSION
+                                "lamusica-mcpd health=ok state=idle lifecycle=running")
 
 set(LAMUSICA_CLI_LIFECYCLE_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/cli-lifecycle.Project.lamusica")

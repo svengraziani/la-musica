@@ -17,9 +17,10 @@ without replacing the existing job. Cancellation only applies to queued or runni
 and failed jobs remain immutable status records.
 
 Analysis jobs return a `wav_analysis` result manifest with frame count, channels, sample rate,
-bit depth, peak, RMS, LUFS estimate, and `explicitExport`. Analysis of an existing WAV reports
-`explicitExport: false`; generated test-tone WAVs report `explicitExport: true`. Bounce jobs return
-a `graph_bounce` result manifest with range, format, normalization peaks, and
+bit depth, peak, RMS, LUFS estimate, transient count, tempo/key estimates, waveform validity,
+waveform bucket size, waveform bucket count, and `explicitExport`. Analysis of an existing WAV
+reports `explicitExport: false`; generated test-tone WAVs report `explicitExport: true`.
+Bounce jobs return a `graph_bounce` result manifest with range, format, normalization peaks, and
 `explicitExport: true`.
 
 Normalize and reverse jobs return an `audio_transform` result manifest with input/output paths,
@@ -38,4 +39,8 @@ manifest with `assetRegistered: true`, add the frozen WAV to the project asset l
 audio clip on the source track, and list the source clips muted by the freeze operation.
 
 Jobs that would overwrite an existing output fail without writing and return a confirmation token.
-Callers must repeat the request with overwrite enabled and the matching token.
+Callers must repeat the request with overwrite enabled and the matching token. Source-media
+transforms follow the same rule when input and output paths are identical.
+
+Long-running render records may remain in `running` state with bounded `progress` below 1.0 and can
+be cancelled cleanly before completion.

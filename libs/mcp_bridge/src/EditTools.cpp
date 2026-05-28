@@ -69,6 +69,24 @@ EditToolResult previewStoreCommand(const Store& store, const CommandVariant& com
 }
 
 template <typename Store, typename CommandVariant>
+EditToolResult validateStoreCommand(const Store& store, const CommandVariant& command,
+                                    bool undoAvailable, bool redoAvailable) {
+    const auto validation = std::visit(
+        [&store](const auto& concreteCommand) { return concreteCommand.validate(store); }, command);
+    const auto& metadata = variantMetadata<Store>(command);
+    const auto confirmationRequired = commandNameRequiresConfirmation(metadata.name);
+    return {.commandId = metadata.commandId,
+            .auditId = metadata.auditId,
+            .validationOk = validation.ok,
+            .applied = false,
+            .undoAvailable = undoAvailable,
+            .redoAvailable = redoAvailable,
+            .confirmationRequired = confirmationRequired,
+            .confirmationToken = confirmationRequired ? confirmationTokenForMetadata(metadata) : "",
+            .message = validation.message};
+}
+
+template <typename Store, typename CommandVariant>
 EditToolResult applyStoreCommand(Store& store, CommandVariant& command, bool undoAvailable,
                                  bool redoAvailable) {
     const auto validation = std::visit(
@@ -366,6 +384,25 @@ EditToolResult previewCommand(const DaemonSession& session,
             .preview = command.preview(manifest)};
 }
 
+EditToolResult validateCommand(const DaemonSession& session,
+                               const session::ProjectManifest& manifest,
+                               const commands::ICommand& command) {
+    if (!session.canMutateProject()) {
+        return denied("MCP edit capability is required");
+    }
+
+    const auto validation = command.validate(manifest);
+    return {.commandId = command.metadata().commandId,
+            .auditId = command.metadata().auditId,
+            .validationOk = validation.ok,
+            .applied = false,
+            .undoAvailable = false,
+            .redoAvailable = false,
+            .confirmationRequired = requiresConfirmation(command),
+            .confirmationToken = requiresConfirmation(command) ? confirmationTokenFor(command) : "",
+            .message = validation.message};
+}
+
 EditToolResult applyCommand(const DaemonSession& session, session::ProjectManifest& manifest,
                             commands::CommandHistory& history, commands::CommandPtr command,
                             EditApplyOptions options) {
@@ -459,6 +496,16 @@ EditToolResult previewMidiCommand(const DaemonSession& session,
     return previewStoreCommand(store, command, false, false);
 }
 
+EditToolResult validateMidiCommand(const DaemonSession& session,
+                                   const commands::MidiClipStore& store,
+                                   const MidiEditCommand& command) {
+    if (!session.canMutateProject()) {
+        return denied("MCP edit capability is required");
+    }
+
+    return validateStoreCommand(store, command, false, false);
+}
+
 EditToolResult applyMidiCommand(const DaemonSession& session, commands::MidiClipStore& store,
                                 MidiEditHistory& history, MidiEditCommand command) {
     if (!session.canMutateProject()) {
@@ -494,6 +541,16 @@ EditToolResult previewAutomationCommand(const DaemonSession& session,
     }
 
     return previewStoreCommand(store, command, false, false);
+}
+
+EditToolResult validateAutomationCommand(const DaemonSession& session,
+                                         const commands::AutomationLaneStore& store,
+                                         const AutomationEditCommand& command) {
+    if (!session.canMutateProject()) {
+        return denied("MCP edit capability is required");
+    }
+
+    return validateStoreCommand(store, command, false, false);
 }
 
 EditToolResult applyAutomationCommand(const DaemonSession& session,
@@ -536,6 +593,15 @@ EditToolResult previewMixerCommand(const DaemonSession& session, const session::
     return previewStoreCommand(mixer, command, false, false);
 }
 
+EditToolResult validateMixerCommand(const DaemonSession& session, const session::MixerState& mixer,
+                                    const MixerEditCommand& command) {
+    if (!session.canMutateProject()) {
+        return denied("MCP edit capability is required");
+    }
+
+    return validateStoreCommand(mixer, command, false, false);
+}
+
 EditToolResult applyMixerCommand(const DaemonSession& session, session::MixerState& mixer,
                                  MixerEditHistory& history, MixerEditCommand command) {
     if (!session.canMutateProject()) {
@@ -571,6 +637,16 @@ EditToolResult previewPluginCommand(const DaemonSession& session,
     }
 
     return previewStoreCommand(store, command, false, false);
+}
+
+EditToolResult validatePluginCommand(const DaemonSession& session,
+                                     const commands::PluginInsertChainStore& store,
+                                     const PluginEditCommand& command) {
+    if (!session.canMutateProject()) {
+        return denied("MCP edit capability is required");
+    }
+
+    return validateStoreCommand(store, command, false, false);
 }
 
 EditToolResult applyPluginCommand(const DaemonSession& session,

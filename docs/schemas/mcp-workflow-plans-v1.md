@@ -2,6 +2,8 @@
 
 AI orchestration workflows produce advisory plans. A plan step is not authoritative until it is approved by a human-facing flow and applied through command-backed MCP edit tools.
 MCP plan creation requires an attached session with the `orchestration` capability.
+Built-in plan generators cover section arrangement markers, MIDI harmony, deterministic drum
+variation, song-structure labels, and mix-preparation passes.
 
 Plan fields:
 
@@ -33,3 +35,7 @@ Workflow templates are deterministic records with `id`, `name`, `description`, a
 fields. Template ids must be unique within the library that stores them. Template libraries serialize
 as `schemaVersion: 1` JSON objects with a `templates` array and can be saved in a project or user
 library file before being resolved into advisory workflow plans.
+
+Workflow output must be reproducible for fixed inputs and seeds. Generated steps must include
+command previews and validation results before review; invalid approved steps are reported as
+invalid during application and are never sent to the command application callback.

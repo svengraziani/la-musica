@@ -17,6 +17,8 @@
 - Produce `LaMusica.app` from the release build.
 - Include `lamusica_mcpd`, `lamusica_cli`, docs, example projects, and tutorial projects.
 - Include release docs: changelog, security disclosure process, contributing guide, and user manual.
+- Confirm package verification includes architecture, build/test, project format, command API, MCP,
+  release, changelog, security, examples, and tutorials.
 - Sign app bundle with the maintainer Developer ID.
 - Sign daemon and CLI binaries with the same Developer ID.
 - Notarize app bundle or disk image.
@@ -45,4 +47,5 @@
 - Update developer docs.
 - Update changelog.
 - Confirm security contact is current.
+- Confirm `docs/release/security-disclosure.md` matches `SECURITY.md`.
 - Confirm versioning and schema migration notes are present.

@@ -2,6 +2,7 @@
 
 #include "lamusica/audio/Bounce.hpp"
 #include "lamusica/audio/WavFile.hpp"
+#include "lamusica/session/Assets.hpp"
 #include "lamusica/session/Export.hpp"
 
 #include <algorithm>
@@ -58,13 +59,22 @@ std::string analysisManifestJson(const std::filesystem::path& path, const audio:
     const auto peak = audio::peakAbsoluteSample(wav.audio);
     const auto rmsValue = rms(wav.audio);
     const auto lufsEstimate = rmsValue <= 0.0F ? -90.0F : (20.0F * std::log10(rmsValue));
+    constexpr std::int64_t samplesPerBucket = 1024;
+    const auto mediaAnalysis = session::analyzeAudioAsset(path.filename().string(), wav.audio,
+                                                          wav.sampleRate, samplesPerBucket);
     std::ostringstream output;
     output << "{\"schemaVersion\":1,\"type\":\"wav_analysis\",\"explicitExport\":"
            << (explicitExport ? "true" : "false") << ",\"path\":\"" << escapeJson(path.string())
            << "\",\"frames\":" << wav.audio.frames << ",\"channels\":" << wav.audio.channels
            << ",\"sampleRate\":" << wav.sampleRate << ",\"bitsPerSample\":" << wav.bitsPerSample
            << ",\"peak\":" << peak << ",\"rms\":" << rmsValue
-           << ",\"lufsEstimate\":" << lufsEstimate << "}";
+           << ",\"lufsEstimate\":" << lufsEstimate
+           << ",\"tempoBpm\":" << mediaAnalysis.analysis.tempoBpm << ",\"musicalKey\":\""
+           << escapeJson(mediaAnalysis.analysis.musicalKey)
+           << "\",\"transientCount\":" << mediaAnalysis.analysis.transientSamples.size()
+           << ",\"waveform\":{\"valid\":" << (mediaAnalysis.waveform.valid ? "true" : "false")
+           << ",\"samplesPerBucket\":" << mediaAnalysis.waveform.samplesPerBucket
+           << ",\"bucketCount\":" << mediaAnalysis.waveform.buckets.size() << "}}";
     return output.str();
 }
 
@@ -709,6 +719,29 @@ RenderJob RenderJobQueue::enqueueFreezeTrack(const DaemonSession& session, std::
         job.status = RenderJobStatus::Failed;
         job.message = error.what();
     }
+    jobs_.push_back(job);
+    return job;
+}
+
+RenderJob RenderJobQueue::enqueueLongRender(const DaemonSession& session, std::string jobId,
+                                            std::filesystem::path outputPath, float progress,
+                                            std::string message) {
+    RenderJob job{.id = std::move(jobId),
+                  .status = RenderJobStatus::Running,
+                  .progress = std::clamp(progress, 0.0F, 0.99F),
+                  .outputPath = std::move(outputPath),
+                  .message = std::move(message)};
+    if (rejectDuplicateJobId(jobs_, job)) {
+        return job;
+    }
+    if (!hasRenderCapability(session)) {
+        job.status = RenderJobStatus::Failed;
+        job.progress = 0.0F;
+        job.message = "MCP render capability is required";
+        jobs_.push_back(job);
+        return job;
+    }
+
     jobs_.push_back(job);
     return job;
 }

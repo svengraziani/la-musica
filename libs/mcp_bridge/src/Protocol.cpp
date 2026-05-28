@@ -4,6 +4,7 @@
 
 #include <exception>
 #include <initializer_list>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -73,12 +74,49 @@ std::set<Capability> parseCapabilities(const std::vector<std::string>& words,
     return capabilities;
 }
 
+bool hasUnknownCapability(const std::vector<std::string>& words, std::size_t firstCapabilityIndex,
+                          std::string& unknownCapability) {
+    for (std::size_t index = firstCapabilityIndex; index < words.size(); ++index) {
+        Capability capability{Capability::ReadOnly};
+        if (!parseCapability(words[index], capability)) {
+            unknownCapability = words[index];
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string joinWords(const std::vector<std::string>& words, std::size_t firstIndex) {
+    std::ostringstream output;
+    for (std::size_t index = firstIndex; index < words.size(); ++index) {
+        if (index != firstIndex) {
+            output << ' ';
+        }
+        output << words[index];
+    }
+    return output.str();
+}
+
 std::string healthBody(const DaemonSession& session) {
     const auto health = session.health();
     std::ostringstream output;
     output << "health=" << (health.ok ? "ok" : "error") << " state=" << health.message;
+    output << " lifecycle=" << toString(session.lifecycleStatus());
     if (session.attached()) {
         output << " project=" << session.projectPath();
+    }
+    return output.str();
+}
+
+std::string logsBody(const DaemonSession& session) {
+    std::ostringstream output;
+    output << "logs=" << session.daemonLog().size();
+    for (const auto& entry : session.daemonLog()) {
+        output << " [" << entry.id << ':' << entry.event;
+        if (!entry.detail.empty()) {
+            output << ':' << entry.detail;
+        }
+        output << ']';
     }
     return output.str();
 }
@@ -119,7 +157,14 @@ bool parseSampleRangeQuery(const std::vector<std::string>& words, QuerySampleRan
 }
 
 ProtocolResponse handleQuery(DaemonSession& session, const ProtocolProjectState& state,
-                             const std::vector<std::string>& words) {
+                             const std::vector<std::string>& words,
+                             std::optional<std::string_view> authToken) {
+    if (!authToken.has_value()) {
+        return {.ok = false, .body = "auth_required"};
+    }
+    if (!session.validateAuthToken(*authToken)) {
+        return {.ok = false, .body = "auth_invalid"};
+    }
     if (!session.attached()) {
         return {.ok = false, .body = "query_requires_attached_project"};
     }
@@ -218,6 +263,112 @@ ProtocolResponse handleQuery(DaemonSession& session, const ProtocolProjectState&
     return {.ok = false, .body = "unknown_query_tool"};
 }
 
+bool commandRequiresActiveAuth(std::string_view command) noexcept {
+    return equalsAny(command, {"detach", "connection_lost", "can_mutate"});
+}
+
+ProtocolResponse validateActiveAuth(const DaemonSession& session,
+                                    std::optional<std::string_view> authToken) {
+    if (!authToken.has_value()) {
+        return {.ok = false, .body = "auth_required"};
+    }
+    if (!session.validateAuthToken(*authToken)) {
+        return {.ok = false, .body = "auth_invalid"};
+    }
+    return {.ok = true, .body = "auth_ok"};
+}
+
+ProtocolResponse handleProtocolWords(DaemonSession& session, const ProtocolProjectState& state,
+                                     const std::vector<std::string>& words,
+                                     std::optional<std::string_view> authToken) {
+    if (words.empty()) {
+        return {.ok = false, .body = "empty_request"};
+    }
+
+    const auto forbidden = classifyForbiddenProtocolRequest(words.front());
+    if (forbidden != ForbiddenProtocolSurface::None) {
+        const auto reason = std::string{toString(forbidden)};
+        session.recordDeniedProtocolRequest(joinWords(words, 0), reason);
+        return {.ok = false, .body = "forbidden_" + reason};
+    }
+
+    if (words.front() == "query") {
+        return handleQuery(session, state, words, authToken);
+    }
+    if (commandRequiresActiveAuth(words.front())) {
+        if (const auto auth = validateActiveAuth(session, authToken); !auth.ok) {
+            return auth;
+        }
+    }
+    if (words.front() == "stop" && session.attached()) {
+        if (const auto auth = validateActiveAuth(session, authToken); !auth.ok) {
+            return auth;
+        }
+    }
+
+    if (words.front() == "health") {
+        return {.ok = true, .body = healthBody(session)};
+    }
+    if (words.front() == "install") {
+        const auto label = words.size() > 1 ? words[1] : std::string{"com.lamusica.mcpd"};
+        session.install(label);
+        return {.ok = true, .body = "installed label=" + std::string{session.launchLabel()}};
+    }
+    if (words.front() == "launch") {
+        session.launch();
+        return {.ok = true, .body = "launched label=" + std::string{session.launchLabel()}};
+    }
+    if (words.front() == "stop") {
+        session.stop();
+        return {.ok = true, .body = "stopped"};
+    }
+    if (words.front() == "logs") {
+        return {.ok = true, .body = logsBody(session)};
+    }
+    if (words.front() == "attach") {
+        if (words.size() < 2) {
+            return {.ok = false, .body = "attach_requires_project_path"};
+        }
+        if (session.attached()) {
+            if (const auto auth = validateActiveAuth(session, authToken); !auth.ok) {
+                return auth;
+            }
+        } else if (session.connectionInterrupted()) {
+            if (!authToken.has_value() || !session.validateRecoveryAuthToken(*authToken)) {
+                return {.ok = false, .body = "auth_invalid"};
+            }
+        }
+        std::string unknownCapability;
+        if (hasUnknownCapability(words, 2, unknownCapability)) {
+            return {.ok = false, .body = "attach_unknown_capability=" + unknownCapability};
+        }
+        const auto token = session.attachProject(words[1], parseCapabilities(words, 2));
+        return {.ok = true, .body = "attached token=" + token};
+    }
+    if (words.front() == "detach") {
+        session.detachProject();
+        return {.ok = true, .body = "detached"};
+    }
+    if (words.front() == "connection_lost") {
+        session.markConnectionLost();
+        return {.ok = true, .body = session.connectionInterrupted() ? "interrupted" : "idle"};
+    }
+    if (words.front() == "recover") {
+        if (!authToken.has_value()) {
+            return {.ok = false, .body = "auth_required"};
+        }
+        if (!session.recoverConnection(*authToken)) {
+            return {.ok = false, .body = "auth_invalid"};
+        }
+        return {.ok = true, .body = "recovered token=" + session.authToken()};
+    }
+    if (words.front() == "can_mutate") {
+        return {.ok = true, .body = session.canMutateProject() ? "true" : "false"};
+    }
+
+    return {.ok = false, .body = "unknown_request"};
+}
+
 } // namespace
 
 std::string_view toString(ForbiddenProtocolSurface surface) noexcept {
@@ -255,55 +406,19 @@ ForbiddenProtocolSurface classifyForbiddenProtocolRequest(std::string_view comma
 
 ProtocolResponse handleProtocolLine(DaemonSession& session, std::string_view line) {
     const auto words = splitWords(line);
-    if (words.empty()) {
-        return {.ok = false, .body = "empty_request"};
+    if (words.size() >= 3 && words.front() == "auth") {
+        return handleProtocolWords(session, {}, {words.begin() + 2, words.end()}, words[1]);
     }
-
-    const auto forbidden = classifyForbiddenProtocolRequest(words.front());
-    if (forbidden != ForbiddenProtocolSurface::None) {
-        const auto reason = std::string{toString(forbidden)};
-        session.recordDeniedProtocolRequest(std::string{line}, reason);
-        return {.ok = false, .body = "forbidden_" + reason};
-    }
-
-    if (words.front() == "health") {
-        return {.ok = true, .body = healthBody(session)};
-    }
-    if (words.front() == "attach") {
-        if (words.size() < 2) {
-            return {.ok = false, .body = "attach_requires_project_path"};
-        }
-        const auto token = session.attachProject(words[1], parseCapabilities(words, 2));
-        return {.ok = true, .body = "attached token=" + token};
-    }
-    if (words.front() == "detach") {
-        session.detachProject();
-        return {.ok = true, .body = "detached"};
-    }
-    if (words.front() == "connection_lost") {
-        session.markConnectionLost();
-        return {.ok = true, .body = session.connectionInterrupted() ? "interrupted" : "idle"};
-    }
-    if (words.front() == "recover") {
-        if (!session.recoverConnection()) {
-            return {.ok = false, .body = "recover_requires_interrupted_connection"};
-        }
-        return {.ok = true, .body = "recovered token=" + session.authToken()};
-    }
-    if (words.front() == "can_mutate") {
-        return {.ok = true, .body = session.canMutateProject() ? "true" : "false"};
-    }
-
-    return {.ok = false, .body = "unknown_request"};
+    return handleProtocolWords(session, {}, words, std::nullopt);
 }
 
 ProtocolResponse handleProtocolLine(DaemonSession& session, const ProtocolProjectState& state,
                                     std::string_view line) {
     const auto words = splitWords(line);
-    if (!words.empty() && words.front() == "query") {
-        return handleQuery(session, state, words);
+    if (words.size() >= 3 && words.front() == "auth") {
+        return handleProtocolWords(session, state, {words.begin() + 2, words.end()}, words[1]);
     }
-    return handleProtocolLine(session, line);
+    return handleProtocolWords(session, state, words, std::nullopt);
 }
 
 std::string serializeProtocolResponse(const ProtocolResponse& response) {

@@ -96,6 +96,9 @@ class RenderJobQueue {
                                  session::ProjectManifest& manifest, const audio::AudioGraph& graph,
                                  audio::BounceOptions options, FreezeTrackOptions freeze,
                                  RenderWriteOptions writeOptions = {});
+    RenderJob enqueueLongRender(const DaemonSession& session, std::string jobId,
+                                std::filesystem::path outputPath, float progress,
+                                std::string message = "rendering");
     RenderJob enqueuePending(std::string jobId, std::filesystem::path outputPath,
                              std::string message = "queued");
     bool cancel(std::string_view jobId);

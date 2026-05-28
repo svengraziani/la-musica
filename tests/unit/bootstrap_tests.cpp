@@ -924,43 +924,87 @@ int main() {
             "MCP capability string");
     lamusica::mcp_bridge::DaemonSession daemonSession;
     require(daemonSession.health().message == "idle", "MCP daemon starts idle");
+    daemonSession.install("com.lamusica.test.mcpd");
+    require(daemonSession.lifecycleStatus() ==
+                lamusica::mcp_bridge::DaemonLifecycleStatus::Installed,
+            "MCP daemon lifecycle models install");
+    daemonSession.launch();
+    require(daemonSession.lifecycleStatus() == lamusica::mcp_bridge::DaemonLifecycleStatus::Running,
+            "MCP daemon lifecycle models launch");
+    require(daemonSession.daemonLog().size() == 2 &&
+                daemonSession.daemonLog().front().event == "install",
+            "MCP daemon lifecycle records logs");
     require(!daemonSession.canMutateProject(), "MCP daemon cannot mutate without project");
     const auto token = daemonSession.attachProject(
         "fixtures/empty.Project.lamusica",
         {lamusica::mcp_bridge::Capability::ReadOnly, lamusica::mcp_bridge::Capability::Edit});
     require(!token.empty(), "MCP daemon attach returns token");
+    require(daemonSession.validateAuthToken(token) && !daemonSession.validateAuthToken("wrong"),
+            "MCP daemon validates active local auth token");
     require(daemonSession.canMutateProject(), "MCP daemon edit capability allows mutation");
     daemonSession.recordRead("project_summary");
     daemonSession.markConnectionLost();
     require(daemonSession.connectionInterrupted() && !daemonSession.attached() &&
-                !daemonSession.canMutateProject() && daemonSession.canRecoverConnection(),
+                !daemonSession.canMutateProject() && daemonSession.canRecoverConnection() &&
+                daemonSession.validateRecoveryAuthToken(token),
             "MCP daemon lost connection clears active capabilities but preserves recovery state");
-    require(daemonSession.recoverConnection() && daemonSession.canMutateProject() &&
+    require(!daemonSession.recoverConnection("wrong"), "MCP daemon rejects invalid recovery token");
+    require(daemonSession.recoverConnection(token) && daemonSession.canMutateProject() &&
                 daemonSession.readAuditLog().size() == 1,
             "MCP daemon recovers lost connection without corrupting session audit state");
+    daemonSession.stop();
+    require(daemonSession.lifecycleStatus() ==
+                    lamusica::mcp_bridge::DaemonLifecycleStatus::Stopped &&
+                !daemonSession.attached(),
+            "MCP daemon lifecycle stop detaches active project");
     daemonSession.detachProject();
     require(!daemonSession.attached(), "MCP daemon detaches project");
     require(!daemonSession.canRecoverConnection(),
             "MCP daemon explicit detach clears recovery state");
     require(lamusica::mcp_bridge::serializeProtocolResponse(
-                lamusica::mcp_bridge::handleProtocolLine(daemonSession, "health")) ==
-                "ok health=ok state=idle",
+                lamusica::mcp_bridge::handleProtocolLine(daemonSession, "health"))
+                    .find("ok health=ok state=stopped lifecycle=stopped") == 0,
             "MCP protocol reports idle health");
+    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "launch").ok,
+            "MCP protocol launches daemon lifecycle");
+    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "logs").body.find("launch") !=
+                std::string::npos,
+            "MCP protocol exposes daemon lifecycle logs");
+    require(!lamusica::mcp_bridge::handleProtocolLine(
+                 daemonSession, "attach fixtures/empty.Project.lamusica read_everything")
+                 .ok,
+            "MCP protocol rejects unknown attach capabilities");
     require(lamusica::mcp_bridge::handleProtocolLine(
                 daemonSession, "attach fixtures/empty.Project.lamusica read_only")
                 .ok,
             "MCP protocol attaches project");
+    const auto protocolToken = daemonSession.authToken();
     require(!daemonSession.canMutateProject(),
             "MCP protocol read-only attachment cannot mutate project");
-    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "connection_lost").ok &&
+    require(!lamusica::mcp_bridge::handleProtocolLine(daemonSession, "can_mutate").ok,
+            "MCP protocol requires auth for project-scoped status");
+    require(!lamusica::mcp_bridge::handleProtocolLine(daemonSession, "auth wrong can_mutate").ok,
+            "MCP protocol rejects invalid project auth token");
+    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession,
+                                                     "auth " + protocolToken + " connection_lost")
+                    .ok &&
                 daemonSession.connectionInterrupted(),
             "MCP protocol records interrupted app connection");
-    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "recover").ok &&
+    require(!lamusica::mcp_bridge::handleProtocolLine(daemonSession, "recover").ok,
+            "MCP protocol requires auth for interrupted session recovery");
+    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession,
+                                                     "auth " + protocolToken + " recover")
+                    .ok &&
                 daemonSession.attached() && !daemonSession.canMutateProject(),
             "MCP protocol recovers interrupted read-only attachment");
-    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "can_mutate").body == "false",
+    const auto recoveredProtocolToken = daemonSession.authToken();
+    require(lamusica::mcp_bridge::handleProtocolLine(
+                daemonSession, "auth " + recoveredProtocolToken + " can_mutate")
+                    .body == "false",
             "MCP protocol reports mutate scope");
-    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "detach").ok,
+    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession,
+                                                     "auth " + recoveredProtocolToken + " detach")
+                .ok,
             "MCP protocol detaches project");
     require(!daemonSession.attached(), "MCP protocol detach clears session");
     const auto shellDenied = lamusica::mcp_bridge::handleProtocolLine(daemonSession, "shell ls");
@@ -1056,6 +1100,36 @@ int main() {
          .samplesPerBucket = 256,
          .buckets = {{.minSample = -0.5F, .maxSample = 0.5F, .rmsAmplitude = 0.25F}}});
     const auto beforeQuery = lamusica::session::serializeProjectManifest(queryManifest);
+    const auto requireQueryContract = [](const std::string& json, std::string_view toolName) {
+        require(json.find("\"schemaVersion\":1") != std::string::npos,
+                "MCP query contract includes schema version");
+        require(json.find("\"tool\":\"" + std::string{toolName} + "\"") != std::string::npos,
+                "MCP query contract includes stable tool name");
+    };
+    requireQueryContract(lamusica::mcp_bridge::projectSummaryJson(queryManifest),
+                         "project_summary");
+    requireQueryContract(lamusica::mcp_bridge::tracksJson(queryManifest), "tracks");
+    requireQueryContract(lamusica::mcp_bridge::clipsJson(queryManifest), "clips");
+    requireQueryContract(lamusica::mcp_bridge::clipsInRangeJson(
+                             queryManifest, {.startSample = 0, .endSample = 96000}),
+                         "clips_range");
+    requireQueryContract(lamusica::mcp_bridge::selectionJson(querySelection), "selection");
+    requireQueryContract(lamusica::mcp_bridge::transportJson(queryTransport), "transport");
+    requireQueryContract(lamusica::mcp_bridge::tempoJson(queryManifest), "tempo");
+    requireQueryContract(lamusica::mcp_bridge::markersJson(queryManifest), "markers");
+    requireQueryContract(lamusica::mcp_bridge::routingJson(queryManifest), "routing");
+    requireQueryContract(lamusica::mcp_bridge::pluginsJson(queryManifest), "plugins");
+    requireQueryContract(lamusica::mcp_bridge::automationJson(queryManifest), "automation");
+    requireQueryContract(lamusica::mcp_bridge::automationInRangeJson(
+                             queryManifest, {.startSample = 0, .endSample = 48000}),
+                         "automation_range");
+    requireQueryContract(lamusica::mcp_bridge::assetsJson(queryManifest), "assets");
+    requireQueryContract(lamusica::mcp_bridge::assetCatalogJson(queryCatalog), "assets");
+    requireQueryContract(lamusica::mcp_bridge::renderCapabilitiesJson(), "render_capabilities");
+    require(lamusica::mcp_bridge::tracksJson(
+                queryManifest, {.offset = 0, .limit = lamusica::mcp_bridge::maxQueryPageLimit + 1})
+                    .find("\"limit\":500") != std::string::npos,
+            "MCP query contracts clamp oversized page limits");
     require(lamusica::mcp_bridge::projectSummaryJson(queryManifest)
                     .find("\"tool\":\"project_summary\"") != std::string::npos,
             "MCP project summary has stable tool name");
@@ -1129,37 +1203,56 @@ int main() {
         !lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query project_summary")
              .ok,
         "MCP protocol query requires attached project");
-    querySession.attachProject("fixtures/empty.Project.lamusica",
-                               {lamusica::mcp_bridge::Capability::Edit});
-    require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query tracks").ok,
+    const auto editOnlyQueryToken = querySession.attachProject(
+        "fixtures/empty.Project.lamusica", {lamusica::mcp_bridge::Capability::Edit});
+    require(!lamusica::mcp_bridge::handleProtocolLine(
+                 querySession, queryState, "auth " + editOnlyQueryToken + " query tracks")
+                 .ok,
             "MCP protocol query requires read-only capability");
-    querySession.attachProject("fixtures/empty.Project.lamusica",
-                               {lamusica::mcp_bridge::Capability::ReadOnly});
-    require(lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query tracks 0 1")
+    require(!lamusica::mcp_bridge::handleProtocolLine(
+                 querySession, queryState, "attach fixtures/empty.Project.lamusica read_only")
+                 .ok,
+            "MCP protocol requires auth before replacing an attached project scope");
+    require(lamusica::mcp_bridge::handleProtocolLine(
+                querySession, queryState,
+                "auth " + editOnlyQueryToken + " attach fixtures/empty.Project.lamusica read_only")
+                .ok,
+            "MCP protocol allows authenticated project scope replacement");
+    const auto queryToken = querySession.authToken();
+    require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query tracks").ok,
+            "MCP protocol rejects unauthenticated project query");
+    require(lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
+                                                     "auth " + queryToken + " query tracks 0 1")
                     .body.find("\"total\":2") != std::string::npos,
             "MCP protocol exposes paged track query");
-    require(lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query transport")
+    require(lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
+                                                     "auth " + queryToken + " query transport")
                     .body.find("\"samplePosition\":12000") != std::string::npos,
             "MCP protocol exposes transport query");
     require(lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
-                                                     "query automation_range 0 48000 0 1")
+                                                     "auth " + queryToken +
+                                                         " query automation_range 0 48000 0 1")
                     .body.find("\"tool\":\"automation_range\"") != std::string::npos,
             "MCP protocol exposes ranged automation query");
-    require(lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
-                                                     "query clips_range 0 96000 0 1")
+    require(lamusica::mcp_bridge::handleProtocolLine(
+                querySession, queryState, "auth " + queryToken + " query clips_range 0 96000 0 1")
                     .body.find("\"tool\":\"clips_range\"") != std::string::npos,
             "MCP protocol exposes ranged clip query");
-    require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
-                                                      "query automation_range 48000 0")
+    require(!lamusica::mcp_bridge::handleProtocolLine(
+                 querySession, queryState, "auth " + queryToken + " query automation_range 48000 0")
                  .ok,
             "MCP protocol rejects invalid automation query ranges");
-    require(
-        !lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query tracks x").ok,
-        "MCP protocol rejects invalid query page");
-    require(
-        !lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query read_file").ok,
-        "MCP protocol rejects unrestricted filesystem query tools");
-    require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query shell").ok,
+    require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
+                                                      "auth " + queryToken + " query tracks x")
+                 .ok,
+            "MCP protocol rejects invalid query page");
+    require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
+                                                      "auth " + queryToken + " query read_file")
+                 .ok,
+            "MCP protocol rejects unrestricted filesystem query tools");
+    require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
+                                                      "auth " + queryToken + " query shell")
+                 .ok,
             "MCP protocol rejects shell-like query tools");
     require(querySession.readAuditLog().size() == 4 &&
                 querySession.readAuditLog().front().toolName == "tracks",
@@ -1202,6 +1295,11 @@ int main() {
         "mcp-cmd-1",
         "mcp-audit-1",
         {.id = "mcp-track", .name = "MCP Track", .type = lamusica::session::TrackType::Audio}};
+    const auto validateResult =
+        lamusica::mcp_bridge::validateCommand(editSession, editManifest, previewTrack);
+    require(validateResult.validationOk && !validateResult.applied &&
+                validateResult.commandId == "mcp-cmd-1" && validateResult.auditId == "mcp-audit-1",
+            "MCP edit validate reports command metadata without mutation");
     const auto previewResult =
         lamusica::mcp_bridge::previewCommand(editSession, editManifest, previewTrack);
     require(previewResult.validationOk && !previewResult.applied && editManifest.tracks.empty(),
@@ -1292,6 +1390,70 @@ int main() {
         lamusica::mcp_bridge::undoLastCommand(editSession, editManifest, editHistory);
     require(undoMcpRemoveRoute.applied && editManifest.routing.size() == 1,
             "MCP routing removal undo restores route");
+    editManifest.clips.push_back({.id = "mcp-timeline",
+                                  .trackId = "mcp-track",
+                                  .type = lamusica::session::ClipType::Audio,
+                                  .startSample = 1000,
+                                  .lengthSamples = 4000});
+    auto mcpTrimPreview = lamusica::commands::TrimClipCommand{
+        "mcp-trim-preview", "mcp-trim-audit-preview", "mcp-timeline", 1200, 3000, 200};
+    const auto mcpTimelineValidate =
+        lamusica::mcp_bridge::validateCommand(editSession, editManifest, mcpTrimPreview);
+    require(mcpTimelineValidate.validationOk && !mcpTimelineValidate.applied,
+            "MCP timeline trim validates without mutation");
+    const auto mcpTrim = lamusica::mcp_bridge::applyCommand(
+        editSession, editManifest, editHistory,
+        lamusica::commands::makeTrimClipCommand("mcp-trim", "mcp-trim-audit", "mcp-timeline", 1200,
+                                                3000, 200));
+    require(mcpTrim.applied && mcpTrim.commandId == "mcp-trim" &&
+                editManifest.clips.back().startSample == 1200 &&
+                editManifest.clips.back().lengthSamples == 3000 &&
+                editManifest.clips.back().sourceOffsetSamples == 200,
+            "MCP timeline trim applies through command history");
+    const auto beforeInvalidTimelineEdit =
+        lamusica::session::serializeProjectManifest(editManifest);
+    const auto invalidMcpMove = lamusica::mcp_bridge::applyCommand(
+        editSession, editManifest, editHistory,
+        lamusica::commands::makeMoveClipCommand("mcp-invalid-move", "mcp-invalid-move-audit",
+                                                "missing-clip", 2000));
+    require(!invalidMcpMove.applied && !invalidMcpMove.validationOk &&
+                beforeInvalidTimelineEdit ==
+                    lamusica::session::serializeProjectManifest(editManifest),
+            "MCP invalid timeline edit leaves state unchanged");
+    const auto mcpMove =
+        lamusica::mcp_bridge::applyCommand(editSession, editManifest, editHistory,
+                                           lamusica::commands::makeMoveClipCommand(
+                                               "mcp-move", "mcp-move-audit", "mcp-timeline", 2400));
+    require(mcpMove.applied && editManifest.clips.back().startSample == 2400,
+            "MCP timeline move applies through command history");
+    const auto mcpDuplicate = lamusica::mcp_bridge::applyCommand(
+        editSession, editManifest, editHistory,
+        lamusica::commands::makeDuplicateClipCommand("mcp-duplicate", "mcp-duplicate-audit",
+                                                     "mcp-timeline", "mcp-timeline-copy", 8000));
+    require(mcpDuplicate.applied && editManifest.clips.back().id == "mcp-timeline-copy",
+            "MCP timeline duplicate applies through command history");
+    auto mcpSplitCommand = lamusica::commands::makeSplitClipCommand(
+        editManifest, "mcp-split", "mcp-split-audit", "mcp-timeline", "mcp-timeline-right", 3400);
+    const auto mcpSplit = lamusica::mcp_bridge::applyCommand(editSession, editManifest, editHistory,
+                                                             std::move(mcpSplitCommand));
+    const auto mcpTimelineLeft =
+        std::ranges::find_if(editManifest.clips, [](const lamusica::session::Clip& clip) {
+            return clip.id == "mcp-timeline";
+        });
+    require(mcpSplit.applied && mcpTimelineLeft != editManifest.clips.end() &&
+                mcpTimelineLeft->lengthSamples == 1000 &&
+                std::ranges::any_of(editManifest.clips,
+                                    [](const lamusica::session::Clip& clip) {
+                                        return clip.id == "mcp-timeline-right";
+                                    }),
+            "MCP timeline split applies as a transaction through command history");
+    const auto undoMcpSplit =
+        lamusica::mcp_bridge::undoLastCommand(editSession, editManifest, editHistory);
+    require(undoMcpSplit.applied && !std::ranges::any_of(editManifest.clips,
+                                                         [](const lamusica::session::Clip& clip) {
+                                                             return clip.id == "mcp-timeline-right";
+                                                         }),
+            "MCP timeline split undo restores transaction state");
     lamusica::commands::MidiClipStore mcpMidiStore;
     lamusica::mcp_bridge::MidiEditHistory mcpMidiHistory;
     auto mcpMidiPreview = lamusica::mcp_bridge::previewMidiCommand(
@@ -1506,6 +1668,10 @@ int main() {
     require(analysisJob.status == lamusica::mcp_bridge::RenderJobStatus::Completed &&
                 analysisJob.resultManifestJson.find("\"peak\"") != std::string::npos,
             "MCP render queue analyzes WAV outputs");
+    require(analysisJob.resultManifestJson.find("\"lufsEstimate\"") != std::string::npos &&
+                analysisJob.resultManifestJson.find("\"waveform\"") != std::string::npos &&
+                analysisJob.resultManifestJson.find("\"bucketCount\"") != std::string::npos,
+            "MCP render queue returns loudness and waveform analysis");
     require(analysisJob.resultManifestJson.find("\"explicitExport\":false") != std::string::npos,
             "MCP analysis of existing WAV is not marked as a generated export");
     const auto mcpBouncePath = std::filesystem::temp_directory_path() / "lamusica-mcp-bounce.wav";
@@ -1592,6 +1758,13 @@ int main() {
     require(refusedSourceOverwrite.status == lamusica::mcp_bridge::RenderJobStatus::Failed &&
                 !refusedSourceOverwrite.confirmationToken.empty(),
             "MCP transform refuses source overwrite without confirmation token");
+    const auto confirmedSourceOverwrite = renderQueue.enqueueTransformWav(
+        editSession, "reverse-overwrite-confirmed", mcpReversePath, mcpReversePath,
+        lamusica::mcp_bridge::AudioFileTransform::Reverse,
+        {.allowOverwrite = true,
+         .confirmationToken = lamusica::mcp_bridge::renderConfirmationToken(mcpReversePath)});
+    require(confirmedSourceOverwrite.status == lamusica::mcp_bridge::RenderJobStatus::Completed,
+            "MCP transform overwrites source media with confirmation token");
     lamusica::session::ProjectManifest bounceInPlaceManifest;
     bounceInPlaceManifest.tracks.push_back({.id = "mcp-bip-track",
                                             .name = "Bounce Track",
@@ -1718,6 +1891,15 @@ int main() {
          .clipId = "freeze-clip-2"});
     require(duplicateFreeze.status == lamusica::mcp_bridge::RenderJobStatus::Failed,
             "MCP freeze rejects duplicate asset ids");
+    const auto longRender =
+        renderQueue.enqueueLongRender(editSession, "long-render", mcpBouncePath, 0.42F);
+    require(longRender.status == lamusica::mcp_bridge::RenderJobStatus::Running &&
+                longRender.progress > 0.4F && longRender.progress < 0.5F,
+            "MCP long render reports bounded progress");
+    require(renderQueue.cancel("long-render") &&
+                renderQueue.find("long-render")->status ==
+                    lamusica::mcp_bridge::RenderJobStatus::Cancelled,
+            "MCP long render cancels cleanly");
     renderQueue.enqueuePending("pending-render", mcpBouncePath, "waiting");
     require(renderQueue.cancel("pending-render"), "MCP render queue cancels pending render");
     require(renderQueue.find("pending-render")->status ==
@@ -1768,12 +1950,26 @@ int main() {
     const lamusica::session::PatternClip workflowPattern{
         .id = "workflow-pattern", .name = "Workflow Pattern", .seed = 10};
     const auto drumPlan = lamusica::mcp_bridge::createDrumVariationPlan(workflowPattern, 5);
-    require(drumPlan.seed == workflowPattern.seed + 5, "workflow drum variation is deterministic");
+    require(drumPlan.seed == workflowPattern.seed + 5 && drumPlan.steps.size() == 1 &&
+                drumPlan.steps.front().commandName == "duplicate_pattern_variation" &&
+                drumPlan.steps.front().validationOk,
+            "workflow drum variation is deterministic and command-validated");
     auto rejectedPlan = drumPlan;
     lamusica::mcp_bridge::rejectStep(rejectedPlan, "duplicate-pattern");
     require(lamusica::mcp_bridge::workflowPlanJson(rejectedPlan).find("\"status\":\"rejected\"") !=
                 std::string::npos,
             "workflow plan records rejected step");
+    lamusica::session::ProjectManifest arrangeManifest;
+    arrangeManifest.markers.push_back({.id = "intro", .name = "Intro", .samplePosition = 0});
+    const auto arrangePlan = lamusica::mcp_bridge::createArrangeSectionsPlan(
+        arrangeManifest,
+        {{.id = "verse", .name = "Verse", .samplePosition = 48000},
+         {.id = "intro", .name = "Duplicate Intro", .samplePosition = 96000}},
+        55);
+    require(arrangePlan.steps.size() == 2 && arrangePlan.steps.front().validationOk &&
+                arrangePlan.steps.front().commandName == "add_marker" &&
+                !arrangePlan.steps.back().validationOk,
+            "workflow arrange sections resolves marker edits through command validation");
     lamusica::session::ProjectManifest labelManifest;
     labelManifest.tracks.push_back(
         {.id = "verse-track", .name = "Track 1", .type = lamusica::session::TrackType::Audio});
@@ -1791,6 +1987,9 @@ int main() {
     require(mixPlanA.steps.size() == 1 && mixPlanA.steps.front().validationOk &&
                 mixPlanA.steps.front().commandPreview == mixPlanB.steps.front().commandPreview,
             "workflow mix preparation is deterministic and command-validated");
+    require(lamusica::mcp_bridge::workflowPlanJson(mixPlanA) ==
+                lamusica::mcp_bridge::workflowPlanJson(mixPlanB),
+            "workflow output is reproducible for fixed inputs and seed");
     auto reviewPlan = rejectedHarmony;
     lamusica::mcp_bridge::reviewWorkflowPlan(
         reviewPlan, {.approvedStepIds = {"harmonize-note-0", "harmonize-note-1"},
@@ -1882,6 +2081,21 @@ int main() {
     const auto realtimeReport = lamusica::session::validateRealtimeCallbackPolicy(realtimeOps);
     require(!realtimeReport.noFileIo && !realtimeReport.lockFree && !realtimeReport.noMcpWork,
             "realtime policy detects forbidden operations");
+    const lamusica::audio::AudioGraph realtimeAuditGraph{
+        .nodes = {{.id = "audit-osc",
+                   .kind = lamusica::audio::GraphNodeKind::Sine,
+                   .frequencyHz = 220.0,
+                   .gain = 0.1F},
+                  {.id = "audit-master", .kind = lamusica::audio::GraphNodeKind::Output}},
+        .connections = {{.sourceNodeId = "audit-osc",
+                         .destinationNodeId = "audit-master",
+                         .gain = 1.0F}},
+        .outputNodeId = "audit-master"};
+    const auto callbackAudit = lamusica::session::auditRealtimeGraphCallback(
+        realtimeAuditGraph, {.sampleRate = 48000.0, .maxBlockSize = 128, .outputChannels = 2}, 128);
+    require(callbackAudit.callbackCompleted && callbackAudit.transportAdvanced &&
+                callbackAudit.policy.violations.empty() && callbackAudit.withinBlockDeadline,
+            "realtime callback instrumentation proves bounded graph callback safety");
     require(lamusica::session::thresholdsArePositive({}),
             "benchmark thresholds are positive by default");
     const auto machineContext = lamusica::session::currentMachineContext();
@@ -1896,32 +2110,42 @@ int main() {
         lamusica::session::evaluateBenchmarkResult({.startupMilliseconds = 500.0,
                                                     .pluginScanMilliseconds = 500.0,
                                                     .cpuWorkMilliseconds = 200.0,
+                                                    .editMilliseconds = 200.0,
                                                     .saveLoadMilliseconds = 1000.0,
                                                     .queryMilliseconds = 200.0,
+                                                    .mcpQueryMilliseconds = 200.0,
+                                                    .realtimeCallbackMilliseconds = 20.0,
+                                                    .realtimeCallbackSafe = false,
                                                     .renderRealtimeFactor = 2.0,
                                                     .estimatedMemoryBytes = 512U * 1024U * 1024U,
                                                     .estimatedDiskBytes = 128U * 1024U * 1024U},
                                                    {});
-    require(!failingBenchmark.passed && failingBenchmark.regressions.size() == 8,
+    require(!failingBenchmark.passed && failingBenchmark.regressions.size() == 11,
             "benchmark report catches performance regressions");
-    const auto measuredBenchmark =
-        lamusica::session::runStressBenchmark({.stressSpec = {.tracks = 3,
-                                                              .clipsPerTrack = 4,
-                                                              .markers = 2,
-                                                              .pluginsPerTrack = 1,
-                                                              .automationLanesPerTrack = 1,
-                                                              .midiNotesPerMidiClip = 3,
-                                                              .assets = 4,
-                                                              .mcpAuditEntries = 2},
-                                               .thresholds = {.maxSaveLoadMilliseconds = 5000.0,
-                                                              .maxQueryMilliseconds = 5000.0,
-                                                              .maxRenderRealtimeFactor = 1000.0},
-                                               .renderFrames = 64});
+    const auto measuredBenchmark = lamusica::session::runStressBenchmark(
+        {.stressSpec = {.tracks = 3,
+                        .clipsPerTrack = 4,
+                        .markers = 2,
+                        .pluginsPerTrack = 1,
+                        .automationLanesPerTrack = 1,
+                        .midiNotesPerMidiClip = 3,
+                        .assets = 4,
+                        .mcpAuditEntries = 2},
+         .thresholds = {.maxSaveLoadMilliseconds = 5000.0,
+                        .maxQueryMilliseconds = 5000.0,
+                        .maxMcpQueryMilliseconds = 5000.0,
+                        .maxRealtimeCallbackMilliseconds = 5000.0,
+                        .maxRenderRealtimeFactor = 1000.0},
+         .renderFrames = 64});
     require(measuredBenchmark.passed && measuredBenchmark.result.saveLoadMilliseconds >= 0.0 &&
                 measuredBenchmark.result.startupMilliseconds >= 0.0 &&
                 measuredBenchmark.result.pluginScanMilliseconds >= 0.0 &&
                 measuredBenchmark.result.cpuWorkMilliseconds >= 0.0 &&
+                measuredBenchmark.result.editMilliseconds >= 0.0 &&
                 measuredBenchmark.result.queryMilliseconds >= 0.0 &&
+                measuredBenchmark.result.mcpQueryMilliseconds >= 0.0 &&
+                measuredBenchmark.result.realtimeCallbackMilliseconds >= 0.0 &&
+                measuredBenchmark.result.realtimeCallbackSafe &&
                 measuredBenchmark.result.renderRealtimeFactor >= 0.0 &&
                 measuredBenchmark.result.estimatedMemoryBytes > 0U &&
                 measuredBenchmark.result.estimatedDiskBytes > 0U,

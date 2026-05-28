@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lamusica/audio/AudioEngine.hpp"
 #include "lamusica/session/Midi.hpp"
 #include "lamusica/session/ProjectManifest.hpp"
 
@@ -26,8 +27,11 @@ struct BenchmarkThresholds {
     double maxStartupMilliseconds{250.0};
     double maxPluginScanMilliseconds{250.0};
     double maxCpuWorkMilliseconds{100.0};
+    double maxEditMilliseconds{100.0};
     double maxSaveLoadMilliseconds{500.0};
     double maxQueryMilliseconds{100.0};
+    double maxMcpQueryMilliseconds{100.0};
+    double maxRealtimeCallbackMilliseconds{10.0};
     double maxRenderRealtimeFactor{1.0};
     std::size_t maxEstimatedMemoryBytes{256U * 1024U * 1024U};
     std::size_t maxEstimatedDiskBytes{64U * 1024U * 1024U};
@@ -48,6 +52,16 @@ struct StressProjectFixture {
     std::vector<MidiClipData> midiClips;
 };
 
+struct RealtimeCallbackAudit {
+    RealtimeSafetyReport policy;
+    double callbackMilliseconds{0.0};
+    std::uint32_t frames{0};
+    bool callbackCompleted{false};
+    bool transportAdvanced{false};
+    bool withinBlockDeadline{false};
+    std::vector<std::string> operations;
+};
+
 struct MachineContext {
     std::string cpuModel{"unknown"};
     std::size_t logicalCores{0};
@@ -60,8 +74,12 @@ struct BenchmarkResult {
     double startupMilliseconds{0.0};
     double pluginScanMilliseconds{0.0};
     double cpuWorkMilliseconds{0.0};
+    double editMilliseconds{0.0};
     double saveLoadMilliseconds{0.0};
     double queryMilliseconds{0.0};
+    double mcpQueryMilliseconds{0.0};
+    double realtimeCallbackMilliseconds{0.0};
+    bool realtimeCallbackSafe{true};
     double renderRealtimeFactor{0.0};
     std::size_t estimatedMemoryBytes{0};
     std::size_t estimatedDiskBytes{0};
@@ -86,6 +104,9 @@ struct StressBenchmarkOptions {
 [[nodiscard]] StressProjectFixture makeStressProjectFixture(StressProjectSpec spec);
 [[nodiscard]] RealtimeSafetyReport
 validateRealtimeCallbackPolicy(std::span<const std::string> operations);
+[[nodiscard]] RealtimeCallbackAudit auditRealtimeGraphCallback(const audio::AudioGraph& graph,
+                                                               audio::EngineConfig config = {},
+                                                               std::uint32_t frames = 128);
 [[nodiscard]] bool thresholdsArePositive(BenchmarkThresholds thresholds) noexcept;
 [[nodiscard]] MachineContext currentMachineContext();
 [[nodiscard]] std::size_t estimateStressProjectMemoryBytes(const StressProjectFixture& fixture);

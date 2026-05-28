@@ -2,7 +2,8 @@
 
 LaMusica is planned as an open-source macOS Digital Audio Workstation with a system-level MCP server so AI agents can assist with orchestration, editing, sequencing, mixing, and project operations.
 
-This repository currently contains the deterministic build plan. Agents should start with:
+This repository contains the current LaMusica source, fixtures, documentation, and release
+scaffolding. Agents should start with:
 
 1. [Mission](docs/mission/product-mission.md)
 2. [Architecture Baseline](docs/architecture/architecture-baseline.md)
@@ -13,14 +14,16 @@ The product target is a full DAW, not an MVP.
 
 ## Project Status
 
-Bootstrap in progress. The repository is executing the numbered task plan under [docs/tasks](docs/tasks/README.md).
+Bootstrap implementation is complete through the packaging and release task. The numbered task plan
+is tracked under [docs/tasks](docs/tasks/README.md), and current user, developer, performance, MCP,
+and release documentation is installed into packages.
 
-## Planned Build Prerequisites
+## Build Prerequisites
 
 - macOS with a modern Xcode toolchain.
 - C++23 for LaMusica-owned code, with JUCE/plugin boundary compatibility verified by CI.
-- JUCE 8.
-- CMake or the selected committed generator once task 002 is implemented.
+- CMake.
+- Optional JUCE 8 checkout when enabling JUCE-backed targets.
 
 Third-party dependency policy is documented in
 [docs/developer/dependencies.md](docs/developer/dependencies.md). The build does not download

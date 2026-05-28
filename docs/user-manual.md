@@ -10,6 +10,16 @@ This manual is a living outline until the JUCE application UI is complete.
 - Render exports.
 - Use MCP agents through scoped capabilities.
 
+## Installation And First Launch
+
+Install signed public releases from the LaMusica disk image by dragging `LaMusica.app` to
+`/Applications`. The app should launch from Finder without Xcode, CMake, or other developer tools.
+Unsigned nightly archives are contributor artifacts and may require local security approval.
+
+Packaged command-line tools live beside the app distribution and can validate projects or check MCP
+daemon health. Example and tutorial projects shipped with the package use generated or empty media
+references so they can open without external sample packs.
+
 ## Recording
 
 Grant microphone permission when macOS asks for it. Recordings are written as project media and can

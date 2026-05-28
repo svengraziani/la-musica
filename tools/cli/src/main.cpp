@@ -133,8 +133,11 @@ int main(int argc, char** argv) {
                  .thresholds = {.maxStartupMilliseconds = 5000.0,
                                 .maxPluginScanMilliseconds = 5000.0,
                                 .maxCpuWorkMilliseconds = 5000.0,
+                                .maxEditMilliseconds = 5000.0,
                                 .maxSaveLoadMilliseconds = 5000.0,
                                 .maxQueryMilliseconds = 5000.0,
+                                .maxMcpQueryMilliseconds = 5000.0,
+                                .maxRealtimeCallbackMilliseconds = 5000.0,
                                 .maxRenderRealtimeFactor = 1000.0,
                                 .maxEstimatedMemoryBytes = 512U * 1024U * 1024U,
                                 .maxEstimatedDiskBytes = 128U * 1024U * 1024U},
@@ -143,16 +146,19 @@ int main(int argc, char** argv) {
                       << " startupMs=" << report.result.startupMilliseconds
                       << " pluginScanMs=" << report.result.pluginScanMilliseconds
                       << " cpuWorkMs=" << report.result.cpuWorkMilliseconds
+                      << " editMs=" << report.result.editMilliseconds
                       << " saveLoadMs=" << report.result.saveLoadMilliseconds
                       << " queryMs=" << report.result.queryMilliseconds
+                      << " mcpQueryMs=" << report.result.mcpQueryMilliseconds
+                      << " realtimeCallbackMs=" << report.result.realtimeCallbackMilliseconds
+                      << " realtimeSafe=" << (report.result.realtimeCallbackSafe ? "true" : "false")
                       << " renderRealtimeFactor=" << report.result.renderRealtimeFactor
                       << " memoryBytes=" << report.result.estimatedMemoryBytes
                       << " diskBytes=" << report.result.estimatedDiskBytes << " cpu=\""
-                      << report.machine.cpuModel << "\""
-                      << " cores=" << report.machine.logicalCores
+                      << report.machine.cpuModel << "\"" << " cores=" << report.machine.logicalCores
                       << " memoryMb=" << report.machine.memoryMegabytes << " os=\""
-                      << report.machine.operatingSystem << "\""
-                      << " compiler=\"" << report.machine.compiler << "\"\n";
+                      << report.machine.operatingSystem << "\"" << " compiler=\""
+                      << report.machine.compiler << "\"\n";
             if (!report.passed) {
                 std::cerr << "benchmark regressions:";
                 for (const auto& regression : report.regressions) {
