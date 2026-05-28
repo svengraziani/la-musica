@@ -2,7 +2,10 @@
 
 ## Execution Order
 
-Agents execute task files in ascending numeric order from [Task Index](../tasks/README.md). A task may start only when all listed dependencies are complete and verified.
+Agents execute only the active remaining tasks listed in
+[Task Index](../tasks/README.md). A task may start only when all listed dependencies are complete
+and verified. Historical task files that are no longer listed in the active table are reference
+material, not execution targets.
 
 ## Required Work Per Task
 

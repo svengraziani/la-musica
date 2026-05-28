@@ -1,35 +1,44 @@
-# Task Index
+# Remaining Task Index
 
-Execute these tasks in order. Each numbered file is intended to be small enough for a dedicated agent pass while still preserving the full DAW target.
+This index tracks the remaining work needed to turn the current bootstrap repository into the
+intended full macOS DAW. The previous 001-025 bootstrap plan is no longer the active execution
+order: much of it has been implemented as first-track/session scaffolding, and some items were
+intentionally deferred until JUCE and production UI dependencies are pinned.
 
-For task-level choices and tradeoffs, use the [Decision And Compromise Register](../planning/decision-compromise-register.md).
+For task-level choices and tradeoffs, use the
+[Decision And Compromise Register](../planning/decision-compromise-register.md).
+
+## Current Baseline
+
+- The repository, CMake presets, app bundle target, MCP daemon target, CLI target, libraries, tests,
+  fixtures, packaging scaffolding, and developer docs exist.
+- `LaMusica.app` currently launches a minimal native Cocoa bootstrap shell with text panels and
+  command menus.
+- JUCE 8 is intended for the production app, but remains optional and disabled by default until it
+  is pinned and supplied through the documented dependency workflow.
+- Session, command, audio render, project format, first-track, MCP bridge, and packaging work exists
+  as scaffolding, but the production DAW UI and several professional workflows are still missing.
+
+## Active Remaining Tasks
 
 | Order | Task | Depends On |
 | --- | --- | --- |
-| 001 | [Repository Bootstrap](001-repository-bootstrap.md) | None |
-| 002 | [Build, Tooling, And CI](002-build-tooling-ci.md) | 001 |
-| 003 | [Application Shell](003-application-shell.md) | 002 |
-| 004 | [Audio Engine Core](004-audio-engine-core.md) | 003 |
-| 005 | [Session Model And Project Format](005-session-model-project-format.md) | 004 |
-| 006 | [Undoable Command Layer](006-undoable-command-layer.md) | 005 |
-| 007 | [Arrangement Timeline](007-arrangement-timeline.md) | 006 |
-| 008 | [Audio Clip Editing](008-audio-clip-editing.md) | 007 |
-| 009 | [Audio Import, Recording, And Export](009-audio-import-recording-export.md) | 008 |
-| 010 | [MIDI Core](010-midi-core.md) | 006 |
-| 011 | [Piano Roll And MIDI Editing](011-piano-roll-midi-editing.md) | 010 |
-| 012 | [Drum Machine](012-drum-machine.md) | 010 |
-| 013 | [Step Sequencer And Patterns](013-step-sequencer-patterns.md) | 012 |
-| 014 | [Plugin Hosting](014-plugin-hosting.md) | 004, 006 |
-| 015 | [Mixer And Routing](015-mixer-routing.md) | 004, 014 |
-| 016 | [Automation System](016-automation-system.md) | 006, 015 |
-| 017 | [Warping, Stretching, And Pitch](017-warp-stretch-pitch.md) | 008 |
-| 018 | [Browser, Assets, And Media Analysis](018-browser-assets-analysis.md) | 005, 009 |
-| 019 | [MCP Daemon Foundation](019-mcp-daemon-foundation.md) | 006 |
-| 020 | [MCP DAW Query Tools](020-mcp-daw-query-tools.md) | 019 |
-| 021 | [MCP Editing Tools](021-mcp-editing-tools.md) | 020, 006 |
-| 022 | [MCP Audio And Render Tools](022-mcp-audio-render-tools.md) | 021, 009 |
-| 023 | [AI Orchestration Workflows](023-ai-orchestration-workflows.md) | 021, 011, 013 |
-| 024 | [Performance, Stress, And Realtime Verification](024-performance-stress-realtime.md) | 004-023 |
-| 025 | [Packaging, Signing, Docs, And Release](025-packaging-signing-docs-release.md) | 024 |
+| 026 | [Pin JUCE And Production App Target](026-pin-juce-production-app.md) | Current baseline |
+| 027 | [Replace Bootstrap Cocoa Shell With DAW Shell](027-production-daw-shell.md) | 026 |
+| 028 | [Arrangement Timeline UI](028-arrangement-timeline-ui.md) | 027 |
+| 029 | [Audio Clip Editing UI And Waveforms](029-audio-clip-editing-ui-waveforms.md) | 028 |
+| 030 | [MIDI, Piano Roll, Drum Machine, And Patterns UI](030-midi-piano-roll-drums-patterns-ui.md) | 027, 028 |
+| 031 | [Plugin Hosting And Plugin UI](031-plugin-hosting-ui.md) | 026, 027 |
+| 032 | [Mixer, Routing, And Automation UI](032-mixer-routing-automation-ui.md) | 031 |
+| 033 | [Browser, Assets, Import, Recording, And Export UX](033-browser-assets-import-record-export-ux.md) | 027, 029 |
+| 034 | [Production MCP App Integration](034-production-mcp-app-integration.md) | 027, 028, 032 |
+| 035 | [Performance, Stress, And Realtime Verification](035-performance-stress-realtime-verification.md) | 028-034 |
+| 036 | [Release Hardening, Signing, Docs, And Examples](036-release-hardening-signing-docs-examples.md) | 035 |
 
-Use [000-task-template.md](000-task-template.md) for any new task added later.
+## Retired From Active Planning
+
+The old 001-025 task files are retained as historical source material only. Do not treat them as the
+current task order. When a remaining task overlaps an old task, follow the 026-036 task file and use
+the older file only for background acceptance criteria.
+
+Use [000-task-template.md](000-task-template.md) for any new active task added later.

@@ -14,9 +14,10 @@ The product target is a full DAW, not an MVP.
 
 ## Project Status
 
-Bootstrap implementation is complete through the packaging and release task. The numbered task plan
-is tracked under [docs/tasks](docs/tasks/README.md), and current user, developer, performance, MCP,
-and release documentation is installed into packages.
+Bootstrap implementation is complete through the packaging and release scaffolding. The active
+remaining task plan is tracked under [docs/tasks](docs/tasks/README.md), with the production JUCE
+app shell and full DAW UI called out as the next major gaps. Current user, developer, performance,
+MCP, and release documentation is installed into packages.
 
 ## Build Prerequisites
 
