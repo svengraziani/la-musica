@@ -163,6 +163,7 @@
       "required": ["id", "targetId", "parameterId", "mode", "defaultValue", "regions"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
+        "targetKind": { "enum": ["mixer", "plugin", "instrument", "clip"] },
         "targetId": { "$ref": "#/$defs/id" },
         "parameterId": { "type": "string", "minLength": 1 },
         "mode": { "enum": ["off", "read", "write", "touch", "latch", "trim"] },

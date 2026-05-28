@@ -114,7 +114,8 @@ const AutomationLaneData* selectAutomationLane(std::span<const AutomationLaneDat
     }
 
     const auto lane = std::ranges::find_if(lanes, [&selection](const AutomationLaneData& item) {
-        return item.targetId == selection.targetId && item.parameterId == selection.parameterId;
+        return item.targetKind == selection.targetKind && item.targetId == selection.targetId &&
+               item.parameterId == selection.parameterId;
     });
     if (lane == lanes.end()) {
         return nullptr;
@@ -216,6 +217,9 @@ AutomationCommandBatch captureAutomationWrite(AutomationLaneData& lane,
 
 void applyAutomationToMixer(MixerState& mixer, const AutomationLaneData& lane,
                             std::int64_t samplePosition) {
+    if (lane.targetKind != AutomationTargetKind::Mixer) {
+        return;
+    }
     if (lane.targetId.empty()) {
         throw std::runtime_error("Automation lane target id must not be empty");
     }
@@ -259,6 +263,9 @@ void applyAutomationBlockToMixer(MixerState& mixer, std::span<const AutomationLa
 
 void applyAutomationToPluginChain(PluginInsertChain& chain, const AutomationLaneData& lane,
                                   std::int64_t samplePosition) {
+    if (lane.targetKind != AutomationTargetKind::Plugin) {
+        return;
+    }
     if (lane.targetId.empty()) {
         throw std::runtime_error("Automation lane target id must not be empty");
     }
@@ -287,11 +294,19 @@ void applyAutomationBlockToPluginChain(PluginInsertChain& chain,
 
 void applyAutomationToInstrumentChain(PluginInsertChain& chain, const AutomationLaneData& lane,
                                       std::int64_t samplePosition) {
-    applyAutomationToPluginChain(chain, lane, samplePosition);
+    if (lane.targetKind != AutomationTargetKind::Instrument) {
+        return;
+    }
+    AutomationLaneData pluginLane = lane;
+    pluginLane.targetKind = AutomationTargetKind::Plugin;
+    applyAutomationToPluginChain(chain, pluginLane, samplePosition);
 }
 
 void applyAutomationToClip(Clip& clip, const AutomationLaneData& lane,
                            std::int64_t samplePosition) {
+    if (lane.targetKind != AutomationTargetKind::Clip) {
+        return;
+    }
     if (lane.targetId.empty()) {
         throw std::runtime_error("Automation lane target id must not be empty");
     }
@@ -325,6 +340,9 @@ void applyAutomationToClip(Clip& clip, const AutomationLaneData& lane,
 void applyAutomationBlockToClips(std::span<Clip> clips, std::span<const AutomationLaneData> lanes,
                                  std::int64_t samplePosition) {
     for (const auto& lane : lanes) {
+        if (lane.targetKind != AutomationTargetKind::Clip) {
+            continue;
+        }
         auto clip = std::ranges::find_if(
             clips, [&lane](const Clip& item) { return item.id == lane.targetId; });
         if (clip == clips.end()) {

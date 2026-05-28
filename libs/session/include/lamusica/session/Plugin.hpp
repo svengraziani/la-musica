@@ -97,6 +97,7 @@ struct PluginPreset {
 void mergeScanResult(PluginScanCache& cache, PluginScanResult result);
 [[nodiscard]] bool isBlacklisted(const PluginScanCache& cache, std::string_view identifier);
 void blacklistPlugin(PluginScanCache& cache, std::string identifier, std::string reason);
+void allowPluginRescan(PluginScanCache& cache, std::string_view identifier);
 [[nodiscard]] PluginScanReport scanPluginCandidates(PluginScanCache& cache,
                                                     std::span<const PluginScanCandidate> candidates,
                                                     PluginScanPolicy policy = {});

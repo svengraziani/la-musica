@@ -68,6 +68,12 @@ struct VelocityTransform {
     float scale{1.0F};
 };
 
+struct HumanizeSettings {
+    std::int64_t maxTimingOffsetSamples{0};
+    int maxVelocityOffset{0};
+    std::uint32_t seed{0};
+};
+
 enum class MidiEventType {
     NoteOn,
     NoteOff,
@@ -165,6 +171,7 @@ findMidiOutputRoute(const MidiDeviceConfiguration& configuration, std::string_vi
 void quantizeNotes(MidiClipData& clip, QuantizeSettings settings);
 void transposeNotes(MidiClipData& clip, int semitones);
 void transformVelocity(MidiClipData& clip, VelocityTransform transform);
+void humanizeNotes(MidiClipData& clip, HumanizeSettings settings);
 void setNoteLengths(MidiClipData& clip, std::int64_t lengthSamples);
 void legato(MidiClipData& clip);
 void commitMidiRecording(MidiClipData& clip, const MidiRecordingCommit& recording);

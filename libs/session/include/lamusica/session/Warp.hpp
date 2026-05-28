@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lamusica/audio/AudioEngine.hpp"
+
 #include <cstdint>
 #include <span>
 #include <string>
@@ -98,6 +100,10 @@ findValidRenderCacheEntry(std::span<const RenderCacheEntry> cache, std::string_v
                                                 std::int64_t sourceStartSample,
                                                 std::int64_t sourceEndSample,
                                                 std::string relativePath);
+[[nodiscard]] audio::RenderedAudio renderWarpedAudio(const audio::RenderedAudio& source,
+                                                     const WarpRenderPlan& plan);
+[[nodiscard]] audio::RenderedAudio renderWarpPreview(const audio::RenderedAudio& source,
+                                                     const WarpRenderPlan& plan);
 [[nodiscard]] bool warpRenderPlansAgree(const WarpRenderPlan& offlinePlan,
                                         const WarpRenderPlan& previewPlan,
                                         std::int64_t sampleTolerance);

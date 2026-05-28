@@ -157,6 +157,33 @@ void transformVelocity(MidiClipData& clip, VelocityTransform transform) {
     }
 }
 
+void humanizeNotes(MidiClipData& clip, HumanizeSettings settings) {
+    const auto timingRange = std::max<std::int64_t>(0, settings.maxTimingOffsetSamples);
+    const auto velocityRange = std::max(0, settings.maxVelocityOffset);
+    if (timingRange == 0 && velocityRange == 0) {
+        return;
+    }
+
+    auto state = settings.seed == 0U ? 0xA5A5A5A5U : settings.seed;
+    const auto nextRandom = [&state]() {
+        state = (state * 1664525U) + 1013904223U;
+        return state;
+    };
+
+    for (auto& note : clip.notes) {
+        if (timingRange > 0) {
+            const auto span = static_cast<std::uint64_t>((timingRange * 2) + 1);
+            const auto offset = static_cast<std::int64_t>(nextRandom() % span) - timingRange;
+            note.startSample = std::max<std::int64_t>(0, note.startSample + offset);
+        }
+        if (velocityRange > 0) {
+            const auto span = static_cast<std::uint32_t>((velocityRange * 2) + 1);
+            const auto offset = static_cast<int>(nextRandom() % span) - velocityRange;
+            note.velocity = clampMidi7Bit(static_cast<int>(note.velocity) + offset);
+        }
+    }
+}
+
 void setNoteLengths(MidiClipData& clip, std::int64_t lengthSamples) {
     const auto safeLength = std::max<std::int64_t>(0, lengthSamples);
     for (auto& note : clip.notes) {

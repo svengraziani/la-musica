@@ -2318,7 +2318,7 @@ CommandResult CommandHistory::redo(session::ProjectManifest& manifest) {
     auto command = std::move(redoStack_.back());
     redoStack_.pop_back();
 
-    const auto result = command->apply(manifest);
+    const auto result = command->redo(manifest);
     if (!result.ok) {
         redoStack_.push_back(std::move(command));
         return result;

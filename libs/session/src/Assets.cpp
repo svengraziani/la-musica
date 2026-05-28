@@ -1,8 +1,11 @@
 #include "lamusica/session/Assets.hpp"
 
+#include "lamusica/audio/WavFile.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 #include <stdexcept>
 
@@ -87,6 +90,10 @@ std::filesystem::path uniqueCollectedRelativePath(const AssetCatalog& catalog,
 
 } // namespace
 
+bool isSupportedAudioImportExtension(const std::filesystem::path& path) {
+    return lowercase(path.extension().string()) == ".wav";
+}
+
 AssetRecord* findAsset(AssetCatalog& catalog, std::string_view assetId) noexcept {
     const auto found = std::ranges::find_if(
         catalog.assets, [assetId](const AssetRecord& asset) { return asset.id == assetId; });
@@ -154,6 +161,46 @@ AssetImportPlan planAssetImport(const AssetCatalog& catalog, std::filesystem::pa
             .sourcePath = std::move(sourcePath),
             .destinationPath = destinationPath,
             .copyIntoProject = copyIntoProject};
+}
+
+ImportedAudioAsset importAudioAsset(AssetCatalog& catalog, AudioAssetImportOptions options) {
+    if (!isSupportedAudioImportExtension(options.sourcePath)) {
+        throw std::runtime_error("Unsupported audio import format: " +
+                                 options.sourcePath.extension().string());
+    }
+    if (!std::filesystem::exists(options.sourcePath)) {
+        throw std::runtime_error("Audio import source file was not found");
+    }
+    if (options.samplesPerWaveformBucket <= 0) {
+        throw std::runtime_error("Audio import waveform bucket size must be positive");
+    }
+
+    auto plan = planAssetImport(catalog, options.sourcePath, std::move(options.assetId),
+                                AssetKind::Audio, std::move(options.tags), options.copyIntoProject);
+    const auto wav = audio::readPcm16Wav(plan.sourcePath);
+    auto analysis = analyzeAudioAsset(plan.record.id, wav.audio, wav.sampleRate,
+                                      options.samplesPerWaveformBucket);
+
+    if (plan.copyIntoProject) {
+        if (plan.destinationPath.has_parent_path()) {
+            std::filesystem::create_directories(plan.destinationPath.parent_path());
+        }
+        const auto destinationAlreadyExists = std::filesystem::exists(plan.destinationPath);
+        const auto sourceIsDestination =
+            destinationAlreadyExists &&
+            std::filesystem::equivalent(plan.sourcePath, plan.destinationPath);
+        if (!sourceIsDestination) {
+            std::filesystem::copy_file(plan.sourcePath, plan.destinationPath,
+                                       std::filesystem::copy_options::none);
+        }
+    }
+
+    plan.record.missing = !std::filesystem::exists(plan.destinationPath);
+    addAsset(catalog, plan.record);
+    upsertAnalysis(catalog, analysis.analysis);
+    upsertWaveform(catalog, analysis.waveform);
+
+    return {.plan = std::move(plan), .analysis = std::move(analysis)};
 }
 
 void markMissingAssets(AssetCatalog& catalog) {

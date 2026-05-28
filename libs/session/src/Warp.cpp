@@ -2,11 +2,71 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <limits>
 #include <numbers>
 #include <sstream>
 #include <stdexcept>
 
 namespace lamusica::session {
+namespace {
+
+void validateSourceAudio(const audio::RenderedAudio& source) {
+    if (source.channels == 0U || source.frames == 0U) {
+        throw std::runtime_error("Warp render source audio must not be empty");
+    }
+    if (source.interleavedSamples.size() !=
+        static_cast<std::size_t>(source.channels) * source.frames) {
+        throw std::runtime_error("Warp render source audio size does not match channel layout");
+    }
+}
+
+float sampleFrameChannel(const audio::RenderedAudio& source, std::int64_t frame,
+                         std::uint32_t channel) {
+    const auto clampedFrame =
+        std::clamp<std::int64_t>(frame, 0, static_cast<std::int64_t>(source.frames) - 1);
+    return source
+        .interleavedSamples[static_cast<std::size_t>(clampedFrame) * source.channels + channel];
+}
+
+float cubicInterpolate(float previous, float current, float next, float following,
+                       double position) noexcept {
+    const auto a = (-0.5F * previous) + (1.5F * current) - (1.5F * next) + (0.5F * following);
+    const auto b = previous - (2.5F * current) + (2.0F * next) - (0.5F * following);
+    const auto c = (-0.5F * previous) + (0.5F * next);
+    const auto d = current;
+    return static_cast<float>(((a * position + b) * position + c) * position + d);
+}
+
+float interpolatedSample(const audio::RenderedAudio& source, double sourcePosition,
+                         std::uint32_t channel, StretchQuality quality) {
+    switch (quality) {
+    case StretchQuality::Preview:
+        return sampleFrameChannel(source, static_cast<std::int64_t>(std::llround(sourcePosition)),
+                                  channel);
+    case StretchQuality::Balanced: {
+        const auto left = static_cast<std::int64_t>(std::floor(sourcePosition));
+        const auto right = left + 1;
+        const auto position = sourcePosition - static_cast<double>(left);
+        return sampleFrameChannel(source, left, channel) +
+               static_cast<float>((sampleFrameChannel(source, right, channel) -
+                                   sampleFrameChannel(source, left, channel)) *
+                                  position);
+    }
+    case StretchQuality::High: {
+        const auto current = static_cast<std::int64_t>(std::floor(sourcePosition));
+        const auto position = sourcePosition - static_cast<double>(current);
+        return cubicInterpolate(sampleFrameChannel(source, current - 1, channel),
+                                sampleFrameChannel(source, current, channel),
+                                sampleFrameChannel(source, current + 1, channel),
+                                sampleFrameChannel(source, current + 2, channel), position);
+    }
+    }
+    return sampleFrameChannel(source, static_cast<std::int64_t>(std::llround(sourcePosition)),
+                              channel);
+}
+
+} // namespace
 
 std::int64_t conformSampleToTempo(std::int64_t sourceSample, double sourceTempoBpm,
                                   double targetTempoBpm) noexcept {
@@ -211,6 +271,50 @@ WarpRenderPlan makeWarpRenderPlan(const WarpState& warp, std::span<const RenderC
         .pitchRatio = pitchShiftRatio(warp.pitchShiftSemitones),
         .quality = warp.quality,
         .cacheHit = cacheEntry != nullptr};
+}
+
+audio::RenderedAudio renderWarpedAudio(const audio::RenderedAudio& source,
+                                       const WarpRenderPlan& plan) {
+    validateSourceAudio(source);
+    if (plan.sourceStartSample < 0 || plan.sourceEndSample <= plan.sourceStartSample ||
+        plan.sourceEndSample > source.frames) {
+        throw std::runtime_error("Warp render source range is outside source audio");
+    }
+    if (plan.timelineEndSample <= plan.timelineStartSample || plan.stretchRatio <= 0.0 ||
+        plan.pitchRatio <= 0.0) {
+        throw std::runtime_error("Warp render plan timing and ratios must be positive");
+    }
+
+    const auto outputFrames64 = plan.timelineEndSample - plan.timelineStartSample;
+    if (outputFrames64 > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("Warp render output is too large");
+    }
+
+    audio::RenderedAudio rendered{.channels = source.channels,
+                                  .frames = static_cast<std::uint32_t>(outputFrames64),
+                                  .interleavedSamples = std::vector<float>(
+                                      static_cast<std::size_t>(outputFrames64) * source.channels)};
+
+    for (std::uint32_t frame = 0; frame < rendered.frames; ++frame) {
+        const auto sourceOffset =
+            (static_cast<double>(frame) / plan.stretchRatio) * plan.pitchRatio;
+        const auto sourcePosition =
+            std::clamp(static_cast<double>(plan.sourceStartSample) + sourceOffset,
+                       static_cast<double>(plan.sourceStartSample),
+                       static_cast<double>(plan.sourceEndSample - 1));
+        for (std::uint32_t channel = 0; channel < source.channels; ++channel) {
+            rendered
+                .interleavedSamples[static_cast<std::size_t>(frame) * source.channels + channel] =
+                interpolatedSample(source, sourcePosition, channel, plan.quality);
+        }
+    }
+
+    return rendered;
+}
+
+audio::RenderedAudio renderWarpPreview(const audio::RenderedAudio& source,
+                                       const WarpRenderPlan& plan) {
+    return renderWarpedAudio(source, plan);
 }
 
 bool warpRenderPlansAgree(const WarpRenderPlan& offlinePlan, const WarpRenderPlan& previewPlan,

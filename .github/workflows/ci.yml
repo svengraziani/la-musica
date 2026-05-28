@@ -18,6 +18,8 @@ jobs:
       - name: Formatting check
         run: |
           find apps libs tools tests \( -name '*.cpp' -o -name '*.hpp' -o -name '*.mm' \) -exec xcrun clang-format --dry-run --Werror {} +
+      - name: Markdown lint
+        run: cmake -P cmake/CheckMarkdown.cmake
       - name: Configure ASan
         run: cmake --preset asan
       - name: Build ASan

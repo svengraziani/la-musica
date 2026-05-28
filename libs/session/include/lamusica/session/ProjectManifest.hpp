@@ -96,6 +96,7 @@ struct PluginReference {
 
 struct AutomationLane {
     std::string id;
+    AutomationTargetKind targetKind{AutomationTargetKind::Mixer};
     std::string targetId;
     std::string parameterId;
     AutomationMode mode{AutomationMode::Read};

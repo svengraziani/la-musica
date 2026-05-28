@@ -474,6 +474,17 @@ int main() {
     require(history.redo(commandManifest).ok, "add track command redoes");
     require(commandManifest.tracks.size() == 1, "redo restores manifest mutation");
 
+    lamusica::session::ProjectManifest explicitRedoManifest;
+    auto explicitRedoTrack =
+        lamusica::commands::makeAddTrackCommand("cmd-1b", "audit-1b",
+                                                {.id = "track-command-redo",
+                                                 .name = "Explicit Redo Track",
+                                                 .type = lamusica::session::TrackType::Audio});
+    require(explicitRedoTrack->apply(explicitRedoManifest).ok, "command interface applies");
+    require(explicitRedoTrack->undo(explicitRedoManifest).ok, "command interface undoes");
+    require(explicitRedoTrack->redo(explicitRedoManifest).ok, "command interface exposes redo");
+    require(explicitRedoManifest.tracks.size() == 1, "explicit redo reapplies command mutation");
+
     auto addClip =
         lamusica::commands::makeAddClipCommand("cmd-2", "audit-2",
                                                {.id = "clip-1",
@@ -1605,6 +1616,7 @@ int main() {
         {.id = "plugin-1", .trackId = "track-1", .format = "AU", .identifier = "example.eq"});
     manifest.automation.push_back(
         {.id = "automation-1",
+         .targetKind = lamusica::session::AutomationTargetKind::Plugin,
          .targetId = "plugin-1",
          .parameterId = "gain",
          .mode = lamusica::session::AutomationMode::Touch,
@@ -1644,6 +1656,8 @@ int main() {
                 parsedManifest.plugins.front().identifier == "example.eq",
             "project manifest plugins round trip");
     require(parsedManifest.automation.size() == 1 &&
+                parsedManifest.automation.front().targetKind ==
+                    lamusica::session::AutomationTargetKind::Plugin &&
                 parsedManifest.automation.front().parameterId == "gain" &&
                 parsedManifest.automation.front().mode ==
                     lamusica::session::AutomationMode::Touch &&
@@ -1895,6 +1909,20 @@ int main() {
     require(midiClip.notes.front().pitch == 76, "MIDI transpose changes pitch");
     lamusica::session::transformVelocity(midiClip, {.add = -10, .scale = 0.5F});
     require(midiClip.notes.front().velocity == 30, "MIDI velocity transform clamps and scales");
+    auto humanizedA = midiClip;
+    auto humanizedB = midiClip;
+    lamusica::session::humanizeNotes(
+        humanizedA, {.maxTimingOffsetSamples = 120, .maxVelocityOffset = 8, .seed = 42});
+    lamusica::session::humanizeNotes(
+        humanizedB, {.maxTimingOffsetSamples = 120, .maxVelocityOffset = 8, .seed = 42});
+    require(humanizedA.notes.front().startSample == humanizedB.notes.front().startSample &&
+                humanizedA.notes.front().velocity == humanizedB.notes.front().velocity,
+            "MIDI humanize is deterministic for a seed");
+    require(std::abs(humanizedA.notes.front().startSample - midiClip.notes.front().startSample) <=
+                    120 &&
+                std::abs(static_cast<int>(humanizedA.notes.front().velocity) -
+                         static_cast<int>(midiClip.notes.front().velocity)) <= 8,
+            "MIDI humanize respects timing and velocity bounds");
     lamusica::session::setNoteLengths(midiClip, 4800);
     require(midiClip.notes.front().lengthSamples == 4800, "MIDI note length transform applies");
     const auto orderedNotes = lamusica::session::notesInPlaybackOrder(midiClip);
@@ -2084,6 +2112,9 @@ int main() {
     require(visibleNotes.size() == 1 && visibleNotes.front().id == "pr-1",
             "piano roll filters notes by range");
     require(lamusica::session::pitchName(60) == "C4", "piano roll pitch names middle C");
+    require(lamusica::session::drumNoteName(36, {{.pitch = 36, .name = "Kick"}}) == "Kick" &&
+                lamusica::session::drumNoteName(38, {{.pitch = 36, .name = "Kick"}}) == "D2",
+            "piano roll drum note naming overrides chromatic fallback per pitch");
     pianoRollClip.notes.push_back(
         {.id = "pr-3", .startSample = 0, .lengthSamples = 12000, .pitch = 64});
     pianoRollClip.notes.push_back(
@@ -2219,6 +2250,38 @@ int main() {
     const auto filteredPad = lamusica::session::renderDrumPadSample(playablePad, drumSource, 127);
     require(filteredPad.interleavedSamples[2] < renderedPad.interleavedSamples[2],
             "drum machine sample playback applies simple low-pass filtering");
+    auto routedDrumPreset = drumPreset;
+    routedDrumPreset.pads[0].sampleStart = 0;
+    routedDrumPreset.pads[0].sampleEnd = 0;
+    routedDrumPreset.pads[1].sampleStart = 0;
+    routedDrumPreset.pads[1].sampleEnd = 0;
+    routedDrumPreset.pads[2].sampleStart = 0;
+    routedDrumPreset.pads[2].sampleEnd = 0;
+    const auto routedDrums = lamusica::session::renderDrumMachineRoutes(
+        routedDrumPreset,
+        {{.samplePosition = 0, .midiNote = 42, .velocity = 127},
+         {.samplePosition = 2, .midiNote = 46, .velocity = 127},
+         {.samplePosition = 4, .midiNote = 36, .velocity = 127}},
+        {{.assetId = "ch.wav", .audio = drumSource},
+         {.assetId = "oh.wav", .audio = drumSource},
+         {.assetId = "kick-hard.wav", .audio = drumSource}},
+        8, 1);
+    const auto hatRoute =
+        std::ranges::find_if(routedDrums, [](const lamusica::session::DrumRouteRender& route) {
+            return route.outputRoute == "hat-bus";
+        });
+    const auto kickRoute =
+        std::ranges::find_if(routedDrums, [](const lamusica::session::DrumRouteRender& route) {
+            return route.outputRoute == "drum-bus";
+        });
+    require(hatRoute != routedDrums.end() && kickRoute != routedDrums.end(),
+            "drum machine route render creates per-pad output buses");
+    require(hatRoute->audio.interleavedSamples[3] > 0.0F &&
+                hatRoute->audio.interleavedSamples[6] > 0.0F &&
+                kickRoute->audio.interleavedSamples[5] > 0.0F,
+            "drum machine route render mixes triggered samples to their routes");
+    require(hatRoute->audio.interleavedSamples[2] < 0.51F,
+            "drum machine route render truncates choked voices");
     const auto serializedDrumPreset = lamusica::session::serializeDrumMachinePreset(drumPreset);
     const auto parsedDrumPreset = lamusica::session::parseDrumMachinePreset(serializedDrumPreset);
     require(parsedDrumPreset.name == "Kit 1" && parsedDrumPreset.license == "CC0-1.0" &&
@@ -2236,44 +2299,52 @@ int main() {
     require(lamusica::session::hasClearDrumPresetRedistributionRights(placeholderKit),
             "drum machine starter kit placeholder documents that no bundled assets ship");
 
-    lamusica::session::PatternClip pattern{
-        .id = "pattern-1",
-        .name = "Pattern 1",
-        .lengthSteps = 4,
-        .stepLengthSamples = 6000,
-        .swing = 0.25F,
-        .seed = 7,
-        .lanes = {
-            {.id = "lane-kick",
-             .name = "Kick",
-             .defaultPitch = 36,
-             .lengthSteps = 4,
-             .steps = {{.enabled = true,
-                        .pitch = 36,
-                        .velocity = 100,
-                        .probability = 1.0F,
-                        .ratchets = 1},
-                       {},
-                       {.enabled = true,
-                        .pitch = 36,
-                        .velocity = 100,
-                        .probability = 1.0F,
-                        .ratchets = 2,
-                        .accent = true},
-                       {}}},
-            {.id = "lane-hat",
-             .name = "Hat",
-             .defaultPitch = 42,
-             .lengthSteps = 4,
-             .steps = {
-                 {},
-                 {.enabled = true, .pitch = 42, .velocity = 70, .probability = 1.0F, .ratchets = 1},
-                 {},
-                 {}}}}};
+    lamusica::session::PatternClip pattern{.id = "pattern-1",
+                                           .name = "Pattern 1",
+                                           .lengthSteps = 4,
+                                           .stepLengthSamples = 6000,
+                                           .swing = 0.25F,
+                                           .seed = 7,
+                                           .lanes = {{.id = "lane-kick",
+                                                      .name = "Kick",
+                                                      .defaultPitch = 36,
+                                                      .lengthSteps = 4,
+                                                      .steps = {{.enabled = true,
+                                                                 .pitch = 36,
+                                                                 .velocity = 100,
+                                                                 .probability = 1.0F,
+                                                                 .ratchets = 1},
+                                                                {},
+                                                                {.enabled = true,
+                                                                 .pitch = 36,
+                                                                 .velocity = 100,
+                                                                 .probability = 1.0F,
+                                                                 .ratchets = 2,
+                                                                 .accent = true},
+                                                                {}}},
+                                                     {.id = "lane-hat",
+                                                      .name = "Hat",
+                                                      .defaultPitch = 42,
+                                                      .lengthSteps = 4,
+                                                      .steps = {{},
+                                                                {.enabled = true,
+                                                                 .pitch = 42,
+                                                                 .velocity = 70,
+                                                                 .probability = 1.0F,
+                                                                 .ratchets = 1,
+                                                                 .slide = true},
+                                                                {},
+                                                                {}}}}};
     const auto patternMidi = lamusica::session::patternToMidi(pattern, "pattern-midi");
     require(patternMidi.notes.size() == 4, "pattern converts enabled steps and ratchets to MIDI");
     require(patternMidi.notes[1].startSample == 7500, "pattern applies swing to odd steps");
     require(patternMidi.notes[2].velocity == 116, "pattern accent raises velocity");
+    require(std::ranges::any_of(patternMidi.metadata,
+                                [](const lamusica::session::MidiMetadata& metadata) {
+                                    return metadata.key == "slide:lane-hat-1-0" &&
+                                           metadata.value == "true";
+                                }),
+            "pattern conversion preserves slide step metadata");
     const auto placedPatternMidi = lamusica::session::patternClipToMidi(
         {.pattern = pattern, .timelineStartSample = 48000}, "placed-pattern-midi");
     require(placedPatternMidi.notes.front().startSample ==
@@ -2383,6 +2454,23 @@ int main() {
     require(skippedScan.skippedBlacklisted.size() == 1 &&
                 skippedScan.skippedBlacklisted.front() == "crashy.plugin",
             "plugin scan skips previously blacklisted plugins");
+    lamusica::session::allowPluginRescan(pluginCache, "crashy.plugin");
+    const auto rescanReport = lamusica::session::scanPluginCandidates(
+        pluginCache, {std::array{lamusica::session::PluginScanCandidate{
+                         .description = {.identifier = "crashy.plugin",
+                                         .name = "Recovered",
+                                         .vendor = "Unknown",
+                                         .format = lamusica::session::PluginFormat::Vst3},
+                         .outcome = lamusica::session::PluginScanOutcome::Valid}}});
+    require(rescanReport.scanned.size() == 1 &&
+                lamusica::session::findPlugin(pluginCache, "crashy.plugin").has_value(),
+            "plugin rescan can explicitly clear blacklist and accept recovered plugins");
+    const auto malformedPluginScan = lamusica::session::scanPluginCandidates(
+        pluginCache, {std::array{lamusica::session::PluginScanCandidate{
+                         .description = {.identifier = ""},
+                         .outcome = lamusica::session::PluginScanOutcome::Valid}}});
+    require(!malformedPluginScan.appLaunchSafe,
+            "plugin scan reports malformed candidates as unsafe scanner input");
     lamusica::session::PluginInsertChain insertChain{.trackId = "track-1"};
     lamusica::session::addInsert(insertChain, {.id = "insert-1", .pluginIdentifier = "builtin.eq"});
     lamusica::session::addInsert(insertChain,
@@ -2614,6 +2702,19 @@ int main() {
     require(lamusica::session::findChannel(mixer, "audio-1")->muted &&
                 lamusica::session::findChannel(mixer, "bus-1")->muted,
             "mixer fader group applies linked mute");
+    lamusica::session::addSend(
+        mixer, "audio-1",
+        {.id = "parallel-bus", .destinationChannelId = "master", .gainDb = -12.0F});
+    const auto serializedMixer = lamusica::session::serializeMixerState(mixer);
+    const auto parsedMixer = lamusica::session::parseMixerState(serializedMixer);
+    require(parsedMixer.channels.size() == 3 && parsedMixer.routing.size() == 2 &&
+                parsedMixer.faderGroups.size() == 1 &&
+                lamusica::session::validateRouting(parsedMixer),
+            "mixer state saves, reloads, and keeps valid routing");
+    require(lamusica::session::findChannel(parsedMixer, "audio-1")->sends.front().gainDb ==
+                    -12.0F &&
+                lamusica::session::findChannel(parsedMixer, "audio-1")->muted,
+            "mixer state reload preserves sends and channel strip flags");
     lamusica::commands::SetChannelMixCommand mixCommand{
         "cmd-mix-1",
         "audit-mix-1",
@@ -2628,12 +2729,13 @@ int main() {
                 !lamusica::session::findChannel(mixer, "audio-1")->solo,
             "mixer channel mix undo restores channel");
 
-    lamusica::session::AutomationLaneData automation{.id = "auto-1",
-                                                     .targetId = "builtin.eq",
-                                                     .parameterId = "gain",
-                                                     .mode =
-                                                         lamusica::session::AutomationMode::Read,
-                                                     .defaultValue = 0.25F};
+    lamusica::session::AutomationLaneData automation{
+        .id = "auto-1",
+        .targetKind = lamusica::session::AutomationTargetKind::Plugin,
+        .targetId = "builtin.eq",
+        .parameterId = "gain",
+        .mode = lamusica::session::AutomationMode::Read,
+        .defaultValue = 0.25F};
     lamusica::session::addAutomationPoint(automation, 0, 0.0F);
     lamusica::session::addAutomationPoint(automation, 100, 1.0F);
     require(lamusica::session::evaluateAutomation(automation, 50) == 0.5F,
@@ -2698,6 +2800,11 @@ int main() {
                          .parameterId = "gain"});
     require(selectedAutomation != nullptr && selectedAutomation->id == "auto-1",
             "automation lane selection resolves target parameter");
+    const auto* mismatchedAutomation = lamusica::session::selectAutomationLane(
+        selectionLanes, {.targetKind = lamusica::session::AutomationTargetKind::Mixer,
+                         .targetId = "builtin.eq",
+                         .parameterId = "gain"});
+    require(mismatchedAutomation == nullptr, "automation lane selection honors target kind");
     lamusica::session::MixerState automationMixer;
     lamusica::session::addChannel(automationMixer, {.id = "auto-track",
                                                     .name = "Automation Track",
@@ -2758,6 +2865,7 @@ int main() {
                                  {.id = "auto-insert", .pluginIdentifier = "builtin.eq"});
     lamusica::session::AutomationLaneData pluginAutomation{
         .id = "auto-plugin-gain",
+        .targetKind = lamusica::session::AutomationTargetKind::Plugin,
         .targetId = "auto-insert",
         .parameterId = "gain",
         .mode = lamusica::session::AutomationMode::Read,
@@ -2770,6 +2878,7 @@ int main() {
             "automation applies interpolated plugin parameter value");
     lamusica::session::AutomationLaneData instrumentAutomation = pluginAutomation;
     instrumentAutomation.id = "auto-instrument-gain";
+    instrumentAutomation.targetKind = lamusica::session::AutomationTargetKind::Instrument;
     instrumentAutomation.mode = lamusica::session::AutomationMode::Trim;
     lamusica::session::applyAutomationToInstrumentChain(automationPluginChain, instrumentAutomation,
                                                         25);
@@ -2781,6 +2890,7 @@ int main() {
         lamusica::session::applyAutomationToPluginChain(
             automationPluginChain,
             {.id = "bad-plugin-auto",
+             .targetKind = lamusica::session::AutomationTargetKind::Plugin,
              .targetId = "missing-insert",
              .parameterId = "gain",
              .mode = lamusica::session::AutomationMode::Read,
@@ -2798,6 +2908,7 @@ int main() {
                                            .gainDb = -3.0F};
     lamusica::session::AutomationLaneData clipGainAutomation{
         .id = "auto-clip-gain",
+        .targetKind = lamusica::session::AutomationTargetKind::Clip,
         .targetId = "auto-clip",
         .parameterId = "gainDb",
         .mode = lamusica::session::AutomationMode::Read,
@@ -2806,6 +2917,7 @@ int main() {
     lamusica::session::addAutomationPoint(clipGainAutomation, 100, -3.0F);
     lamusica::session::AutomationLaneData clipMuteAutomation{
         .id = "auto-clip-mute",
+        .targetKind = lamusica::session::AutomationTargetKind::Clip,
         .targetId = "auto-clip",
         .parameterId = "muted",
         .mode = lamusica::session::AutomationMode::Read,
@@ -2915,6 +3027,32 @@ int main() {
         lamusica::session::makeWarpRenderPlan(warp, renderCache, 0, 48000, "Cache/preview.wav");
     require(lamusica::session::warpRenderPlansAgree(cachedWarpPlan, previewWarpPlan, 0),
             "warp live preview and offline render plans agree within tolerance");
+    const lamusica::audio::RenderedAudio warpSource{
+        .channels = 1, .frames = 4, .interleavedSamples = {0.0F, 1.0F, 0.0F, -1.0F}};
+    const lamusica::session::WarpState renderWarp{
+        .clipId = "clip-render-warp",
+        .enabled = true,
+        .sourceTempoBpm = 120.0,
+        .targetTempoBpm = 60.0,
+        .markers = {{.id = "rw1", .sourceSample = 0, .timelineSample = 0},
+                    {.id = "rw2", .sourceSample = 4, .timelineSample = 8}}};
+    const auto offlineRenderPlan =
+        lamusica::session::makeWarpRenderPlan(renderWarp, {}, 0, 4, "Cache/render.wav");
+    const auto offlineWarped = lamusica::session::renderWarpedAudio(warpSource, offlineRenderPlan);
+    const auto previewWarped = lamusica::session::renderWarpPreview(warpSource, offlineRenderPlan);
+    require(offlineWarped.frames == 8 && offlineWarped.interleavedSamples[1] == 0.5F &&
+                offlineWarped.interleavedSamples[2] == 1.0F,
+            "warp audio render time-stretches source samples deterministically");
+    require(offlineWarped.interleavedSamples == previewWarped.interleavedSamples,
+            "warp audio render matches live preview samples");
+    auto pitchedRenderWarp = renderWarp;
+    pitchedRenderWarp.pitchShiftSemitones = 12.0F;
+    const auto pitchedRenderPlan =
+        lamusica::session::makeWarpRenderPlan(pitchedRenderWarp, {}, 0, 4, "Cache/pitch.wav");
+    const auto pitchedWarped = lamusica::session::renderWarpedAudio(warpSource, pitchedRenderPlan);
+    require(pitchedWarped.frames == offlineWarped.frames &&
+                pitchedWarped.interleavedSamples[1] > offlineWarped.interleavedSamples[1],
+            "warp audio render applies pitch-shift ratio during resampling");
     lamusica::session::invalidateRenderCache(renderCache, "clip-warp");
     require(!renderCache.front().valid, "warp render cache invalidates by clip");
     const auto uncachedWarpPlan = lamusica::session::makeWarpRenderPlan(
@@ -3019,6 +3157,35 @@ int main() {
                                            lamusica::session::AssetKind::Audio);
     require(collisionImportPlan.record.relativePath == "Assets/snare-2.wav",
             "asset import plan avoids collected filename collisions");
+    const auto importSourcePath = assetRoot / "Audio" / "clap.wav";
+    lamusica::audio::writePcm16Wav(importSourcePath, analyzedAudio, 48000.0);
+    require(
+        lamusica::session::isSupportedAudioImportExtension(importSourcePath) &&
+            !lamusica::session::isSupportedAudioImportExtension(assetRoot / "Audio" / "clap.mp3"),
+        "audio import declares currently decodable extensions");
+    const auto importedAudio =
+        lamusica::session::importAudioAsset(catalog, {.sourcePath = importSourcePath,
+                                                      .assetId = "clap",
+                                                      .tags = {"drum", "clap"},
+                                                      .samplesPerWaveformBucket = 4});
+    require(importedAudio.plan.copyIntoProject &&
+                importedAudio.plan.record.relativePath == "Assets/clap.wav" &&
+                std::filesystem::exists(assetRoot / "Assets" / "clap.wav"),
+            "audio import copies supported media into project assets");
+    require(lamusica::session::findAsset(catalog, "clap") != nullptr &&
+                !lamusica::session::findAsset(catalog, "clap")->missing,
+            "audio import registers available asset record");
+    require(lamusica::session::findAnalysis(catalog, "clap")->durationSamples == 8 &&
+                lamusica::session::findWaveform(catalog, "clap")->buckets.size() == 2,
+            "audio import stores decoded analysis and waveform overview");
+    bool rejectedUnsupportedImport = false;
+    try {
+        (void)lamusica::session::importAudioAsset(
+            catalog, {.sourcePath = assetRoot / "Audio" / "clap.mp3", .assetId = "bad-import"});
+    } catch (const std::exception&) {
+        rejectedUnsupportedImport = true;
+    }
+    require(rejectedUnsupportedImport, "audio import rejects unsupported formats before register");
     lamusica::session::grantUserFolder(
         catalog, {.id = "samples", .absolutePath = assetRoot / "Audio", .recursive = true});
     require(
@@ -3266,12 +3433,14 @@ int main() {
                                             .preRollSamples = 256,
                                             .countInSamples = 128,
                                             .measuredInputLatencySamples = 32,
-                                            .punchEnabled = true});
+                                            .punchEnabled = true,
+                                            .inputMonitoringEnabled = true});
     require(recordingPlan.captureStartSample == 1616,
             "recording plan includes pre-roll and count-in before punch");
     require(recordingPlan.clipStartSample == 1968,
             "recording plan latency-aligns punch clip start");
     require(recordingPlan.punchOutSample == 3000, "recording plan preserves punch out");
+    require(recordingPlan.inputMonitoringEnabled, "recording plan carries input monitoring intent");
     bool rejectedBadPunch = false;
     try {
         (void)lamusica::audio::makeRecordingPlan({.trackId = "record-track",

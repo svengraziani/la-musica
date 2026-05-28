@@ -143,6 +143,19 @@ struct AssetImportPlan {
     bool copyIntoProject{true};
 };
 
+struct AudioAssetImportOptions {
+    std::filesystem::path sourcePath;
+    std::string assetId;
+    std::vector<std::string> tags;
+    bool copyIntoProject{true};
+    std::int64_t samplesPerWaveformBucket{512};
+};
+
+struct ImportedAudioAsset {
+    AssetImportPlan plan;
+    MediaAnalysisResult analysis;
+};
+
 struct AssetPreview {
     std::string assetId;
     std::filesystem::path absolutePath;
@@ -162,6 +175,9 @@ void addAsset(AssetCatalog& catalog, AssetRecord asset);
                                               std::filesystem::path sourcePath, std::string assetId,
                                               AssetKind kind, std::vector<std::string> tags = {},
                                               bool copyIntoProject = true);
+[[nodiscard]] bool isSupportedAudioImportExtension(const std::filesystem::path& path);
+[[nodiscard]] ImportedAudioAsset importAudioAsset(AssetCatalog& catalog,
+                                                  AudioAssetImportOptions options);
 void markMissingAssets(AssetCatalog& catalog);
 void relinkAsset(AssetCatalog& catalog, std::string_view assetId,
                  std::filesystem::path newRelativePath);

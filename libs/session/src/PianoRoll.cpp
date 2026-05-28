@@ -261,4 +261,10 @@ std::string pitchName(std::uint8_t pitch) {
     return pitchClassName(pitch) + std::to_string(octave);
 }
 
+std::string drumNoteName(std::uint8_t pitch, const std::vector<DrumNoteName>& names) {
+    const auto found = std::ranges::find_if(
+        names, [pitch](const DrumNoteName& name) { return name.pitch == pitch; });
+    return found == names.end() ? pitchName(pitch) : found->name;
+}
+
 } // namespace lamusica::session

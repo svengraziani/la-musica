@@ -48,6 +48,7 @@ struct RecordingWorkflowOptions {
     std::int64_t countInSamples{0};
     std::int64_t measuredInputLatencySamples{0};
     bool punchEnabled{false};
+    bool inputMonitoringEnabled{false};
 };
 
 struct RecordingPlan {
@@ -60,6 +61,7 @@ struct RecordingPlan {
     std::int64_t countInSamples{0};
     std::int64_t measuredInputLatencySamples{0};
     bool punchEnabled{false};
+    bool inputMonitoringEnabled{false};
 };
 
 struct RecordingTake {

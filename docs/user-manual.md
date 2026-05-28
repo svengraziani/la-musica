@@ -28,8 +28,8 @@ Timeline organization includes color labels, track folders, and arranger section
 target sample or beat grids, clip edges, markers, and detected transient positions when analysis
 data is available.
 Warped audio can be retargeted to new tempos while preserving editable markers, pitch settings,
-quality mode, and render-cache identity. Preview and offline warp render plans use the same mapping
-so timing can be compared within a documented sample tolerance.
+quality mode, and render-cache identity. Preview and offline warp rendering use the same mapping and
+interpolation path so timing and samples can be compared within a documented tolerance.
 
 ## MIDI, Drums, And Sequencing
 
@@ -56,7 +56,8 @@ automation addresses so sessions can reload consistently. Automation playback su
 touch, latch, trim, and off modes. Read-like modes drive mixer and plugin parameters directly,
 trim offsets the current playback value, and off leaves the live parameter unchanged. Clip
 automation can drive gain, mute, reverse, fade, and source-offset metadata. Project files persist
-automation modes, defaults, regions, points, and curve types for plugin parameter recall.
+automation target kinds, modes, defaults, regions, points, and curve types for plugin parameter
+recall.
 Automation point edits reject negative sample positions so playback data stays on the project
 timeline.
 Mixer routing and send edits are validated and compiled into replacement graph update plans before
@@ -75,6 +76,8 @@ Project assets track tags, favorites, missing-file state, analysis metadata, and
 caches. Relinking an asset invalidates stale analysis so previews and agents do not rely on data
 from an old file path. Media analysis jobs are scheduled separately from playback and completed
 back into the asset catalog when results are ready.
+The current built-in importer decodes PCM16 WAV files, copies collected media into the project
+`Assets` folder, and stores waveform and analysis metadata during registration.
 User folders must be explicitly granted before the browser treats their files as available.
 Folder scans are planned from those grants rather than arbitrary paths, and collected imports choose
 non-conflicting names under the project `Assets` folder so portable projects do not overwrite

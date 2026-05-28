@@ -66,7 +66,8 @@ RecordingPlan makeRecordingPlan(const RecordingWorkflowOptions& options) {
             .preRollSamples = options.preRollSamples,
             .countInSamples = options.countInSamples,
             .measuredInputLatencySamples = options.measuredInputLatencySamples,
-            .punchEnabled = options.punchEnabled};
+            .punchEnabled = options.punchEnabled,
+            .inputMonitoringEnabled = options.inputMonitoringEnabled};
 }
 
 bool hasInterruptedRecording(const RecordingOptions& options) {

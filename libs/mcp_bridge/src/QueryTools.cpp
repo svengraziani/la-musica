@@ -90,6 +90,20 @@ std::string_view toString(session::AutomationCurve curve) noexcept {
     return "linear";
 }
 
+std::string_view toString(session::AutomationTargetKind targetKind) noexcept {
+    switch (targetKind) {
+    case session::AutomationTargetKind::Mixer:
+        return "mixer";
+    case session::AutomationTargetKind::Plugin:
+        return "plugin";
+    case session::AutomationTargetKind::Instrument:
+        return "instrument";
+    case session::AutomationTargetKind::Clip:
+        return "clip";
+    }
+    return "mixer";
+}
+
 bool containsAutomationPointInRange(const session::AutomationLane& lane, QuerySampleRange range) {
     for (const auto& region : lane.regions) {
         for (const auto& point : region.points) {
@@ -304,7 +318,8 @@ std::string automationJson(const session::ProjectManifest& manifest, QueryPage p
     writeHeader(output, "automation");
     writePagedArray(output, manifest.automation, page,
                     [](std::ostringstream& item, const session::AutomationLane& lane) {
-                        item << "{\"id\":\"" << escapeJson(lane.id) << "\",\"targetId\":\""
+                        item << "{\"id\":\"" << escapeJson(lane.id) << "\",\"targetKind\":\""
+                             << toString(lane.targetKind) << "\",\"targetId\":\""
                              << escapeJson(lane.targetId) << "\",\"parameterId\":\""
                              << escapeJson(lane.parameterId) << "\"}";
                     });
@@ -326,7 +341,8 @@ std::string automationInRangeJson(const session::ProjectManifest& manifest, Quer
            << ",\"endSample\":" << range.endSample << "},";
     writePagedArray(output, lanes, page,
                     [range](std::ostringstream& item, const session::AutomationLane& lane) {
-                        item << "{\"id\":\"" << escapeJson(lane.id) << "\",\"targetId\":\""
+                        item << "{\"id\":\"" << escapeJson(lane.id) << "\",\"targetKind\":\""
+                             << toString(lane.targetKind) << "\",\"targetId\":\""
                              << escapeJson(lane.targetId) << "\",\"parameterId\":\""
                              << escapeJson(lane.parameterId) << "\",\"mode\":\""
                              << toString(lane.mode) << "\",\"defaultValue\":" << lane.defaultValue

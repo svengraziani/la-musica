@@ -80,8 +80,9 @@ MidiClipData patternToMidi(const PatternClip& pattern, std::string midiClipId) {
                     continue;
                 }
 
+                const auto generatedNoteId = noteId(lane.id, stepIndex, ratchetIndex);
                 midi.notes.push_back(
-                    {.id = noteId(lane.id, stepIndex, ratchetIndex),
+                    {.id = generatedNoteId,
                      .startSample = swungStepStart(pattern, stepIndex) +
                                     static_cast<std::int64_t>(ratchetIndex) * ratchetLength,
                      .lengthSamples = step.tie ? pattern.stepLengthSamples : ratchetLength,
@@ -89,6 +90,9 @@ MidiClipData patternToMidi(const PatternClip& pattern, std::string midiClipId) {
                      .velocity = step.accent ? static_cast<std::uint8_t>(std::min<int>(
                                                    127, static_cast<int>(step.velocity) + 16))
                                              : step.velocity});
+                if (step.slide) {
+                    midi.metadata.push_back({.key = "slide:" + generatedNoteId, .value = "true"});
+                }
             }
         }
     }

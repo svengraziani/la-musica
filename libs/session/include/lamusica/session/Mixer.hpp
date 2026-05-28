@@ -20,6 +20,8 @@ enum class ChannelType {
     HardwareOutput,
 };
 
+[[nodiscard]] std::string_view toString(ChannelType type) noexcept;
+
 struct Send {
     std::string id;
     std::string destinationChannelId;
@@ -87,5 +89,7 @@ void addSend(MixerState& mixer, std::string_view sourceChannelId, Send send);
 void addFaderGroup(MixerState& mixer, FaderGroup group);
 void applyFaderGroupVolumeDelta(MixerState& mixer, std::string_view groupId, float deltaDb);
 void applyFaderGroupMute(MixerState& mixer, std::string_view groupId, bool muted);
+[[nodiscard]] std::string serializeMixerState(const MixerState& mixer);
+[[nodiscard]] MixerState parseMixerState(std::string_view json);
 
 } // namespace lamusica::session

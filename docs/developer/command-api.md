@@ -11,6 +11,7 @@ Project-manifest commands implement:
 - preview
 - apply
 - undo
+- redo
 - serialization
 
 Use `commands::CommandHistory` for apply, undo, and redo so UI and MCP history stay aligned.

@@ -31,6 +31,13 @@ bool anySolo(const DrumMachinePreset& preset) {
     return std::ranges::any_of(preset.pads, [](const DrumPad& pad) { return pad.solo; });
 }
 
+const audio::RenderedAudio* findSampleAsset(const std::vector<DrumSampleAsset>& samples,
+                                            std::string_view assetId) noexcept {
+    const auto found = std::ranges::find_if(
+        samples, [assetId](const DrumSampleAsset& sample) { return sample.assetId == assetId; });
+    return found == samples.end() ? nullptr : &found->audio;
+}
+
 std::size_t findValueStart(std::string_view json, std::string_view key) {
     const auto keyToken = "\"" + std::string{key} + "\"";
     const auto keyPosition = json.find(keyToken);
@@ -467,6 +474,109 @@ audio::RenderedAudio renderDrumPadSample(const DrumPad& pad, const audio::Render
     }
 
     return rendered;
+}
+
+std::vector<DrumRouteRender> renderDrumMachineRoutes(const DrumMachinePreset& preset,
+                                                     const std::vector<DrumPadEvent>& events,
+                                                     const std::vector<DrumSampleAsset>& samples,
+                                                     std::uint32_t frames, std::uint32_t channels) {
+    if (frames == 0U || channels == 0U) {
+        throw std::runtime_error("Drum route render requires positive frame and channel counts");
+    }
+
+    struct Voice {
+        const DrumPad* pad{nullptr};
+        std::string assetId;
+        std::int64_t startSample{0};
+        std::int64_t endSample{0};
+        std::uint8_t velocity{100};
+    };
+
+    std::vector<Voice> voices;
+    std::map<std::uint8_t, std::size_t> latestByChokeGroup;
+    const bool soloMode = anySolo(preset);
+
+    for (const auto& event : events) {
+        if (event.samplePosition < 0 || event.samplePosition >= frames) {
+            continue;
+        }
+
+        const auto* pad = findPadForMidiNote(preset, event.midiNote);
+        if (pad == nullptr || pad->muted || (soloMode && !pad->solo)) {
+            continue;
+        }
+
+        const auto velocity = std::clamp<std::uint8_t>(event.velocity, 1, 127);
+        const auto assetId = selectLayerAsset(*pad, velocity);
+        if (assetId.empty()) {
+            continue;
+        }
+
+        if (pad->chokeGroup.has_value()) {
+            const auto latest = latestByChokeGroup.find(*pad->chokeGroup);
+            if (latest != latestByChokeGroup.end()) {
+                voices[latest->second].endSample =
+                    std::min(voices[latest->second].endSample, event.samplePosition);
+            }
+        }
+
+        voices.push_back({.pad = pad,
+                          .assetId = assetId,
+                          .startSample = event.samplePosition,
+                          .endSample = static_cast<std::int64_t>(frames),
+                          .velocity = velocity});
+
+        if (pad->chokeGroup.has_value()) {
+            latestByChokeGroup[*pad->chokeGroup] = voices.size() - 1;
+        }
+    }
+
+    std::vector<DrumRouteRender> routes;
+    const auto routeFor = [&routes, frames, channels](std::string routeName) -> DrumRouteRender& {
+        if (routeName.empty()) {
+            routeName = "master";
+        }
+        const auto found = std::ranges::find_if(routes, [&routeName](const DrumRouteRender& route) {
+            return route.outputRoute == routeName;
+        });
+        if (found != routes.end()) {
+            return *found;
+        }
+        routes.push_back({.outputRoute = std::move(routeName),
+                          .audio = {.channels = channels,
+                                    .frames = frames,
+                                    .interleavedSamples = std::vector<float>(
+                                        static_cast<std::size_t>(frames) * channels)}});
+        return routes.back();
+    };
+
+    for (const auto& voice : voices) {
+        const auto* source = findSampleAsset(samples, voice.assetId);
+        if (source == nullptr) {
+            throw std::runtime_error("Drum route render missing sample asset: " + voice.assetId);
+        }
+
+        const auto rendered = renderDrumPadSample(*voice.pad, *source, voice.velocity);
+        auto& route = routeFor(voice.pad->outputRoute);
+        const auto renderableFrames =
+            std::min<std::int64_t>(rendered.frames, voice.endSample - voice.startSample);
+        for (std::int64_t frame = 0; frame < renderableFrames; ++frame) {
+            const auto outputFrame = voice.startSample + frame;
+            if (outputFrame < 0 || outputFrame >= route.audio.frames) {
+                continue;
+            }
+            for (std::uint32_t channel = 0; channel < channels; ++channel) {
+                const auto sourceChannel = std::min(channel, rendered.channels - 1U);
+                route.audio.interleavedSamples[static_cast<std::size_t>(outputFrame) * channels +
+                                               channel] +=
+                    rendered
+                        .interleavedSamples[static_cast<std::size_t>(frame) * rendered.channels +
+                                            sourceChannel];
+            }
+        }
+    }
+
+    return routes;
 }
 
 } // namespace lamusica::session

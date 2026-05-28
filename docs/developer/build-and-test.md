@@ -78,7 +78,11 @@ build/unix-debug/apps/daw/LaMusica.app/Contents/MacOS/LaMusica --smoke
 
 ```sh
 find apps libs tools tests \( -name '*.cpp' -o -name '*.hpp' -o -name '*.mm' \) -exec xcrun clang-format --dry-run --Werror {} +
+cmake -P cmake/CheckMarkdown.cmake
 ```
+
+Editor formatting defaults for C++, CMake, Markdown, JSON, YAML, and shell scripts are recorded in
+`.editorconfig`.
 
 ## Packaging
 

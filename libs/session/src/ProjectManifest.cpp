@@ -1,5 +1,6 @@
 #include "lamusica/session/ProjectManifest.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -477,6 +478,47 @@ AutomationMode automationModeFromString(std::string_view value) {
     return found->second;
 }
 
+std::string_view automationTargetKindToString(AutomationTargetKind targetKind) noexcept {
+    switch (targetKind) {
+    case AutomationTargetKind::Mixer:
+        return "mixer";
+    case AutomationTargetKind::Plugin:
+        return "plugin";
+    case AutomationTargetKind::Instrument:
+        return "instrument";
+    case AutomationTargetKind::Clip:
+        return "clip";
+    }
+    return "mixer";
+}
+
+AutomationTargetKind automationTargetKindFromString(std::string_view value) {
+    static const std::map<std::string_view, AutomationTargetKind> targetKinds{
+        {"mixer", AutomationTargetKind::Mixer},
+        {"plugin", AutomationTargetKind::Plugin},
+        {"instrument", AutomationTargetKind::Instrument},
+        {"clip", AutomationTargetKind::Clip}};
+    const auto found = targetKinds.find(value);
+    if (found == targetKinds.end()) {
+        throw std::runtime_error("Unknown automation target kind: " + std::string{value});
+    }
+    return found->second;
+}
+
+AutomationTargetKind inferAutomationTargetKind(const ProjectManifest& manifest,
+                                               std::string_view targetId) {
+    if (std::ranges::any_of(manifest.plugins, [targetId](const PluginReference& plugin) {
+            return plugin.id == targetId;
+        })) {
+        return AutomationTargetKind::Plugin;
+    }
+    if (std::ranges::any_of(manifest.clips,
+                            [targetId](const Clip& clip) { return clip.id == targetId; })) {
+        return AutomationTargetKind::Clip;
+    }
+    return AutomationTargetKind::Mixer;
+}
+
 std::string_view automationCurveToString(AutomationCurve curve) noexcept {
     switch (curve) {
     case AutomationCurve::Step:
@@ -663,7 +705,8 @@ std::string serializeProjectManifest(const ProjectManifest& manifest) {
     writeArray(
         output, "automation", manifest.automation,
         [](std::ostringstream& itemOutput, const AutomationLane& lane) {
-            itemOutput << "{\"id\": \"" << escapeJson(lane.id) << "\", \"targetId\": \""
+            itemOutput << "{\"id\": \"" << escapeJson(lane.id) << "\", \"targetKind\": \""
+                       << automationTargetKindToString(lane.targetKind) << "\", \"targetId\": \""
                        << escapeJson(lane.targetId) << "\", \"parameterId\": \""
                        << escapeJson(lane.parameterId) << "\", \"mode\": \""
                        << automationModeToString(lane.mode)
@@ -802,6 +845,10 @@ ProjectManifest parseProjectManifest(std::string_view json) {
         const auto& lane = itemObject(item, "automation");
         AutomationLane automationLane{
             .id = requireString(lane, "id"),
+            .targetKind =
+                optionalString(lane, "targetKind")
+                    .transform(automationTargetKindFromString)
+                    .value_or(inferAutomationTargetKind(manifest, requireString(lane, "targetId"))),
             .targetId = requireString(lane, "targetId"),
             .parameterId = requireString(lane, "parameterId"),
             .mode = automationModeFromString(optionalString(lane, "mode").value_or("read")),
@@ -1030,7 +1077,19 @@ void validateProjectManifest(const ProjectManifest& manifest) {
         if (lane.targetId.empty()) {
             throw std::runtime_error("Automation target id must not be empty");
         }
-        if (!trackIds.contains(lane.targetId) && !pluginIds.contains(lane.targetId)) {
+        const auto targetExists = [&]() {
+            switch (lane.targetKind) {
+            case AutomationTargetKind::Mixer:
+                return trackIds.contains(lane.targetId);
+            case AutomationTargetKind::Plugin:
+            case AutomationTargetKind::Instrument:
+                return pluginIds.contains(lane.targetId);
+            case AutomationTargetKind::Clip:
+                return clipIds.contains(lane.targetId);
+            }
+            return false;
+        }();
+        if (!targetExists) {
             throw std::runtime_error("Automation target id is missing: " + lane.targetId);
         }
         if (lane.parameterId.empty()) {

@@ -78,6 +78,11 @@ struct PianoRollAuditionEvent {
     std::int64_t lengthSamples{2400};
 };
 
+struct DrumNoteName {
+    std::uint8_t pitch{60};
+    std::string name;
+};
+
 struct PianoRollViewState {
     PianoRollRange visibleRange;
     PianoRollSelection selection;
@@ -112,5 +117,6 @@ void setControllerLaneVisible(PianoRollViewState& viewState, ControllerLaneType 
                                                      std::int64_t lengthSamples = 2400);
 [[nodiscard]] bool noteIntersectsRange(const MidiNote& note, PianoRollRange range) noexcept;
 [[nodiscard]] std::string pitchName(std::uint8_t pitch);
+[[nodiscard]] std::string drumNoteName(std::uint8_t pitch, const std::vector<DrumNoteName>& names);
 
 } // namespace lamusica::session

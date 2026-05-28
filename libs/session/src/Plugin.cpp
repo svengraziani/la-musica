@@ -189,6 +189,12 @@ void blacklistPlugin(PluginScanCache& cache, std::string identifier, std::string
                             .failureReason = std::move(reason)});
 }
 
+void allowPluginRescan(PluginScanCache& cache, std::string_view identifier) {
+    std::erase_if(cache.blacklist, [identifier](const std::string& blacklisted) {
+        return blacklisted == identifier;
+    });
+}
+
 PluginScanReport scanPluginCandidates(PluginScanCache& cache,
                                       std::span<const PluginScanCandidate> candidates,
                                       PluginScanPolicy policy) {
@@ -261,7 +267,6 @@ PluginScanReport scanPluginCandidates(PluginScanCache& cache,
         }
     }
 
-    report.appLaunchSafe = true;
     return report;
 }
 

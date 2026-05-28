@@ -37,6 +37,9 @@ class ICommand {
     [[nodiscard]] virtual std::string preview(const session::ProjectManifest& manifest) const = 0;
     virtual CommandResult apply(session::ProjectManifest& manifest) = 0;
     virtual CommandResult undo(session::ProjectManifest& manifest) = 0;
+    virtual CommandResult redo(session::ProjectManifest& manifest) {
+        return apply(manifest);
+    }
     [[nodiscard]] virtual std::string serialize() const = 0;
 };
 

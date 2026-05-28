@@ -59,6 +59,16 @@ struct DrumPadEvent {
     std::uint8_t velocity{100};
 };
 
+struct DrumSampleAsset {
+    std::string assetId;
+    audio::RenderedAudio audio;
+};
+
+struct DrumRouteRender {
+    std::string outputRoute;
+    audio::RenderedAudio audio;
+};
+
 [[nodiscard]] const DrumPad* findPadForMidiNote(const DrumMachinePreset& preset,
                                                 std::uint8_t midiNote);
 [[nodiscard]] std::string selectLayerAsset(const DrumPad& pad, std::uint8_t velocity);
@@ -69,6 +79,10 @@ renderDrumTriggers(const DrumMachinePreset& preset,
                                                           const std::vector<DrumPadEvent>& events);
 [[nodiscard]] audio::RenderedAudio
 renderDrumPadSample(const DrumPad& pad, const audio::RenderedAudio& source, std::uint8_t velocity);
+[[nodiscard]] std::vector<DrumRouteRender>
+renderDrumMachineRoutes(const DrumMachinePreset& preset, const std::vector<DrumPadEvent>& events,
+                        const std::vector<DrumSampleAsset>& samples, std::uint32_t frames,
+                        std::uint32_t channels);
 [[nodiscard]] std::string serializeDrumMachinePreset(const DrumMachinePreset& preset);
 [[nodiscard]] DrumMachinePreset parseDrumMachinePreset(std::string_view json);
 [[nodiscard]] bool hasClearDrumPresetRedistributionRights(const DrumMachinePreset& preset);

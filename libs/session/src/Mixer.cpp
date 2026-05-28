@@ -1,10 +1,13 @@
 #include "lamusica/session/Mixer.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <map>
 #include <set>
+#include <sstream>
 #include <stdexcept>
+#include <string_view>
 
 namespace lamusica::session {
 namespace {
@@ -62,7 +65,214 @@ bool visitCycle(std::string_view node, const std::map<std::string, std::vector<s
     return false;
 }
 
+std::string escapeJson(std::string_view value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char character : value) {
+        if (character == '"' || character == '\\') {
+            escaped.push_back('\\');
+        }
+        escaped.push_back(character);
+    }
+    return escaped;
+}
+
+std::size_t findValueStart(std::string_view json, std::string_view key) {
+    const auto keyToken = "\"" + std::string{key} + "\"";
+    const auto keyPosition = json.find(keyToken);
+    if (keyPosition == std::string_view::npos) {
+        throw std::runtime_error("Missing mixer state key: " + std::string{key});
+    }
+    const auto colonPosition = json.find(':', keyPosition + keyToken.size());
+    if (colonPosition == std::string_view::npos) {
+        throw std::runtime_error("Missing mixer state value separator: " + std::string{key});
+    }
+    return json.find_first_not_of(" \n\r\t", colonPosition + 1);
+}
+
+std::string readJsonString(std::string_view json, std::size_t quotePosition) {
+    if (quotePosition >= json.size() || json[quotePosition] != '"') {
+        throw std::runtime_error("Expected mixer state string");
+    }
+
+    std::string value;
+    bool escaped = false;
+    for (std::size_t index = quotePosition + 1; index < json.size(); ++index) {
+        const char character = json[index];
+        if (escaped) {
+            value.push_back(character);
+            escaped = false;
+            continue;
+        }
+        if (character == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (character == '"') {
+            return value;
+        }
+        value.push_back(character);
+    }
+    throw std::runtime_error("Unterminated mixer state string");
+}
+
+std::string readRequiredString(std::string_view json, std::string_view key) {
+    return readJsonString(json, findValueStart(json, key));
+}
+
+template <typename Value> Value readNumberToken(std::string_view json, std::string_view key) {
+    const auto start = findValueStart(json, key);
+    const auto end = json.find_first_not_of("-+0123456789.eE", start);
+    const auto token = json.substr(start, end - start);
+    Value value{};
+    const auto result = std::from_chars(token.data(), token.data() + token.size(), value);
+    if (result.ec != std::errc{}) {
+        throw std::runtime_error("Expected mixer state number: " + std::string{key});
+    }
+    return value;
+}
+
+bool readBool(std::string_view json, std::string_view key) {
+    const auto start = findValueStart(json, key);
+    if (json.substr(start, 4) == "true") {
+        return true;
+    }
+    if (json.substr(start, 5) == "false") {
+        return false;
+    }
+    throw std::runtime_error("Expected mixer state boolean: " + std::string{key});
+}
+
+std::vector<std::string_view> objectArrayItems(std::string_view json, std::string_view key) {
+    const auto start = findValueStart(json, key);
+    if (start >= json.size() || json[start] != '[') {
+        throw std::runtime_error("Expected mixer state array: " + std::string{key});
+    }
+
+    std::vector<std::string_view> items;
+    int depth = 0;
+    std::size_t objectStart = std::string_view::npos;
+    bool inString = false;
+    bool escaped = false;
+    for (std::size_t index = start + 1; index < json.size(); ++index) {
+        const char character = json[index];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (character == '\\') {
+                escaped = true;
+            } else if (character == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (character == '"') {
+            inString = true;
+            continue;
+        }
+        if (character == '{') {
+            if (depth == 0) {
+                objectStart = index;
+            }
+            ++depth;
+        } else if (character == '}') {
+            --depth;
+            if (depth == 0 && objectStart != std::string_view::npos) {
+                items.push_back(json.substr(objectStart, index - objectStart + 1));
+                objectStart = std::string_view::npos;
+            }
+        } else if (character == ']' && depth == 0) {
+            return items;
+        }
+    }
+
+    throw std::runtime_error("Unterminated mixer state array: " + std::string{key});
+}
+
+std::vector<std::string> stringArrayItems(std::string_view json, std::string_view key) {
+    const auto start = findValueStart(json, key);
+    if (start >= json.size() || json[start] != '[') {
+        throw std::runtime_error("Expected mixer string array: " + std::string{key});
+    }
+
+    std::vector<std::string> items;
+    bool inString = false;
+    bool escaped = false;
+    std::size_t quoteStart = std::string_view::npos;
+    for (std::size_t index = start + 1; index < json.size(); ++index) {
+        const char character = json[index];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (character == '\\') {
+                escaped = true;
+            } else if (character == '"') {
+                items.push_back(readJsonString(json, quoteStart));
+                inString = false;
+            }
+            continue;
+        }
+        if (character == '"') {
+            quoteStart = index;
+            inString = true;
+        } else if (character == ']') {
+            return items;
+        }
+    }
+    throw std::runtime_error("Unterminated mixer string array: " + std::string{key});
+}
+
+ChannelType channelTypeFromString(std::string_view value) {
+    if (value == "audio") {
+        return ChannelType::Audio;
+    }
+    if (value == "midi") {
+        return ChannelType::Midi;
+    }
+    if (value == "instrument") {
+        return ChannelType::Instrument;
+    }
+    if (value == "group") {
+        return ChannelType::Group;
+    }
+    if (value == "return") {
+        return ChannelType::Return;
+    }
+    if (value == "master") {
+        return ChannelType::Master;
+    }
+    if (value == "hardware_input") {
+        return ChannelType::HardwareInput;
+    }
+    if (value == "hardware_output") {
+        return ChannelType::HardwareOutput;
+    }
+    throw std::runtime_error("Unknown mixer channel type");
+}
+
 } // namespace
+
+std::string_view toString(ChannelType type) noexcept {
+    switch (type) {
+    case ChannelType::Audio:
+        return "audio";
+    case ChannelType::Midi:
+        return "midi";
+    case ChannelType::Instrument:
+        return "instrument";
+    case ChannelType::Group:
+        return "group";
+    case ChannelType::Return:
+        return "return";
+    case ChannelType::Master:
+        return "master";
+    case ChannelType::HardwareInput:
+        return "hardware_input";
+    case ChannelType::HardwareOutput:
+        return "hardware_output";
+    }
+    return "audio";
+}
 
 ChannelStrip* findChannel(MixerState& mixer, std::string_view channelId) noexcept {
     const auto found =
@@ -291,6 +501,112 @@ void updateMeter(MeterState& state, std::span<const float> samples, std::uint32_
 
 void resetMeter(MeterState& state) noexcept {
     state.reading = {};
+}
+
+std::string serializeMixerState(const MixerState& mixer) {
+    std::ostringstream output;
+    output << "{\"schemaVersion\":1,\"channels\":[";
+    for (std::size_t channelIndex = 0; channelIndex < mixer.channels.size(); ++channelIndex) {
+        const auto& channel = mixer.channels[channelIndex];
+        output << "{\"id\":\"" << escapeJson(channel.id) << "\",\"name\":\""
+               << escapeJson(channel.name) << "\",\"type\":\"" << toString(channel.type)
+               << "\",\"volumeDb\":" << channel.volumeDb << ",\"pan\":" << channel.pan
+               << ",\"muted\":" << (channel.muted ? "true" : "false")
+               << ",\"solo\":" << (channel.solo ? "true" : "false")
+               << ",\"recordArmed\":" << (channel.recordArmed ? "true" : "false")
+               << ",\"inputMonitoring\":" << (channel.inputMonitoring ? "true" : "false")
+               << ",\"phaseInverted\":" << (channel.phaseInverted ? "true" : "false")
+               << ",\"sends\":[";
+        for (std::size_t sendIndex = 0; sendIndex < channel.sends.size(); ++sendIndex) {
+            const auto& send = channel.sends[sendIndex];
+            output << "{\"id\":\"" << escapeJson(send.id) << "\",\"destinationChannelId\":\""
+                   << escapeJson(send.destinationChannelId) << "\",\"gainDb\":" << send.gainDb
+                   << ",\"preFader\":" << (send.preFader ? "true" : "false") << "}";
+            if (sendIndex + 1 < channel.sends.size()) {
+                output << ',';
+            }
+        }
+        output << "]}";
+        if (channelIndex + 1 < mixer.channels.size()) {
+            output << ',';
+        }
+    }
+    output << "],\"routing\":[";
+    for (std::size_t routeIndex = 0; routeIndex < mixer.routing.size(); ++routeIndex) {
+        const auto& route = mixer.routing[routeIndex];
+        output << "{\"sourceChannelId\":\"" << escapeJson(route.sourceChannelId)
+               << "\",\"destinationChannelId\":\"" << escapeJson(route.destinationChannelId)
+               << "\"}";
+        if (routeIndex + 1 < mixer.routing.size()) {
+            output << ',';
+        }
+    }
+    output << "],\"faderGroups\":[";
+    for (std::size_t groupIndex = 0; groupIndex < mixer.faderGroups.size(); ++groupIndex) {
+        const auto& group = mixer.faderGroups[groupIndex];
+        output << "{\"id\":\"" << escapeJson(group.id) << "\",\"name\":\"" << escapeJson(group.name)
+               << "\",\"channelIds\":[";
+        for (std::size_t channelIndex = 0; channelIndex < group.channelIds.size(); ++channelIndex) {
+            output << "\"" << escapeJson(group.channelIds[channelIndex]) << "\"";
+            if (channelIndex + 1 < group.channelIds.size()) {
+                output << ',';
+            }
+        }
+        output << "],\"linkVolume\":" << (group.linkVolume ? "true" : "false")
+               << ",\"linkMute\":" << (group.linkMute ? "true" : "false") << "}";
+        if (groupIndex + 1 < mixer.faderGroups.size()) {
+            output << ',';
+        }
+    }
+    output << "]}";
+    return output.str();
+}
+
+MixerState parseMixerState(std::string_view json) {
+    MixerState mixer;
+    struct PendingSend {
+        std::string sourceChannelId;
+        Send send;
+    };
+    std::vector<PendingSend> pendingSends;
+    for (const auto channelJson : objectArrayItems(json, "channels")) {
+        ChannelStrip channel{.id = readRequiredString(channelJson, "id"),
+                             .name = readRequiredString(channelJson, "name"),
+                             .type = channelTypeFromString(readRequiredString(channelJson, "type")),
+                             .volumeDb = readNumberToken<float>(channelJson, "volumeDb"),
+                             .pan = readNumberToken<float>(channelJson, "pan"),
+                             .muted = readBool(channelJson, "muted"),
+                             .solo = readBool(channelJson, "solo"),
+                             .recordArmed = readBool(channelJson, "recordArmed"),
+                             .inputMonitoring = readBool(channelJson, "inputMonitoring"),
+                             .phaseInverted = readBool(channelJson, "phaseInverted")};
+        const auto sourceChannelId = channel.id;
+        for (const auto sendJson : objectArrayItems(channelJson, "sends")) {
+            pendingSends.push_back({.sourceChannelId = sourceChannelId,
+                                    .send = {.id = readRequiredString(sendJson, "id"),
+                                             .destinationChannelId = readRequiredString(
+                                                 sendJson, "destinationChannelId"),
+                                             .gainDb = readNumberToken<float>(sendJson, "gainDb"),
+                                             .preFader = readBool(sendJson, "preFader")}});
+        }
+        addChannel(mixer, std::move(channel));
+    }
+    for (auto& pending : pendingSends) {
+        addSend(mixer, pending.sourceChannelId, std::move(pending.send));
+    }
+    for (const auto routeJson : objectArrayItems(json, "routing")) {
+        addRoute(mixer,
+                 {.sourceChannelId = readRequiredString(routeJson, "sourceChannelId"),
+                  .destinationChannelId = readRequiredString(routeJson, "destinationChannelId")});
+    }
+    for (const auto groupJson : objectArrayItems(json, "faderGroups")) {
+        addFaderGroup(mixer, {.id = readRequiredString(groupJson, "id"),
+                              .name = readRequiredString(groupJson, "name"),
+                              .channelIds = stringArrayItems(groupJson, "channelIds"),
+                              .linkVolume = readBool(groupJson, "linkVolume"),
+                              .linkMute = readBool(groupJson, "linkMute")});
+    }
+    return mixer;
 }
 
 } // namespace lamusica::session
