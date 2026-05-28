@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
@@ -54,6 +55,12 @@ bool containsRoutingConnection(const session::ProjectManifest& manifest,
     });
 }
 
+bool containsMarkerId(const session::ProjectManifest& manifest, std::string_view markerId) {
+    return std::ranges::any_of(manifest.markers, [markerId](const session::Marker& marker) {
+        return marker.id == markerId;
+    });
+}
+
 std::string readSerializedString(std::string_view json, std::string_view key) {
     const auto pattern = "\"" + std::string{key} + "\":\"";
     const auto start = json.find(pattern);
@@ -103,6 +110,101 @@ std::int64_t readSerializedInt64(std::string_view json, std::string_view key) {
                                  std::string{key});
     }
     return value;
+}
+
+float readSerializedFloat(std::string_view json, std::string_view key) {
+    const auto pattern = "\"" + std::string{key} + "\":";
+    const auto start = json.find(pattern);
+    if (start == std::string_view::npos) {
+        throw std::runtime_error("Serialized command is missing float field: " + std::string{key});
+    }
+    const auto valueStart = start + pattern.size();
+    auto valueEnd = valueStart;
+    while (valueEnd < json.size() &&
+           (json[valueEnd] == '-' || json[valueEnd] == '+' || json[valueEnd] == '.' ||
+            json[valueEnd] == 'e' || json[valueEnd] == 'E' ||
+            (json[valueEnd] >= '0' && json[valueEnd] <= '9'))) {
+        ++valueEnd;
+    }
+    float value{0.0F};
+    const auto result = std::from_chars(json.data() + valueStart, json.data() + valueEnd, value);
+    if (result.ec != std::errc{}) {
+        throw std::runtime_error("Serialized command float field is invalid: " + std::string{key});
+    }
+    return value;
+}
+
+bool readSerializedBool(std::string_view json, std::string_view key) {
+    const auto pattern = "\"" + std::string{key} + "\":";
+    const auto start = json.find(pattern);
+    if (start == std::string_view::npos) {
+        throw std::runtime_error("Serialized command is missing bool field: " + std::string{key});
+    }
+    const auto valueStart = start + pattern.size();
+    if (json.substr(valueStart, 4) == "true") {
+        return true;
+    }
+    if (json.substr(valueStart, 5) == "false") {
+        return false;
+    }
+    throw std::runtime_error("Serialized command bool field is invalid: " + std::string{key});
+}
+
+std::vector<std::string> readSerializedCommandArray(std::string_view json, std::string_view key) {
+    const auto pattern = "\"" + std::string{key} + "\":[";
+    const auto start = json.find(pattern);
+    if (start == std::string_view::npos) {
+        throw std::runtime_error("Serialized command is missing command array field: " +
+                                 std::string{key});
+    }
+
+    const auto arrayStart = start + pattern.size();
+    std::vector<std::string> commands;
+    std::size_t commandStart = std::string_view::npos;
+    std::size_t objectDepth = 0;
+    bool inString = false;
+    bool escaped = false;
+    for (std::size_t index = arrayStart; index < json.size(); ++index) {
+        const auto character = json[index];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (character == '\\') {
+                escaped = true;
+            } else if (character == '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (character == '"') {
+            inString = true;
+            continue;
+        }
+        if (character == '{') {
+            if (objectDepth == 0) {
+                commandStart = index;
+            }
+            ++objectDepth;
+            continue;
+        }
+        if (character == '}') {
+            if (objectDepth == 0) {
+                throw std::runtime_error("Serialized command array has unbalanced braces");
+            }
+            --objectDepth;
+            if (objectDepth == 0) {
+                commands.emplace_back(json.substr(commandStart, index - commandStart + 1U));
+                commandStart = std::string_view::npos;
+            }
+            continue;
+        }
+        if (character == ']' && objectDepth == 0) {
+            return commands;
+        }
+    }
+
+    throw std::runtime_error("Serialized command array is unterminated: " + std::string{key});
 }
 
 } // namespace
@@ -196,6 +298,18 @@ CommandResult AddClipCommand::validate(const session::ProjectManifest& manifest)
     if (clip_.startSample < 0) {
         return fail("Clip start must not be negative");
     }
+    if (clip_.sourceOffsetSamples < 0) {
+        return fail("Clip source offset must not be negative");
+    }
+    if (clip_.fadeInSamples < 0 || clip_.fadeOutSamples < 0) {
+        return fail("Clip fades must not be negative");
+    }
+    if (clip_.fadeInSamples + clip_.fadeOutSamples > clip_.lengthSamples) {
+        return fail("Clip fades must fit inside clip length");
+    }
+    if (!std::isfinite(clip_.gainDb)) {
+        return fail("Clip gain must be finite");
+    }
     return ok("Clip can be added");
 }
 
@@ -234,8 +348,15 @@ std::string AddClipCommand::serialize() const {
     std::ostringstream output;
     output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
            << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clip_.id
-           << "\",\"trackId\":\"" << clip_.trackId << "\",\"startSample\":" << clip_.startSample
-           << ",\"lengthSamples\":" << clip_.lengthSamples << "}";
+           << "\",\"trackId\":\"" << clip_.trackId << "\",\"clipType\":\""
+           << session::toString(clip_.type) << "\",\"startSample\":" << clip_.startSample
+           << ",\"lengthSamples\":" << clip_.lengthSamples
+           << ",\"sourceOffsetSamples\":" << clip_.sourceOffsetSamples
+           << ",\"fadeInSamples\":" << clip_.fadeInSamples
+           << ",\"fadeOutSamples\":" << clip_.fadeOutSamples << ",\"gainDb\":" << clip_.gainDb
+           << ",\"muted\":" << (clip_.muted ? "true" : "false")
+           << ",\"reversed\":" << (clip_.reversed ? "true" : "false") << ",\"assetId\":\""
+           << clip_.assetId << "\"}";
     return output.str();
 }
 
@@ -509,6 +630,68 @@ std::string TrimClipCommand::serialize() const {
     return output.str();
 }
 
+SlipClipCommand::SlipClipCommand(std::string commandId, std::string auditId, std::string clipId,
+                                 std::int64_t newSourceOffsetSamples)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "slip_clip"},
+      clipId_(std::move(clipId)), newSourceOffsetSamples_(newSourceOffsetSamples) {}
+
+const CommandMetadata& SlipClipCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult SlipClipCommand::validate(const session::ProjectManifest& manifest) const {
+    if (!containsClipId(manifest, clipId_)) {
+        return fail("Clip does not exist: " + clipId_);
+    }
+    if (newSourceOffsetSamples_ < 0) {
+        return fail("Clip source offset must not be negative");
+    }
+    return ok("Clip can be slipped");
+}
+
+std::string SlipClipCommand::preview(const session::ProjectManifest&) const {
+    return "Slip clip \"" + clipId_ + "\" to source sample " +
+           std::to_string(newSourceOffsetSamples_);
+}
+
+CommandResult SlipClipCommand::apply(session::ProjectManifest& manifest) {
+    const auto validation = validate(manifest);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto* clip = findClip(manifest, clipId_);
+    previousSourceOffsetSamples_ = clip->sourceOffsetSamples;
+    clip->sourceOffsetSamples = newSourceOffsetSamples_;
+    applied_ = true;
+    return ok("Clip slipped");
+}
+
+CommandResult SlipClipCommand::undo(session::ProjectManifest& manifest) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = findClip(manifest, clipId_);
+    if (clip == nullptr) {
+        return fail("Clip to undo was not found: " + clipId_);
+    }
+
+    clip->sourceOffsetSamples = previousSourceOffsetSamples_;
+    applied_ = false;
+    return ok("Clip slip undone");
+}
+
+std::string SlipClipCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"newSourceOffsetSamples\":" << newSourceOffsetSamples_ << "}";
+    return output.str();
+}
+
 SetClipFadeCommand::SetClipFadeCommand(std::string commandId, std::string auditId,
                                        std::string clipId, std::int64_t fadeInSamples,
                                        std::int64_t fadeOutSamples)
@@ -578,6 +761,73 @@ std::string SetClipFadeCommand::serialize() const {
            << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
            << "\",\"fadeInSamples\":" << fadeInSamples_ << ",\"fadeOutSamples\":" << fadeOutSamples_
            << "}";
+    return output.str();
+}
+
+SetClipRenderPropertiesCommand::SetClipRenderPropertiesCommand(std::string commandId,
+                                                               std::string auditId,
+                                                               std::string clipId, float gainDb,
+                                                               bool muted, bool reversed)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "set_clip_render_properties"},
+      clipId_(std::move(clipId)), gainDb_(gainDb), muted_(muted), reversed_(reversed) {}
+
+const CommandMetadata& SetClipRenderPropertiesCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult
+SetClipRenderPropertiesCommand::validate(const session::ProjectManifest& manifest) const {
+    if (!containsClipId(manifest, clipId_)) {
+        return fail("Clip does not exist: " + clipId_);
+    }
+    if (!std::isfinite(gainDb_)) {
+        return fail("Clip gain must be finite");
+    }
+    return ok("Clip render properties can be set");
+}
+
+std::string SetClipRenderPropertiesCommand::preview(const session::ProjectManifest&) const {
+    return "Set render properties on clip \"" + clipId_ + "\"";
+}
+
+CommandResult SetClipRenderPropertiesCommand::apply(session::ProjectManifest& manifest) {
+    const auto validation = validate(manifest);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto* clip = findClip(manifest, clipId_);
+    previousClip_ = *clip;
+    clip->gainDb = gainDb_;
+    clip->muted = muted_;
+    clip->reversed = reversed_;
+    applied_ = true;
+    return ok("Clip render properties set");
+}
+
+CommandResult SetClipRenderPropertiesCommand::undo(session::ProjectManifest& manifest) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = findClip(manifest, clipId_);
+    if (clip == nullptr) {
+        return fail("Clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("Clip render properties undone");
+}
+
+std::string SetClipRenderPropertiesCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"gainDb\":" << gainDb_ << ",\"muted\":" << (muted_ ? "true" : "false")
+           << ",\"reversed\":" << (reversed_ ? "true" : "false") << "}";
     return output.str();
 }
 
@@ -784,6 +1034,252 @@ std::string RemoveRoutingConnectionCommand::serialize() const {
            << "\",\"auditId\":\"" << metadata_.auditId << "\",\"sourceTrackId\":\""
            << connection_.sourceTrackId << "\",\"destinationTrackId\":\""
            << connection_.destinationTrackId << "\"}";
+    return output.str();
+}
+
+SetProjectNameCommand::SetProjectNameCommand(std::string commandId, std::string auditId,
+                                             std::string name)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "set_project_name"},
+      name_(std::move(name)) {}
+
+const CommandMetadata& SetProjectNameCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult SetProjectNameCommand::validate(const session::ProjectManifest&) const {
+    if (name_.empty()) {
+        return fail("Project name must not be empty");
+    }
+    return ok("Project name can be changed");
+}
+
+std::string SetProjectNameCommand::preview(const session::ProjectManifest&) const {
+    return "Rename project to \"" + name_ + "\"";
+}
+
+CommandResult SetProjectNameCommand::apply(session::ProjectManifest& manifest) {
+    const auto validation = validate(manifest);
+    if (!validation.ok) {
+        return validation;
+    }
+    previousName_ = manifest.name;
+    manifest.name = name_;
+    applied_ = true;
+    return ok("Project name changed");
+}
+
+CommandResult SetProjectNameCommand::undo(session::ProjectManifest& manifest) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+    manifest.name = previousName_;
+    applied_ = false;
+    return ok("Project name restored");
+}
+
+std::string SetProjectNameCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"projectName\":\"" << name_ << "\"}";
+    return output.str();
+}
+
+AddMarkerCommand::AddMarkerCommand(std::string commandId, std::string auditId,
+                                   session::Marker marker)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "add_marker"},
+      marker_(std::move(marker)) {}
+
+const CommandMetadata& AddMarkerCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult AddMarkerCommand::validate(const session::ProjectManifest& manifest) const {
+    if (marker_.id.empty()) {
+        return fail("Marker id must not be empty");
+    }
+    if (marker_.name.empty()) {
+        return fail("Marker name must not be empty");
+    }
+    if (marker_.samplePosition < 0) {
+        return fail("Marker sample position must not be negative");
+    }
+    if (containsMarkerId(manifest, marker_.id)) {
+        return fail("Marker id already exists: " + marker_.id);
+    }
+    return ok("Marker can be added");
+}
+
+std::string AddMarkerCommand::preview(const session::ProjectManifest&) const {
+    return "Add marker \"" + marker_.name + "\" at sample " +
+           std::to_string(marker_.samplePosition);
+}
+
+CommandResult AddMarkerCommand::apply(session::ProjectManifest& manifest) {
+    const auto validation = validate(manifest);
+    if (!validation.ok) {
+        return validation;
+    }
+    manifest.markers.push_back(marker_);
+    applied_ = true;
+    return ok("Marker added");
+}
+
+CommandResult AddMarkerCommand::undo(session::ProjectManifest& manifest) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+    const auto oldSize = manifest.markers.size();
+    std::erase_if(manifest.markers,
+                  [this](const session::Marker& marker) { return marker.id == marker_.id; });
+    if (manifest.markers.size() == oldSize) {
+        return fail("Marker to undo was not found: " + marker_.id);
+    }
+    applied_ = false;
+    return ok("Marker removed");
+}
+
+std::string AddMarkerCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"markerId\":\"" << marker_.id
+           << "\",\"markerName\":\"" << marker_.name
+           << "\",\"samplePosition\":" << marker_.samplePosition << "}";
+    return output.str();
+}
+
+RemoveMarkerCommand::RemoveMarkerCommand(std::string commandId, std::string auditId,
+                                         std::string markerId)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "remove_marker"},
+      markerId_(std::move(markerId)) {}
+
+const CommandMetadata& RemoveMarkerCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult RemoveMarkerCommand::validate(const session::ProjectManifest& manifest) const {
+    if (markerId_.empty()) {
+        return fail("Marker id must not be empty");
+    }
+    if (!containsMarkerId(manifest, markerId_)) {
+        return fail("Marker does not exist: " + markerId_);
+    }
+    return ok("Marker can be removed");
+}
+
+std::string RemoveMarkerCommand::preview(const session::ProjectManifest&) const {
+    return "Remove marker \"" + markerId_ + "\"";
+}
+
+CommandResult RemoveMarkerCommand::apply(session::ProjectManifest& manifest) {
+    const auto validation = validate(manifest);
+    if (!validation.ok) {
+        return validation;
+    }
+    const auto found = std::ranges::find_if(
+        manifest.markers, [this](const session::Marker& marker) { return marker.id == markerId_; });
+    if (found == manifest.markers.end()) {
+        return fail("Marker to remove was not found: " + markerId_);
+    }
+    removedIndex_ = static_cast<std::size_t>(std::distance(manifest.markers.begin(), found));
+    removedMarker_ = *found;
+    manifest.markers.erase(found);
+    applied_ = true;
+    return ok("Marker removed");
+}
+
+CommandResult RemoveMarkerCommand::undo(session::ProjectManifest& manifest) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+    if (containsMarkerId(manifest, removedMarker_.id)) {
+        return fail("Marker to restore already exists: " + removedMarker_.id);
+    }
+    const auto insertIndex = std::min(removedIndex_, manifest.markers.size());
+    manifest.markers.insert(manifest.markers.begin() + static_cast<std::ptrdiff_t>(insertIndex),
+                            removedMarker_);
+    applied_ = false;
+    return ok("Marker restored");
+}
+
+std::string RemoveMarkerCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"markerId\":\"" << markerId_
+           << "\"}";
+    return output.str();
+}
+
+AddTempoEventCommand::AddTempoEventCommand(std::string commandId, std::string auditId,
+                                           session::TempoEvent event)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "add_tempo_event"},
+      event_(event) {}
+
+const CommandMetadata& AddTempoEventCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult AddTempoEventCommand::validate(const session::ProjectManifest& manifest) const {
+    if (event_.samplePosition < 0) {
+        return fail("Tempo event sample position must not be negative");
+    }
+    if (!std::isfinite(event_.bpm) || event_.bpm <= 0.0) {
+        return fail("Tempo event BPM must be positive");
+    }
+    if (std::ranges::any_of(manifest.tempoMap, [this](const session::TempoEvent& event) {
+            return event.samplePosition == event_.samplePosition;
+        })) {
+        return fail("Tempo event already exists at sample: " +
+                    std::to_string(event_.samplePosition));
+    }
+    return ok("Tempo event can be added");
+}
+
+std::string AddTempoEventCommand::preview(const session::ProjectManifest&) const {
+    return "Add tempo " + std::to_string(event_.bpm) + " BPM at sample " +
+           std::to_string(event_.samplePosition);
+}
+
+CommandResult AddTempoEventCommand::apply(session::ProjectManifest& manifest) {
+    const auto validation = validate(manifest);
+    if (!validation.ok) {
+        return validation;
+    }
+    const auto insertPosition = std::ranges::lower_bound(manifest.tempoMap, event_.samplePosition,
+                                                         {}, &session::TempoEvent::samplePosition);
+    insertedIndex_ =
+        static_cast<std::size_t>(std::distance(manifest.tempoMap.begin(), insertPosition));
+    manifest.tempoMap.insert(insertPosition, event_);
+    applied_ = true;
+    return ok("Tempo event added");
+}
+
+CommandResult AddTempoEventCommand::undo(session::ProjectManifest& manifest) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+    if (insertedIndex_ >= manifest.tempoMap.size() ||
+        manifest.tempoMap[insertedIndex_].samplePosition != event_.samplePosition) {
+        return fail("Tempo event to undo was not found: " + std::to_string(event_.samplePosition));
+    }
+    manifest.tempoMap.erase(manifest.tempoMap.begin() +
+                            static_cast<std::ptrdiff_t>(insertedIndex_));
+    applied_ = false;
+    return ok("Tempo event removed");
+}
+
+std::string AddTempoEventCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId
+           << "\",\"samplePosition\":" << event_.samplePosition << ",\"bpm\":" << event_.bpm << "}";
     return output.str();
 }
 
@@ -1017,6 +1513,250 @@ std::string TransposeMidiClipCommand::serialize() const {
     return output.str();
 }
 
+TransformMidiVelocityCommand::TransformMidiVelocityCommand(std::string commandId,
+                                                           std::string auditId, std::string clipId,
+                                                           session::VelocityTransform transform)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "transform_midi_velocity"},
+      clipId_(std::move(clipId)), transform_(transform) {}
+
+const CommandMetadata& TransformMidiVelocityCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult TransformMidiVelocityCommand::validate(const MidiClipStore& store) const {
+    if (store.find(clipId_) == nullptr) {
+        return fail("MIDI clip does not exist: " + clipId_);
+    }
+    if (transform_.scale < 0.0F) {
+        return fail("MIDI velocity scale must be non-negative");
+    }
+    return ok("MIDI velocity can be transformed");
+}
+
+std::string TransformMidiVelocityCommand::preview(const MidiClipStore&) const {
+    return "Transform MIDI velocity on clip \"" + clipId_ + "\"";
+}
+
+CommandResult TransformMidiVelocityCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto* clip = store.find(clipId_);
+    previousClip_ = *clip;
+    session::transformVelocity(*clip, transform_);
+    applied_ = true;
+    return ok("MIDI velocity transformed");
+}
+
+CommandResult TransformMidiVelocityCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("MIDI velocity transform undone");
+}
+
+std::string TransformMidiVelocityCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"add\":" << transform_.add << ",\"scale\":" << transform_.scale << "}";
+    return output.str();
+}
+
+HumanizeMidiClipCommand::HumanizeMidiClipCommand(std::string commandId, std::string auditId,
+                                                 std::string clipId,
+                                                 session::HumanizeSettings settings)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "humanize_midi_clip"},
+      clipId_(std::move(clipId)), settings_(settings) {}
+
+const CommandMetadata& HumanizeMidiClipCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult HumanizeMidiClipCommand::validate(const MidiClipStore& store) const {
+    if (store.find(clipId_) == nullptr) {
+        return fail("MIDI clip does not exist: " + clipId_);
+    }
+    if (settings_.maxTimingOffsetSamples < 0 || settings_.maxVelocityOffset < 0) {
+        return fail("MIDI humanize offsets must be non-negative");
+    }
+    return ok("MIDI clip can be humanized");
+}
+
+std::string HumanizeMidiClipCommand::preview(const MidiClipStore&) const {
+    return "Humanize MIDI clip \"" + clipId_ + "\"";
+}
+
+CommandResult HumanizeMidiClipCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto* clip = store.find(clipId_);
+    previousClip_ = *clip;
+    session::humanizeNotes(*clip, settings_);
+    applied_ = true;
+    return ok("MIDI clip humanized");
+}
+
+CommandResult HumanizeMidiClipCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("MIDI humanize undone");
+}
+
+std::string HumanizeMidiClipCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"maxTimingOffsetSamples\":" << settings_.maxTimingOffsetSamples
+           << ",\"maxVelocityOffset\":" << settings_.maxVelocityOffset
+           << ",\"seed\":" << settings_.seed << "}";
+    return output.str();
+}
+
+SetMidiNoteLengthsCommand::SetMidiNoteLengthsCommand(std::string commandId, std::string auditId,
+                                                     std::string clipId, std::int64_t lengthSamples)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "set_midi_note_lengths"},
+      clipId_(std::move(clipId)), lengthSamples_(lengthSamples) {}
+
+const CommandMetadata& SetMidiNoteLengthsCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult SetMidiNoteLengthsCommand::validate(const MidiClipStore& store) const {
+    if (store.find(clipId_) == nullptr) {
+        return fail("MIDI clip does not exist: " + clipId_);
+    }
+    if (lengthSamples_ < 0) {
+        return fail("MIDI note length must be non-negative");
+    }
+    return ok("MIDI note lengths can be set");
+}
+
+std::string SetMidiNoteLengthsCommand::preview(const MidiClipStore&) const {
+    return "Set MIDI note lengths on clip \"" + clipId_ + "\"";
+}
+
+CommandResult SetMidiNoteLengthsCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto* clip = store.find(clipId_);
+    previousClip_ = *clip;
+    session::setNoteLengths(*clip, lengthSamples_);
+    applied_ = true;
+    return ok("MIDI note lengths set");
+}
+
+CommandResult SetMidiNoteLengthsCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("MIDI note length edit undone");
+}
+
+std::string SetMidiNoteLengthsCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"lengthSamples\":" << lengthSamples_ << "}";
+    return output.str();
+}
+
+LegatoMidiClipCommand::LegatoMidiClipCommand(std::string commandId, std::string auditId,
+                                             std::string clipId)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "legato_midi_clip"},
+      clipId_(std::move(clipId)) {}
+
+const CommandMetadata& LegatoMidiClipCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult LegatoMidiClipCommand::validate(const MidiClipStore& store) const {
+    if (store.find(clipId_) == nullptr) {
+        return fail("MIDI clip does not exist: " + clipId_);
+    }
+    return ok("MIDI clip can be made legato");
+}
+
+std::string LegatoMidiClipCommand::preview(const MidiClipStore&) const {
+    return "Apply legato to MIDI clip \"" + clipId_ + "\"";
+}
+
+CommandResult LegatoMidiClipCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto* clip = store.find(clipId_);
+    previousClip_ = *clip;
+    session::legato(*clip);
+    applied_ = true;
+    return ok("MIDI clip made legato");
+}
+
+CommandResult LegatoMidiClipCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("MIDI legato undone");
+}
+
+std::string LegatoMidiClipCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_ << "\"}";
+    return output.str();
+}
+
 EditMidiNoteCommand::EditMidiNoteCommand(std::string commandId, std::string auditId,
                                          std::string clipId, std::string noteId,
                                          session::MidiNote replacement)
@@ -1104,6 +1844,398 @@ std::string EditMidiNoteCommand::serialize() const {
            << ",\"startSample\":" << replacement_.startSample
            << ",\"lengthSamples\":" << replacement_.lengthSamples
            << ",\"muted\":" << (replacement_.muted ? "true" : "false") << "}";
+    return output.str();
+}
+
+SplitMidiNoteCommand::SplitMidiNoteCommand(std::string commandId, std::string auditId,
+                                           std::string clipId, std::string noteId,
+                                           std::string rightNoteId, std::int64_t splitSample)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "split_midi_note"},
+      clipId_(std::move(clipId)), noteId_(std::move(noteId)), rightNoteId_(std::move(rightNoteId)),
+      splitSample_(splitSample) {}
+
+const CommandMetadata& SplitMidiNoteCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult SplitMidiNoteCommand::validate(const MidiClipStore& store) const {
+    const auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip does not exist: " + clipId_);
+    }
+    if (noteId_.empty() || rightNoteId_.empty()) {
+        return fail("MIDI split note ids must not be empty");
+    }
+    if (noteId_ == rightNoteId_) {
+        return fail("MIDI split right note id must be distinct");
+    }
+    if (std::ranges::any_of(clip->notes, [this](const session::MidiNote& note) {
+            return note.id == rightNoteId_;
+        })) {
+        return fail("MIDI split right note id already exists: " + rightNoteId_);
+    }
+
+    const auto found = std::ranges::find_if(
+        clip->notes, [this](const session::MidiNote& note) { return note.id == noteId_; });
+    if (found == clip->notes.end()) {
+        return fail("MIDI note does not exist: " + noteId_);
+    }
+    const auto noteEnd = found->startSample + found->lengthSamples;
+    if (splitSample_ <= found->startSample || splitSample_ >= noteEnd) {
+        return fail("MIDI split sample must fall inside the note");
+    }
+    return ok("MIDI note can be split");
+}
+
+std::string SplitMidiNoteCommand::preview(const MidiClipStore&) const {
+    return "Split MIDI note \"" + noteId_ + "\" at sample " + std::to_string(splitSample_);
+}
+
+CommandResult SplitMidiNoteCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto* clip = store.find(clipId_);
+    auto found = std::ranges::find_if(
+        clip->notes, [this](const session::MidiNote& note) { return note.id == noteId_; });
+    previous_ = *found;
+    const auto rightLength = previous_.startSample + previous_.lengthSamples - splitSample_;
+    found->lengthSamples = splitSample_ - previous_.startSample;
+    auto rightNote = previous_;
+    rightNote.id = rightNoteId_;
+    rightNote.startSample = splitSample_;
+    rightNote.lengthSamples = rightLength;
+    clip->notes.push_back(std::move(rightNote));
+    std::ranges::sort(clip->notes, {}, &session::MidiNote::startSample);
+    applied_ = true;
+    return ok("MIDI note split");
+}
+
+CommandResult SplitMidiNoteCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    auto left = std::ranges::find_if(
+        clip->notes, [this](const session::MidiNote& note) { return note.id == noteId_; });
+    if (left == clip->notes.end()) {
+        return fail("MIDI split left note to undo was not found: " + noteId_);
+    }
+    const auto oldSize = clip->notes.size();
+    std::erase_if(clip->notes,
+                  [this](const session::MidiNote& note) { return note.id == rightNoteId_; });
+    if (clip->notes.size() == oldSize) {
+        return fail("MIDI split right note to undo was not found: " + rightNoteId_);
+    }
+
+    left = std::ranges::find_if(
+        clip->notes, [this](const session::MidiNote& note) { return note.id == noteId_; });
+    *left = previous_;
+    std::ranges::sort(clip->notes, {}, &session::MidiNote::startSample);
+    applied_ = false;
+    return ok("MIDI note split undone");
+}
+
+std::string SplitMidiNoteCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"noteId\":\"" << noteId_ << "\",\"rightNoteId\":\"" << rightNoteId_
+           << "\",\"splitSample\":" << splitSample_ << "}";
+    return output.str();
+}
+
+AddMidiControlChangeCommand::AddMidiControlChangeCommand(std::string commandId, std::string auditId,
+                                                         std::string clipId,
+                                                         session::MidiControlChange change)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "add_midi_control_change"},
+      clipId_(std::move(clipId)), change_(change) {}
+
+const CommandMetadata& AddMidiControlChangeCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult AddMidiControlChangeCommand::validate(const MidiClipStore&) const {
+    if (clipId_.empty()) {
+        return fail("MIDI clip id must not be empty");
+    }
+    if (change_.samplePosition < 0) {
+        return fail("MIDI control change sample position must not be negative");
+    }
+    if (change_.controller > 127 || change_.value > 127) {
+        return fail("MIDI control change data bytes must be in the range 0-127");
+    }
+    if (change_.channel == 0 || change_.channel > 16) {
+        return fail("MIDI control change channel must be in the range 1-16");
+    }
+    return ok("MIDI control change can be added");
+}
+
+std::string AddMidiControlChangeCommand::preview(const MidiClipStore&) const {
+    return "Add MIDI CC " + std::to_string(change_.controller) + " to clip \"" + clipId_ + "\"";
+}
+
+CommandResult AddMidiControlChangeCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto& clip = store.getOrCreate(clipId_);
+    previousClip_ = clip;
+    clip.controlChanges.push_back(change_);
+    std::ranges::sort(clip.controlChanges, {}, &session::MidiControlChange::samplePosition);
+    applied_ = true;
+    return ok("MIDI control change added");
+}
+
+CommandResult AddMidiControlChangeCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("MIDI control change removed");
+}
+
+std::string AddMidiControlChangeCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"samplePosition\":" << change_.samplePosition
+           << ",\"controller\":" << static_cast<int>(change_.controller)
+           << ",\"value\":" << static_cast<int>(change_.value)
+           << ",\"channel\":" << static_cast<int>(change_.channel) << "}";
+    return output.str();
+}
+
+AddMidiPitchBendCommand::AddMidiPitchBendCommand(std::string commandId, std::string auditId,
+                                                 std::string clipId, session::MidiPitchBend bend)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "add_midi_pitch_bend"},
+      clipId_(std::move(clipId)), bend_(bend) {}
+
+const CommandMetadata& AddMidiPitchBendCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult AddMidiPitchBendCommand::validate(const MidiClipStore&) const {
+    if (clipId_.empty()) {
+        return fail("MIDI clip id must not be empty");
+    }
+    if (bend_.samplePosition < 0) {
+        return fail("MIDI pitch bend sample position must not be negative");
+    }
+    if (bend_.value < -8192 || bend_.value > 8191) {
+        return fail("MIDI pitch bend value must be in the range -8192-8191");
+    }
+    if (bend_.channel == 0 || bend_.channel > 16) {
+        return fail("MIDI pitch bend channel must be in the range 1-16");
+    }
+    return ok("MIDI pitch bend can be added");
+}
+
+std::string AddMidiPitchBendCommand::preview(const MidiClipStore&) const {
+    return "Add MIDI pitch bend to clip \"" + clipId_ + "\"";
+}
+
+CommandResult AddMidiPitchBendCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto& clip = store.getOrCreate(clipId_);
+    previousClip_ = clip;
+    clip.pitchBends.push_back(bend_);
+    std::ranges::sort(clip.pitchBends, {}, &session::MidiPitchBend::samplePosition);
+    applied_ = true;
+    return ok("MIDI pitch bend added");
+}
+
+CommandResult AddMidiPitchBendCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("MIDI pitch bend removed");
+}
+
+std::string AddMidiPitchBendCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"samplePosition\":" << bend_.samplePosition << ",\"value\":" << bend_.value
+           << ",\"channel\":" << static_cast<int>(bend_.channel) << "}";
+    return output.str();
+}
+
+AddMidiAftertouchCommand::AddMidiAftertouchCommand(std::string commandId, std::string auditId,
+                                                   std::string clipId,
+                                                   session::MidiAftertouch pressure)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "add_midi_aftertouch"},
+      clipId_(std::move(clipId)), pressure_(pressure) {}
+
+const CommandMetadata& AddMidiAftertouchCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult AddMidiAftertouchCommand::validate(const MidiClipStore&) const {
+    if (clipId_.empty()) {
+        return fail("MIDI clip id must not be empty");
+    }
+    if (pressure_.samplePosition < 0) {
+        return fail("MIDI aftertouch sample position must not be negative");
+    }
+    if (pressure_.pressure > 127 || pressure_.pitch > 127) {
+        return fail("MIDI aftertouch data bytes must be in the range 0-127");
+    }
+    if (pressure_.channel == 0 || pressure_.channel > 16) {
+        return fail("MIDI aftertouch channel must be in the range 1-16");
+    }
+    return ok("MIDI aftertouch can be added");
+}
+
+std::string AddMidiAftertouchCommand::preview(const MidiClipStore&) const {
+    return "Add MIDI aftertouch to clip \"" + clipId_ + "\"";
+}
+
+CommandResult AddMidiAftertouchCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto& clip = store.getOrCreate(clipId_);
+    previousClip_ = clip;
+    clip.aftertouch.push_back(pressure_);
+    std::ranges::sort(clip.aftertouch, {}, &session::MidiAftertouch::samplePosition);
+    applied_ = true;
+    return ok("MIDI aftertouch added");
+}
+
+CommandResult AddMidiAftertouchCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("MIDI aftertouch removed");
+}
+
+std::string AddMidiAftertouchCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"samplePosition\":" << pressure_.samplePosition
+           << ",\"pressure\":" << static_cast<int>(pressure_.pressure)
+           << ",\"channel\":" << static_cast<int>(pressure_.channel)
+           << ",\"pitch\":" << static_cast<int>(pressure_.pitch)
+           << ",\"polyphonic\":" << (pressure_.polyphonic ? "true" : "false") << "}";
+    return output.str();
+}
+
+AddMidiProgramChangeCommand::AddMidiProgramChangeCommand(std::string commandId, std::string auditId,
+                                                         std::string clipId,
+                                                         session::MidiProgramChange change)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "add_midi_program_change"},
+      clipId_(std::move(clipId)), change_(change) {}
+
+const CommandMetadata& AddMidiProgramChangeCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult AddMidiProgramChangeCommand::validate(const MidiClipStore&) const {
+    if (clipId_.empty()) {
+        return fail("MIDI clip id must not be empty");
+    }
+    if (change_.samplePosition < 0) {
+        return fail("MIDI program change sample position must not be negative");
+    }
+    if (change_.program > 127) {
+        return fail("MIDI program change program must be in the range 0-127");
+    }
+    if (change_.channel == 0 || change_.channel > 16) {
+        return fail("MIDI program change channel must be in the range 1-16");
+    }
+    return ok("MIDI program change can be added");
+}
+
+std::string AddMidiProgramChangeCommand::preview(const MidiClipStore&) const {
+    return "Add MIDI program change to clip \"" + clipId_ + "\"";
+}
+
+CommandResult AddMidiProgramChangeCommand::apply(MidiClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto& clip = store.getOrCreate(clipId_);
+    previousClip_ = clip;
+    clip.programChanges.push_back(change_);
+    std::ranges::sort(clip.programChanges, {}, &session::MidiProgramChange::samplePosition);
+    applied_ = true;
+    return ok("MIDI program change added");
+}
+
+CommandResult AddMidiProgramChangeCommand::undo(MidiClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* clip = store.find(clipId_);
+    if (clip == nullptr) {
+        return fail("MIDI clip to undo was not found: " + clipId_);
+    }
+
+    *clip = previousClip_;
+    applied_ = false;
+    return ok("MIDI program change removed");
+}
+
+std::string AddMidiProgramChangeCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"samplePosition\":" << change_.samplePosition
+           << ",\"program\":" << static_cast<int>(change_.program)
+           << ",\"channel\":" << static_cast<int>(change_.channel) << "}";
     return output.str();
 }
 
@@ -1294,6 +2426,100 @@ std::string DuplicatePatternVariationCommand::serialize() const {
     return output.str();
 }
 
+EditPatternStepCommand::EditPatternStepCommand(std::string commandId, std::string auditId,
+                                               std::string patternId, std::string laneId,
+                                               std::uint32_t stepIndex, session::PatternStep step)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "edit_pattern_step"},
+      patternId_(std::move(patternId)), laneId_(std::move(laneId)), stepIndex_(stepIndex),
+      step_(step) {}
+
+const CommandMetadata& EditPatternStepCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult EditPatternStepCommand::validate(const PatternClipStore& store) const {
+    if (patternId_.empty() || laneId_.empty()) {
+        return fail("Pattern and lane ids must not be empty");
+    }
+    if (step_.probability < 0.0F || step_.probability > 1.0F) {
+        return fail("Pattern step probability must be in the range 0..1");
+    }
+    if (step_.ratchets == 0U) {
+        return fail("Pattern step ratchets must be positive");
+    }
+    const auto* pattern = store.find(patternId_);
+    if (pattern == nullptr) {
+        return fail("Pattern does not exist: " + patternId_);
+    }
+    const auto lane = std::ranges::find_if(
+        pattern->lanes, [this](const session::PatternLane& item) { return item.id == laneId_; });
+    if (lane == pattern->lanes.end()) {
+        return fail("Pattern lane does not exist: " + laneId_);
+    }
+    if (lane->lengthSteps == 0U || stepIndex_ >= lane->lengthSteps) {
+        return fail("Pattern step index is outside the lane length");
+    }
+    return ok("Pattern step can be edited");
+}
+
+std::string EditPatternStepCommand::preview(const PatternClipStore&) const {
+    return "Edit pattern \"" + patternId_ + "\" lane \"" + laneId_ + "\" step " +
+           std::to_string(stepIndex_);
+}
+
+CommandResult EditPatternStepCommand::apply(PatternClipStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+    auto* pattern = store.find(patternId_);
+    auto lane = std::ranges::find_if(
+        pattern->lanes, [this](const session::PatternLane& item) { return item.id == laneId_; });
+    previousLane_ = *lane;
+    if (lane->steps.size() < lane->lengthSteps) {
+        lane->steps.resize(lane->lengthSteps);
+    }
+    lane->steps[stepIndex_] = step_;
+    applied_ = true;
+    return ok("Pattern step edited");
+}
+
+CommandResult EditPatternStepCommand::undo(PatternClipStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+    auto* pattern = store.find(patternId_);
+    if (pattern == nullptr) {
+        return fail("Pattern step edit target was not found: " + patternId_);
+    }
+    auto lane = std::ranges::find_if(
+        pattern->lanes, [this](const session::PatternLane& item) { return item.id == laneId_; });
+    if (lane == pattern->lanes.end()) {
+        return fail("Pattern step edit lane was not found: " + laneId_);
+    }
+    *lane = previousLane_;
+    applied_ = false;
+    return ok("Pattern step edit undone");
+}
+
+std::string EditPatternStepCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"patternId\":\"" << patternId_
+           << "\",\"laneId\":\"" << laneId_ << "\",\"stepIndex\":" << stepIndex_
+           << ",\"enabled\":" << (step_.enabled ? "true" : "false")
+           << ",\"pitch\":" << static_cast<int>(step_.pitch)
+           << ",\"velocity\":" << static_cast<int>(step_.velocity)
+           << ",\"probability\":" << step_.probability
+           << ",\"ratchets\":" << static_cast<int>(step_.ratchets)
+           << ",\"tie\":" << (step_.tie ? "true" : "false")
+           << ",\"slide\":" << (step_.slide ? "true" : "false")
+           << ",\"accent\":" << (step_.accent ? "true" : "false") << "}";
+    return output.str();
+}
+
 session::AutomationLaneData* AutomationLaneStore::find(std::string_view laneId) noexcept {
     const auto found = std::ranges::find_if(
         lanes_, [laneId](const session::AutomationLaneData& lane) { return lane.id == laneId; });
@@ -1478,6 +2704,11 @@ std::string CaptureAutomationWriteCommand::serialize() const {
            << "\",\"auditId\":\"" << metadata_.auditId << "\",\"laneId\":\"" << lane_.id
            << "\",\"samples\":" << samples_.size() << "}";
     return output.str();
+}
+
+const session::AutomationCommandBatch&
+CaptureAutomationWriteCommand::capturedBatch() const noexcept {
+    return capturedBatch_;
 }
 
 SetChannelMixCommand::SetChannelMixCommand(std::string commandId, std::string auditId,
@@ -2207,6 +3438,75 @@ std::string QuantizeWarpMarkersCommand::serialize() const {
     return output.str();
 }
 
+ApplyWarpGrooveCommand::ApplyWarpGrooveCommand(std::string commandId, std::string auditId,
+                                               std::string clipId, session::GrooveTemplate groove,
+                                               float strength)
+    : metadata_{.commandId = std::move(commandId),
+                .auditId = std::move(auditId),
+                .name = "apply_warp_groove"},
+      clipId_(std::move(clipId)), groove_(std::move(groove)), strength_(strength) {}
+
+const CommandMetadata& ApplyWarpGrooveCommand::metadata() const noexcept {
+    return metadata_;
+}
+
+CommandResult ApplyWarpGrooveCommand::validate(const WarpStateStore& store) const {
+    if (store.find(clipId_) == nullptr) {
+        return fail("Warp state does not exist: " + clipId_);
+    }
+    if (groove_.id.empty()) {
+        return fail("Warp groove id must not be empty");
+    }
+    if (groove_.points.empty()) {
+        return fail("Warp groove must contain at least one point");
+    }
+    if (strength_ < 0.0F || strength_ > 1.0F) {
+        return fail("Warp groove strength must be in the range 0..1");
+    }
+    return ok("Warp groove can be applied");
+}
+
+std::string ApplyWarpGrooveCommand::preview(const WarpStateStore&) const {
+    return "Apply groove \"" + groove_.id + "\" to warp markers on clip \"" + clipId_ + "\"";
+}
+
+CommandResult ApplyWarpGrooveCommand::apply(WarpStateStore& store) {
+    const auto validation = validate(store);
+    if (!validation.ok) {
+        return validation;
+    }
+
+    auto* warp = store.find(clipId_);
+    previousWarp_ = *warp;
+    session::applyGrooveToWarpMarkers(*warp, groove_, strength_);
+    applied_ = true;
+    return ok("Warp groove applied");
+}
+
+CommandResult ApplyWarpGrooveCommand::undo(WarpStateStore& store) {
+    if (!applied_) {
+        return fail("Cannot undo command that has not been applied");
+    }
+
+    auto* warp = store.find(clipId_);
+    if (warp == nullptr) {
+        return fail("Warp state to undo was not found: " + clipId_);
+    }
+
+    *warp = previousWarp_;
+    applied_ = false;
+    return ok("Warp groove undone");
+}
+
+std::string ApplyWarpGrooveCommand::serialize() const {
+    std::ostringstream output;
+    output << "{\"name\":\"" << metadata_.name << "\",\"commandId\":\"" << metadata_.commandId
+           << "\",\"auditId\":\"" << metadata_.auditId << "\",\"clipId\":\"" << clipId_
+           << "\",\"grooveId\":\"" << groove_.id << "\",\"points\":" << groove_.points.size()
+           << ",\"strength\":" << strength_ << "}";
+    return output.str();
+}
+
 TransactionCommand::TransactionCommand(std::string commandId, std::string auditId, std::string name,
                                        std::vector<CommandPtr> commands)
     : metadata_{.commandId = std::move(commandId),
@@ -2220,13 +3520,18 @@ const CommandMetadata& TransactionCommand::metadata() const noexcept {
 
 CommandResult TransactionCommand::validate(const session::ProjectManifest& manifest) const {
     auto snapshot = manifest;
+    std::vector<CommandPtr> simulatedCommands;
+    simulatedCommands.reserve(commands_.size());
     for (const auto& command : commands_) {
-        const auto validation = command->validate(snapshot);
-        if (!validation.ok) {
-            return validation;
+        auto simulatedCommand = commandFromSerialized(command->serialize());
+        const auto result = simulatedCommand->apply(snapshot);
+        if (!result.ok) {
+            for (auto undoIndex = simulatedCommands.size(); undoIndex > 0; --undoIndex) {
+                static_cast<void>(simulatedCommands[undoIndex - 1U]->undo(snapshot));
+            }
+            return result;
         }
-        auto mutableCommandPreview = command->preview(snapshot);
-        static_cast<void>(mutableCommandPreview);
+        simulatedCommands.push_back(std::move(simulatedCommand));
     }
     return ok("Transaction can be applied");
 }
@@ -2351,10 +3656,16 @@ std::vector<std::string> registeredProjectCommandNames() {
             "duplicate_clip",
             "move_clip",
             "trim_clip",
+            "slip_clip",
             "set_clip_fade",
+            "set_clip_render_properties",
             "set_track_name",
             "add_routing_connection",
             "remove_routing_connection",
+            "set_project_name",
+            "add_marker",
+            "remove_marker",
+            "add_tempo_event",
             "split_clip",
             "transaction"};
 }
@@ -2376,9 +3687,17 @@ CommandPtr commandFromSerialized(std::string_view serializedCommand) {
             commandId, auditId,
             {.id = readSerializedString(serializedCommand, "clipId"),
              .trackId = readSerializedString(serializedCommand, "trackId"),
-             .type = session::ClipType::Audio,
+             .type =
+                 session::clipTypeFromString(readSerializedString(serializedCommand, "clipType")),
              .startSample = readSerializedInt64(serializedCommand, "startSample"),
-             .lengthSamples = readSerializedInt64(serializedCommand, "lengthSamples")});
+             .lengthSamples = readSerializedInt64(serializedCommand, "lengthSamples"),
+             .sourceOffsetSamples = readSerializedInt64(serializedCommand, "sourceOffsetSamples"),
+             .fadeInSamples = readSerializedInt64(serializedCommand, "fadeInSamples"),
+             .fadeOutSamples = readSerializedInt64(serializedCommand, "fadeOutSamples"),
+             .gainDb = readSerializedFloat(serializedCommand, "gainDb"),
+             .muted = readSerializedBool(serializedCommand, "muted"),
+             .reversed = readSerializedBool(serializedCommand, "reversed"),
+             .assetId = readSerializedString(serializedCommand, "assetId")});
     }
     if (name == "remove_clip") {
         return makeRemoveClipCommand(commandId, auditId,
@@ -2402,11 +3721,23 @@ CommandPtr commandFromSerialized(std::string_view serializedCommand) {
             readSerializedInt64(serializedCommand, "newLengthSamples"),
             readSerializedInt64(serializedCommand, "newSourceOffsetSamples"));
     }
+    if (name == "slip_clip") {
+        return makeSlipClipCommand(
+            commandId, auditId, readSerializedString(serializedCommand, "clipId"),
+            readSerializedInt64(serializedCommand, "newSourceOffsetSamples"));
+    }
     if (name == "set_clip_fade") {
         return makeSetClipFadeCommand(commandId, auditId,
                                       readSerializedString(serializedCommand, "clipId"),
                                       readSerializedInt64(serializedCommand, "fadeInSamples"),
                                       readSerializedInt64(serializedCommand, "fadeOutSamples"));
+    }
+    if (name == "set_clip_render_properties") {
+        return makeSetClipRenderPropertiesCommand(
+            commandId, auditId, readSerializedString(serializedCommand, "clipId"),
+            readSerializedFloat(serializedCommand, "gainDb"),
+            readSerializedBool(serializedCommand, "muted"),
+            readSerializedBool(serializedCommand, "reversed"));
     }
     if (name == "set_track_name") {
         return makeSetTrackNameCommand(commandId, auditId,
@@ -2424,6 +3755,37 @@ CommandPtr commandFromSerialized(std::string_view serializedCommand) {
             commandId, auditId,
             {.sourceTrackId = readSerializedString(serializedCommand, "sourceTrackId"),
              .destinationTrackId = readSerializedString(serializedCommand, "destinationTrackId")});
+    }
+    if (name == "set_project_name") {
+        return makeSetProjectNameCommand(commandId, auditId,
+                                         readSerializedString(serializedCommand, "projectName"));
+    }
+    if (name == "add_marker") {
+        return makeAddMarkerCommand(
+            commandId, auditId,
+            {.id = readSerializedString(serializedCommand, "markerId"),
+             .name = readSerializedString(serializedCommand, "markerName"),
+             .samplePosition = readSerializedInt64(serializedCommand, "samplePosition")});
+    }
+    if (name == "remove_marker") {
+        return makeRemoveMarkerCommand(commandId, auditId,
+                                       readSerializedString(serializedCommand, "markerId"));
+    }
+    if (name == "add_tempo_event") {
+        return makeAddTempoEventCommand(
+            commandId, auditId,
+            {.samplePosition = readSerializedInt64(serializedCommand, "samplePosition"),
+             .bpm = readSerializedFloat(serializedCommand, "bpm")});
+    }
+    if (name == "split_clip" || name == "transaction" ||
+        serializedCommand.find("\"commands\":[") != std::string_view::npos) {
+        const auto serializedChildren = readSerializedCommandArray(serializedCommand, "commands");
+        std::vector<CommandPtr> commands;
+        commands.reserve(serializedChildren.size());
+        for (const auto& child : serializedChildren) {
+            commands.push_back(commandFromSerialized(child));
+        }
+        return std::make_unique<TransactionCommand>(commandId, auditId, name, std::move(commands));
     }
 
     throw std::runtime_error("Serialized project command is not registered: " + name);
@@ -2482,10 +3844,23 @@ CommandPtr makeTrimClipCommand(std::string commandId, std::string auditId, std::
                                              newSourceOffsetSamples);
 }
 
+CommandPtr makeSlipClipCommand(std::string commandId, std::string auditId, std::string clipId,
+                               std::int64_t newSourceOffsetSamples) {
+    return std::make_unique<SlipClipCommand>(std::move(commandId), std::move(auditId),
+                                             std::move(clipId), newSourceOffsetSamples);
+}
+
 CommandPtr makeSetClipFadeCommand(std::string commandId, std::string auditId, std::string clipId,
                                   std::int64_t fadeInSamples, std::int64_t fadeOutSamples) {
     return std::make_unique<SetClipFadeCommand>(std::move(commandId), std::move(auditId),
                                                 std::move(clipId), fadeInSamples, fadeOutSamples);
+}
+
+CommandPtr makeSetClipRenderPropertiesCommand(std::string commandId, std::string auditId,
+                                              std::string clipId, float gainDb, bool muted,
+                                              bool reversed) {
+    return std::make_unique<SetClipRenderPropertiesCommand>(
+        std::move(commandId), std::move(auditId), std::move(clipId), gainDb, muted, reversed);
 }
 
 CommandPtr makeSplitClipCommand(const session::ProjectManifest& manifest, std::string commandId,
@@ -2535,6 +3910,28 @@ CommandPtr makeRemoveRoutingConnectionCommand(std::string commandId, std::string
                                               session::RoutingConnection connection) {
     return std::make_unique<RemoveRoutingConnectionCommand>(
         std::move(commandId), std::move(auditId), std::move(connection));
+}
+
+CommandPtr makeSetProjectNameCommand(std::string commandId, std::string auditId, std::string name) {
+    return std::make_unique<SetProjectNameCommand>(std::move(commandId), std::move(auditId),
+                                                   std::move(name));
+}
+
+CommandPtr makeAddMarkerCommand(std::string commandId, std::string auditId,
+                                session::Marker marker) {
+    return std::make_unique<AddMarkerCommand>(std::move(commandId), std::move(auditId),
+                                              std::move(marker));
+}
+
+CommandPtr makeRemoveMarkerCommand(std::string commandId, std::string auditId,
+                                   std::string markerId) {
+    return std::make_unique<RemoveMarkerCommand>(std::move(commandId), std::move(auditId),
+                                                 std::move(markerId));
+}
+
+CommandPtr makeAddTempoEventCommand(std::string commandId, std::string auditId,
+                                    session::TempoEvent event) {
+    return std::make_unique<AddTempoEventCommand>(std::move(commandId), std::move(auditId), event);
 }
 
 } // namespace lamusica::commands

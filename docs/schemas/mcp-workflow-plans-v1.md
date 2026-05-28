@@ -1,6 +1,7 @@
 # MCP Workflow Plans Schema V1
 
 AI orchestration workflows produce advisory plans. A plan step is not authoritative until it is approved by a human-facing flow and applied through command-backed MCP edit tools.
+MCP plan creation requires an attached session with the `orchestration` capability.
 
 Plan fields:
 
@@ -29,4 +30,6 @@ reject selected step ids. Application summaries report `appliedCount`, `rejected
 validation failed are reported as invalid and are not sent to the command application callback.
 
 Workflow templates are deterministic records with `id`, `name`, `description`, and `workflowType`
-fields. Template ids must be unique within the library that stores them.
+fields. Template ids must be unique within the library that stores them. Template libraries serialize
+as `schemaVersion: 1` JSON objects with a `templates` array and can be saved in a project or user
+library file before being resolved into advisory workflow plans.

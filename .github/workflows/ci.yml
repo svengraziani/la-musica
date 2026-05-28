@@ -15,11 +15,15 @@ jobs:
         run: cmake --build --preset debug
       - name: Test
         run: ctest --preset debug
+      - name: Benchmark smoke
+        run: build/unix-debug/tools/cli/lamusica_cli benchmark-smoke
       - name: Formatting check
         run: |
           find apps libs tools tests \( -name '*.cpp' -o -name '*.hpp' -o -name '*.mm' \) -exec xcrun clang-format --dry-run --Werror {} +
       - name: Markdown lint
         run: cmake -P cmake/CheckMarkdown.cmake
+      - name: Dependency lock check
+        run: cmake -P cmake/CheckDependencyLock.cmake
       - name: Configure ASan
         run: cmake --preset asan
       - name: Build ASan
@@ -34,8 +38,12 @@ jobs:
         run: |
           build/unix-release/tools/cli/lamusica_cli validate fixtures/empty.Project.lamusica
           build/unix-release/tools/cli/lamusica_cli validate fixtures/examples/generated-tone.Project.lamusica
+          build/unix-release/tools/cli/lamusica_cli validate fixtures/tutorials/first-song.Project.lamusica
+          build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/tutorials
       - name: Package release
         run: cpack -G TGZ --config build/unix-release/CPackConfig.cmake
+      - name: Verify package contents
+        run: cmake -DPACKAGE="$(ls LaMusica-*-Darwin.tar.gz)" -P cmake/VerifyPackage.cmake
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:

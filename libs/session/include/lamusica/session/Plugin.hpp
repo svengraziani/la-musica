@@ -24,6 +24,13 @@ struct PluginParameter {
     float defaultValue{0.0F};
 };
 
+struct DiscoveredPluginParameter {
+    std::string id;
+    std::string name;
+    std::string automationAddress;
+    float defaultValue{0.0F};
+};
+
 struct PluginDescription {
     std::string identifier;
     std::string name;
@@ -70,6 +77,20 @@ struct PluginScanCache {
     std::vector<std::string> blacklist;
 };
 
+struct PluginHostEnvironment {
+    bool macOS{true};
+    bool audioUnitRuntimeAvailable{true};
+    bool vst3SdkAvailable{false};
+    bool vst3LicenseAccepted{false};
+    bool outOfProcessHostingAvailable{false};
+};
+
+struct PluginFormatSupport {
+    PluginFormat format{PluginFormat::BuiltIn};
+    bool available{false};
+    std::string reason;
+};
+
 struct PluginParameterValue {
     std::string parameterId;
     float value{0.0F};
@@ -94,10 +115,36 @@ struct PluginPreset {
     std::vector<PluginParameterValue> parameterValues;
 };
 
+struct PluginInstrumentSlot {
+    std::string trackId;
+    PluginInsert instrument;
+};
+
+struct PluginInstrumentRack {
+    std::vector<PluginInstrumentSlot> slots;
+};
+
+struct PluginEditorWindow {
+    std::string trackId;
+    std::string insertId;
+    bool open{true};
+    bool pinned{false};
+    std::int32_t x{0};
+    std::int32_t y{0};
+    std::int32_t width{640};
+    std::int32_t height{480};
+};
+
+struct PluginEditorState {
+    std::vector<PluginEditorWindow> windows;
+};
+
 void mergeScanResult(PluginScanCache& cache, PluginScanResult result);
 [[nodiscard]] bool isBlacklisted(const PluginScanCache& cache, std::string_view identifier);
 void blacklistPlugin(PluginScanCache& cache, std::string identifier, std::string reason);
 void allowPluginRescan(PluginScanCache& cache, std::string_view identifier);
+[[nodiscard]] std::vector<PluginFormatSupport>
+pluginFormatSupport(const PluginHostEnvironment& environment);
 [[nodiscard]] PluginScanReport scanPluginCandidates(PluginScanCache& cache,
                                                     std::span<const PluginScanCandidate> candidates,
                                                     PluginScanPolicy policy = {});
@@ -105,6 +152,8 @@ void allowPluginRescan(PluginScanCache& cache, std::string_view identifier);
                                                           std::string_view identifier);
 [[nodiscard]] std::string stableParameterAddress(std::string_view pluginIdentifier,
                                                  std::string_view parameterId);
+[[nodiscard]] std::vector<DiscoveredPluginParameter>
+discoverPluginParameters(const PluginDescription& plugin);
 [[nodiscard]] PluginInsert* findInsert(PluginInsertChain& chain,
                                        std::string_view insertId) noexcept;
 [[nodiscard]] const PluginInsert* findInsert(const PluginInsertChain& chain,
@@ -120,5 +169,25 @@ void applyPreset(PluginInsert& insert, const PluginPreset& preset);
 [[nodiscard]] PluginInsertChain parsePluginInsertChain(std::string_view json);
 [[nodiscard]] std::string serializePluginPreset(const PluginPreset& preset);
 [[nodiscard]] PluginPreset parsePluginPreset(std::string_view json);
+[[nodiscard]] PluginInstrumentSlot* findInstrumentSlot(PluginInstrumentRack& rack,
+                                                       std::string_view trackId) noexcept;
+[[nodiscard]] const PluginInstrumentSlot* findInstrumentSlot(const PluginInstrumentRack& rack,
+                                                             std::string_view trackId) noexcept;
+void assignInstrumentSlot(PluginInstrumentRack& rack, const PluginScanCache& cache,
+                          std::string trackId, PluginInsert instrument);
+void clearInstrumentSlot(PluginInstrumentRack& rack, std::string_view trackId);
+[[nodiscard]] std::string serializePluginInstrumentRack(const PluginInstrumentRack& rack);
+[[nodiscard]] PluginInstrumentRack parsePluginInstrumentRack(std::string_view json);
+[[nodiscard]] PluginEditorWindow* findEditorWindow(PluginEditorState& state,
+                                                   std::string_view trackId,
+                                                   std::string_view insertId) noexcept;
+[[nodiscard]] const PluginEditorWindow* findEditorWindow(const PluginEditorState& state,
+                                                         std::string_view trackId,
+                                                         std::string_view insertId) noexcept;
+void openPluginEditor(PluginEditorState& state, PluginEditorWindow window);
+void closePluginEditor(PluginEditorState& state, std::string_view trackId,
+                       std::string_view insertId);
+[[nodiscard]] std::string serializePluginEditorState(const PluginEditorState& state);
+[[nodiscard]] PluginEditorState parsePluginEditorState(std::string_view json);
 
 } // namespace lamusica::session

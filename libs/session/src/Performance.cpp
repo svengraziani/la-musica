@@ -5,10 +5,21 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <numeric>
 #include <span>
 #include <string>
 #include <thread>
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#elif defined(_WIN32)
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace lamusica::session {
 namespace {
@@ -35,6 +46,57 @@ std::string operatingSystemName() {
 #else
     return "unknown";
 #endif
+}
+
+std::string cpuModelName() {
+#if defined(__APPLE__)
+    std::size_t size = 0;
+    if (sysctlbyname("machdep.cpu.brand_string", nullptr, &size, nullptr, 0) == 0 && size > 1U) {
+        std::string value(size, '\0');
+        if (sysctlbyname("machdep.cpu.brand_string", value.data(), &size, nullptr, 0) == 0) {
+            if (!value.empty() && value.back() == '\0') {
+                value.pop_back();
+            }
+            if (!value.empty()) {
+                return value;
+            }
+        }
+    }
+#elif defined(_WIN32)
+    if (const auto* processor = std::getenv("PROCESSOR_IDENTIFIER"); processor != nullptr) {
+        return processor;
+    }
+#elif defined(__linux__)
+    if (const auto* processor = std::getenv("PROCESSOR_IDENTIFIER"); processor != nullptr) {
+        return processor;
+    }
+#endif
+    return "unknown";
+}
+
+std::size_t memoryMegabytes() {
+#if defined(__APPLE__)
+    std::uint64_t bytes = 0;
+    std::size_t size = sizeof(bytes);
+    if (sysctlbyname("hw.memsize", &bytes, &size, nullptr, 0) == 0 && bytes > 0U) {
+        return static_cast<std::size_t>(bytes / (1024U * 1024U));
+    }
+#elif defined(_WIN32)
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status) != 0) {
+        return static_cast<std::size_t>(status.ullTotalPhys / (1024U * 1024U));
+    }
+#else
+    const auto pages = sysconf(_SC_PHYS_PAGES);
+    const auto pageSize = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && pageSize > 0) {
+        return static_cast<std::size_t>(
+            (static_cast<unsigned long long>(pages) * static_cast<unsigned long long>(pageSize)) /
+            (1024ULL * 1024ULL));
+    }
+#endif
+    return 0U;
 }
 
 template <typename Function> double elapsedMilliseconds(Function&& function) {
@@ -228,7 +290,10 @@ bool thresholdsArePositive(BenchmarkThresholds thresholds) noexcept {
 }
 
 MachineContext currentMachineContext() {
-    return {.logicalCores = std::thread::hardware_concurrency(),
+    const auto logicalCores = std::thread::hardware_concurrency();
+    return {.cpuModel = cpuModelName(),
+            .logicalCores = logicalCores == 0U ? 1U : logicalCores,
+            .memoryMegabytes = memoryMegabytes(),
             .operatingSystem = operatingSystemName(),
             .compiler = compilerName()};
 }

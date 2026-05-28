@@ -17,8 +17,10 @@ without replacing the existing job. Cancellation only applies to queued or runni
 and failed jobs remain immutable status records.
 
 Analysis jobs return a `wav_analysis` result manifest with frame count, channels, sample rate,
-bit depth, peak, RMS, and LUFS estimate. Bounce jobs return a `graph_bounce` result manifest with
-range, format, and normalization peaks.
+bit depth, peak, RMS, LUFS estimate, and `explicitExport`. Analysis of an existing WAV reports
+`explicitExport: false`; generated test-tone WAVs report `explicitExport: true`. Bounce jobs return
+a `graph_bounce` result manifest with range, format, normalization peaks, and
+`explicitExport: true`.
 
 Normalize and reverse jobs return an `audio_transform` result manifest with input/output paths,
 operation name, peak values, and `explicitExport: true`.

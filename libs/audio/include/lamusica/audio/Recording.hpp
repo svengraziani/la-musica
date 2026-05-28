@@ -51,6 +51,13 @@ struct RecordingWorkflowOptions {
     bool inputMonitoringEnabled{false};
 };
 
+struct RecordingLatencyMeasurement {
+    std::int64_t measuredInputLatencySamples{0};
+    float referencePeak{0.0F};
+    float recordedPeak{0.0F};
+    bool valid{false};
+};
+
 struct RecordingPlan {
     std::string trackId;
     std::int64_t captureStartSample{0};
@@ -80,6 +87,9 @@ struct TakeLane {
     std::vector<RecordingTake> takes;
 };
 
+[[nodiscard]] RecordingLatencyMeasurement
+measureRecordingLatency(std::span<const float> referenceImpulse,
+                        std::span<const float> recordedInput, float threshold = 0.5F);
 [[nodiscard]] RecordingPlan makeRecordingPlan(const RecordingWorkflowOptions& options);
 [[nodiscard]] bool hasInterruptedRecording(const RecordingOptions& options);
 [[nodiscard]] RecordingRecoveryResult recoverInterruptedRecording(const RecordingOptions& options,

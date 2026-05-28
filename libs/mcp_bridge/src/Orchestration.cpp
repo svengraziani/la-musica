@@ -3,8 +3,10 @@
 #include "lamusica/commands/Command.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <functional>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace lamusica::mcp_bridge {
@@ -54,6 +56,86 @@ void appendJsonStringArray(std::ostringstream& output, std::string_view key,
     output << ']';
 }
 
+std::string readJsonString(std::string_view json, std::string_view key) {
+    const auto pattern = "\"" + std::string{key} + "\":\"";
+    const auto start = json.find(pattern);
+    if (start == std::string_view::npos) {
+        throw std::runtime_error("Workflow template JSON is missing field: " + std::string{key});
+    }
+    const auto valueStart = start + pattern.size();
+    std::string value;
+    bool escaped = false;
+    for (std::size_t index = valueStart; index < json.size(); ++index) {
+        const auto character = json[index];
+        if (escaped) {
+            value.push_back(character);
+            escaped = false;
+            continue;
+        }
+        if (character == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (character == '"') {
+            return value;
+        }
+        value.push_back(character);
+    }
+    throw std::runtime_error("Workflow template JSON string is unterminated: " + std::string{key});
+}
+
+std::vector<std::string_view> templateObjects(std::string_view json) {
+    constexpr std::string_view pattern{"\"templates\":["};
+    const auto start = json.find(pattern);
+    if (start == std::string_view::npos) {
+        throw std::runtime_error("Workflow template JSON is missing templates array");
+    }
+    std::vector<std::string_view> objects;
+    const auto arrayStart = start + pattern.size();
+    std::size_t objectStart = std::string_view::npos;
+    std::size_t depth = 0;
+    bool inString = false;
+    bool escaped = false;
+    for (std::size_t index = arrayStart; index < json.size(); ++index) {
+        const auto character = json[index];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (character == '\\') {
+                escaped = true;
+            } else if (character == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (character == '"') {
+            inString = true;
+            continue;
+        }
+        if (character == '{') {
+            if (depth == 0) {
+                objectStart = index;
+            }
+            ++depth;
+            continue;
+        }
+        if (character == '}') {
+            if (depth == 0) {
+                throw std::runtime_error("Workflow template JSON has unbalanced braces");
+            }
+            --depth;
+            if (depth == 0) {
+                objects.push_back(json.substr(objectStart, index - objectStart + 1U));
+            }
+            continue;
+        }
+        if (character == ']' && depth == 0) {
+            return objects;
+        }
+    }
+    throw std::runtime_error("Workflow template JSON templates array is unterminated");
+}
+
 WorkflowStep validatedStep(std::string id, std::string description,
                            const commands::ICommand& command,
                            const session::ProjectManifest& manifest) {
@@ -78,10 +160,19 @@ WorkflowStep validatedStep(std::string id, std::string description,
             .validationMessage = validation.message};
 }
 
+bool canCreateWorkflowPlan(const DaemonSession& session) noexcept {
+    return session.attached() && session.hasCapability(Capability::Orchestration);
+}
+
+WorkflowPlanCreationResult deniedWorkflowPlan(std::string message) {
+    return {.allowed = false, .message = std::move(message)};
+}
+
 } // namespace
 
 bool WorkflowTemplateLibrary::addTemplate(WorkflowTemplate workflowTemplate) {
-    if (workflowTemplate.id.empty() || find(workflowTemplate.id) != nullptr) {
+    if (workflowTemplate.id.empty() || workflowTemplate.name.empty() ||
+        workflowTemplate.workflowType.empty() || find(workflowTemplate.id) != nullptr) {
         return false;
     }
 
@@ -122,6 +213,17 @@ WorkflowPlan createHarmonizeMidiPlan(const session::MidiClipData& clip, int inte
     return plan;
 }
 
+WorkflowPlanCreationResult createHarmonizeMidiPlan(const DaemonSession& session,
+                                                   const session::MidiClipData& clip,
+                                                   int intervalSemitones, std::uint32_t seed) {
+    if (!canCreateWorkflowPlan(session)) {
+        return deniedWorkflowPlan("MCP orchestration capability is required");
+    }
+    return {.allowed = true,
+            .message = "workflow plan created",
+            .plan = createHarmonizeMidiPlan(clip, intervalSemitones, seed)};
+}
+
 WorkflowPlan createDrumVariationPlan(const session::PatternClip& pattern,
                                      std::uint32_t seedOffset) {
     const auto variation = session::duplicatePatternVariation(
@@ -139,6 +241,17 @@ WorkflowPlan createDrumVariationPlan(const session::PatternClip& pattern,
                        .commandPreview = "Set seed " + std::to_string(variation.seed)}}};
 }
 
+WorkflowPlanCreationResult createDrumVariationPlan(const DaemonSession& session,
+                                                   const session::PatternClip& pattern,
+                                                   std::uint32_t seedOffset) {
+    if (!canCreateWorkflowPlan(session)) {
+        return deniedWorkflowPlan("MCP orchestration capability is required");
+    }
+    return {.allowed = true,
+            .message = "workflow plan created",
+            .plan = createDrumVariationPlan(pattern, seedOffset)};
+}
+
 WorkflowPlan
 createSongStructureLabelPlan(const session::ProjectManifest& manifest,
                              const std::vector<std::pair<std::string, std::string>>& trackLabels,
@@ -153,6 +266,18 @@ createSongStructureLabelPlan(const session::ProjectManifest& manifest,
                                            "Label track " + trackId, command, manifest));
     }
     return plan;
+}
+
+WorkflowPlanCreationResult
+createSongStructureLabelPlan(const DaemonSession& session, const session::ProjectManifest& manifest,
+                             const std::vector<std::pair<std::string, std::string>>& trackLabels,
+                             std::uint32_t seed) {
+    if (!canCreateWorkflowPlan(session)) {
+        return deniedWorkflowPlan("MCP orchestration capability is required");
+    }
+    return {.allowed = true,
+            .message = "workflow plan created",
+            .plan = createSongStructureLabelPlan(manifest, trackLabels, seed)};
 }
 
 WorkflowPlan createMixPreparationPlan(const session::MixerState& mixer, std::uint32_t seed) {
@@ -177,6 +302,17 @@ WorkflowPlan createMixPreparationPlan(const session::MixerState& mixer, std::uin
                                            "Prepare channel " + channel.id, command, mixer));
     }
     return plan;
+}
+
+WorkflowPlanCreationResult createMixPreparationPlan(const DaemonSession& session,
+                                                    const session::MixerState& mixer,
+                                                    std::uint32_t seed) {
+    if (!canCreateWorkflowPlan(session)) {
+        return deniedWorkflowPlan("MCP orchestration capability is required");
+    }
+    return {.allowed = true,
+            .message = "workflow plan created",
+            .plan = createMixPreparationPlan(mixer, seed)};
 }
 
 void approveStep(WorkflowPlan& plan, std::string_view stepId) {
@@ -279,6 +415,62 @@ std::string workflowPlanApplicationSummaryJson(const WorkflowPlanApplicationSumm
     appendJsonStringArray(output, "invalidStepIds", summary.invalidStepIds);
     output << '}';
     return output.str();
+}
+
+std::string workflowTemplateLibraryJson(const WorkflowTemplateLibrary& library) {
+    std::ostringstream output;
+    output << "{\"schemaVersion\":1,\"templates\":[";
+    const auto& templates = library.templates();
+    for (std::size_t index = 0; index < templates.size(); ++index) {
+        const auto& workflowTemplate = templates[index];
+        output << "{\"id\":\"" << escapeJson(workflowTemplate.id) << "\",\"name\":\""
+               << escapeJson(workflowTemplate.name) << "\",\"description\":\""
+               << escapeJson(workflowTemplate.description) << "\",\"workflowType\":\""
+               << escapeJson(workflowTemplate.workflowType) << "\"}";
+        if (index + 1 < templates.size()) {
+            output << ',';
+        }
+    }
+    output << "]}";
+    return output.str();
+}
+
+WorkflowTemplateLibrary parseWorkflowTemplateLibrary(std::string_view json) {
+    if (json.find("\"schemaVersion\":1") == std::string_view::npos) {
+        throw std::runtime_error("Workflow template library schemaVersion must be 1");
+    }
+
+    WorkflowTemplateLibrary library;
+    for (const auto object : templateObjects(json)) {
+        if (!library.addTemplate({.id = readJsonString(object, "id"),
+                                  .name = readJsonString(object, "name"),
+                                  .description = readJsonString(object, "description"),
+                                  .workflowType = readJsonString(object, "workflowType")})) {
+            throw std::runtime_error("Workflow template library contains an invalid template");
+        }
+    }
+    return library;
+}
+
+void saveWorkflowTemplateLibrary(const WorkflowTemplateLibrary& library,
+                                 const std::filesystem::path& path) {
+    std::ofstream output{path};
+    if (!output) {
+        throw std::runtime_error("Could not open workflow template library for writing: " +
+                                 path.string());
+    }
+    output << workflowTemplateLibraryJson(library) << '\n';
+}
+
+WorkflowTemplateLibrary loadWorkflowTemplateLibrary(const std::filesystem::path& path) {
+    std::ifstream input{path};
+    if (!input) {
+        throw std::runtime_error("Could not open workflow template library for reading: " +
+                                 path.string());
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return parseWorkflowTemplateLibrary(buffer.str());
 }
 
 } // namespace lamusica::mcp_bridge

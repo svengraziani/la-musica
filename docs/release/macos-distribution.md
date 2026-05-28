@@ -17,17 +17,20 @@ The package must include:
 - `lamusica_cli`
 - installed documentation
 - redistributable example projects
+- redistributable tutorial projects
 
 Headless CI can verify package contents with the TGZ generator when DMG creation is unavailable:
 
 ```sh
 cpack -G TGZ --config build/unix-release/CPackConfig.cmake
+cmake -DPACKAGE=LaMusica-0.1.0-Darwin.tar.gz -P cmake/VerifyPackage.cmake
 ```
 
 Verify redistributable examples before publishing a package:
 
 ```sh
 build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/examples
+build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/tutorials
 ```
 
 ## Sign

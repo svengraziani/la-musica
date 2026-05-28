@@ -249,12 +249,48 @@ const DrumPad* findPadForMidiNote(const DrumMachinePreset& preset, std::uint8_t 
     return found == preset.pads.end() ? nullptr : &*found;
 }
 
+DrumPad* findPadById(DrumMachinePreset& preset, std::string_view padId) noexcept {
+    const auto found =
+        std::ranges::find_if(preset.pads, [padId](const DrumPad& pad) { return pad.id == padId; });
+    return found == preset.pads.end() ? nullptr : &*found;
+}
+
+const DrumPad* findPadById(const DrumMachinePreset& preset, std::string_view padId) noexcept {
+    const auto found =
+        std::ranges::find_if(preset.pads, [padId](const DrumPad& pad) { return pad.id == padId; });
+    return found == preset.pads.end() ? nullptr : &*found;
+}
+
 std::string selectLayerAsset(const DrumPad& pad, std::uint8_t velocity) {
     const auto found =
         std::ranges::find_if(pad.velocityLayers, [velocity](const VelocityLayer& layer) {
             return velocity >= layer.minVelocity && velocity <= layer.maxVelocity;
         });
     return found == pad.velocityLayers.end() ? std::string{} : found->assetId;
+}
+
+void assignAssetToPad(DrumMachinePreset& preset, std::string_view padId, VelocityLayer layer) {
+    if (layer.minVelocity < 1 || layer.maxVelocity > 127 || layer.maxVelocity < layer.minVelocity ||
+        layer.assetId.empty()) {
+        throw std::runtime_error("Drum pad asset assignment requires a valid velocity layer");
+    }
+
+    auto* pad = findPadById(preset, padId);
+    if (pad == nullptr) {
+        throw std::runtime_error("Drum pad asset assignment target was not found");
+    }
+
+    const auto found =
+        std::ranges::find_if(pad->velocityLayers, [&layer](const VelocityLayer& existing) {
+            return existing.minVelocity == layer.minVelocity &&
+                   existing.maxVelocity == layer.maxVelocity;
+        });
+    if (found == pad->velocityLayers.end()) {
+        pad->velocityLayers.push_back(std::move(layer));
+    } else {
+        *found = std::move(layer);
+    }
+    validatePad(*pad);
 }
 
 std::vector<DrumTrigger>
@@ -577,6 +613,51 @@ std::vector<DrumRouteRender> renderDrumMachineRoutes(const DrumMachinePreset& pr
     }
 
     return routes;
+}
+
+std::vector<DrumPresetAssetReference>
+collectDrumPresetAssetReferences(const DrumMachinePreset& preset) {
+    std::vector<DrumPresetAssetReference> references;
+    for (const auto& pad : preset.pads) {
+        validatePad(pad);
+        for (const auto& layer : pad.velocityLayers) {
+            auto found = std::ranges::find_if(references,
+                                              [&layer](const DrumPresetAssetReference& reference) {
+                                                  return reference.assetId == layer.assetId;
+                                              });
+            if (found == references.end()) {
+                references.push_back({.assetId = layer.assetId, .padIds = {pad.id}});
+            } else if (!std::ranges::contains(found->padIds, pad.id)) {
+                found->padIds.push_back(pad.id);
+            }
+        }
+    }
+    std::ranges::sort(references, {}, &DrumPresetAssetReference::assetId);
+    for (auto& reference : references) {
+        std::ranges::sort(reference.padIds);
+    }
+    return references;
+}
+
+DrumMachinePreset makePortableDrumMachinePreset(const DrumMachinePreset& preset,
+                                                std::span<const DrumPresetAssetMapping> mappings) {
+    auto portable = preset;
+    for (auto& pad : portable.pads) {
+        validatePad(pad);
+        for (auto& layer : pad.velocityLayers) {
+            const auto found =
+                std::ranges::find_if(mappings, [&layer](const DrumPresetAssetMapping& mapping) {
+                    return mapping.sourceAssetId == layer.assetId;
+                });
+            if (found == mappings.end() || found->collectedAssetId.empty()) {
+                throw std::runtime_error("Drum preset collection is missing asset mapping: " +
+                                         layer.assetId);
+            }
+            layer.assetId = found->collectedAssetId;
+        }
+        validatePad(pad);
+    }
+    return portable;
 }
 
 } // namespace lamusica::session

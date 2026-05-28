@@ -165,7 +165,7 @@ std::string clipsInRangeJson(const session::ProjectManifest& manifest, QuerySamp
     std::ranges::sort(clips, {}, &session::Clip::startSample);
 
     std::ostringstream output;
-    writeHeader(output, "clips");
+    writeHeader(output, "clips_range");
     output << "\"range\":{\"startSample\":" << range.startSample
            << ",\"endSample\":" << range.endSample << "},";
     writePagedArray(output, clips, page, [](std::ostringstream& item, const session::Clip& clip) {
@@ -274,6 +274,31 @@ std::string routingJson(const session::MixerState& mixer) {
         output << "{\"source\":\"" << escapeJson(route.sourceChannelId) << "\",\"destination\":\""
                << escapeJson(route.destinationChannelId) << "\"}";
         if (index + 1 < mixer.routing.size()) {
+            output << ',';
+        }
+    }
+    output << "],\"sends\":[";
+    bool firstSend = true;
+    for (const auto& channel : mixer.channels) {
+        for (const auto& send : channel.sends) {
+            if (!firstSend) {
+                output << ',';
+            }
+            output << "{\"source\":\"" << escapeJson(channel.id) << "\",\"id\":\""
+                   << escapeJson(send.id) << "\",\"destination\":\""
+                   << escapeJson(send.destinationChannelId) << "\",\"gainDb\":" << send.gainDb
+                   << ",\"preFader\":" << (send.preFader ? "true" : "false") << "}";
+            firstSend = false;
+        }
+    }
+    output << "],\"sidechains\":[";
+    for (std::size_t index = 0; index < mixer.sidechains.size(); ++index) {
+        const auto& sidechain = mixer.sidechains[index];
+        output << "{\"id\":\"" << escapeJson(sidechain.id) << "\",\"source\":\""
+               << escapeJson(sidechain.sourceChannelId) << "\",\"destination\":\""
+               << escapeJson(sidechain.destinationChannelId) << "\",\"targetInsertId\":\""
+               << escapeJson(sidechain.targetInsertId) << "\"}";
+        if (index + 1 < mixer.sidechains.size()) {
             output << ',';
         }
     }
@@ -403,6 +428,8 @@ std::string assetCatalogJson(const session::AssetCatalog& catalog, QueryPage pag
                      << ",\"peakAmplitude\":" << analysis->peakAmplitude
                      << ",\"rmsAmplitude\":" << analysis->rmsAmplitude
                      << ",\"loudnessLufs\":" << analysis->loudnessLufs
+                     << ",\"tempoBpm\":" << analysis->tempoBpm << ",\"musicalKey\":\""
+                     << escapeJson(analysis->musicalKey) << "\""
                      << ",\"transients\":" << analysis->transientSamples.size() << "}";
             } else {
                 item << ",\"analysis\":null";

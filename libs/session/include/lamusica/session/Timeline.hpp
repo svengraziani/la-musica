@@ -86,6 +86,64 @@ struct TimelineViewState {
     SnapSettings snap;
 };
 
+struct TimelineRect {
+    double x{0.0};
+    double y{0.0};
+    double width{0.0};
+    double height{0.0};
+};
+
+struct TimelineLayoutOptions {
+    double viewportWidth{1280.0};
+    double headerWidth{220.0};
+    double rulerHeight{28.0};
+    double trackHeight{64.0};
+};
+
+struct TrackHeaderLayout {
+    std::string trackId;
+    std::string name;
+    TimelineRect bounds;
+};
+
+struct TimelineLaneLayout {
+    std::string trackId;
+    TrackType trackType{TrackType::Audio};
+    TimelineRect bounds;
+};
+
+struct TimelineClipLayout {
+    std::string clipId;
+    std::string trackId;
+    ClipType clipType{ClipType::Audio};
+    TimelineRect bounds;
+    bool selected{false};
+};
+
+struct TimelineMarkerLayout {
+    std::string markerId;
+    std::string name;
+    double x{0.0};
+};
+
+struct TimelineRulerTick {
+    std::int64_t samplePosition{0};
+    double x{0.0};
+    bool major{false};
+};
+
+struct TimelineLayout {
+    TimelineRect rulerBounds;
+    std::vector<TrackHeaderLayout> trackHeaders;
+    std::vector<TimelineLaneLayout> lanes;
+    std::vector<TimelineClipLayout> clips;
+    std::vector<TimelineMarkerLayout> markers;
+    std::vector<TimelineRulerTick> rulerTicks;
+    std::optional<TimelineRect> loopRegion;
+    double playheadX{0.0};
+    double contentHeight{0.0};
+};
+
 [[nodiscard]] TimelineRange normalizedRange(std::int64_t anchorSample,
                                             std::int64_t focusSample) noexcept;
 [[nodiscard]] bool selectionReferencesExistingItems(const TimelineSelection& selection,
@@ -96,6 +154,9 @@ void setTimelinePlayhead(TimelineViewState& viewState, std::int64_t sample) noex
 void setTimelineLoopRegion(TimelineViewState& viewState, std::optional<TimelineRange> loopRegion);
 void zoomTimelineAroundSample(TimelineViewState& viewState, double zoomFactor,
                               std::int64_t anchorSample);
+[[nodiscard]] TimelineLayout buildTimelineLayout(const ProjectManifest& manifest,
+                                                 const TimelineViewState& viewState,
+                                                 TimelineLayoutOptions options = {});
 [[nodiscard]] std::int64_t snapSample(std::int64_t sample, const SnapSettings& settings,
                                       const ProjectManifest& manifest);
 [[nodiscard]] std::vector<Track> orderedTimelineTracks(const ProjectManifest& manifest);

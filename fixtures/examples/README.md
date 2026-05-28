@@ -9,3 +9,5 @@ Current examples:
 
 `generated-tone.Project.lamusica` uses synthesized clip data only and has no external media
 dependencies.
+
+Tutorial-oriented fixtures live under `fixtures/tutorials`.

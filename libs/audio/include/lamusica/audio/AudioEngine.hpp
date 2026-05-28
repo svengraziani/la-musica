@@ -31,6 +31,12 @@ struct TimeSignature {
     std::uint32_t denominator{4};
 };
 
+struct BarBeatPosition {
+    std::int64_t bar{1};
+    std::uint32_t beat{1};
+    double ppqOffset{0.0};
+};
+
 struct TransportState {
     bool playing{false};
     bool recording{false};
@@ -104,6 +110,8 @@ class AudioEngine {
 
     [[nodiscard]] double samplesToPpq(std::int64_t samples) const noexcept;
     [[nodiscard]] std::int64_t ppqToSamples(double ppq) const noexcept;
+    [[nodiscard]] BarBeatPosition samplesToBarBeat(std::int64_t samplePosition) const noexcept;
+    [[nodiscard]] std::int64_t barBeatToSamples(BarBeatPosition position) const noexcept;
 
     void renderSilence(std::span<float> interleavedOutput, std::uint32_t frames) noexcept;
     void renderSine(std::span<float> interleavedOutput, std::uint32_t frames, double frequencyHz,
@@ -122,10 +130,14 @@ class AudioEngine {
     void applyRealtimeCommand(RealtimeCommand command) noexcept;
     void advanceTransport(std::uint32_t frames) noexcept;
 
+    static constexpr std::size_t maxRealtimeGraphNodes = 32;
+    static constexpr std::size_t maxRealtimeGraphConnections = 128;
+
     EngineConfig config_;
     AudioDeviceInfo device_{};
     TransportState transport_{};
     RealtimeCommandQueue commandQueue_;
+    std::vector<float> realtimeGraphBuffers_;
 };
 
 } // namespace lamusica::audio

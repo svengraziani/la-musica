@@ -143,16 +143,27 @@ NSWindow* buildPreferencesWindow() {
 
 - (void)play:(id)sender {
     (void)sender;
+    (void)_session->routeMenuCommand("transport.play");
     self.transportPlaying = YES;
 }
 
 - (void)stop:(id)sender {
     (void)sender;
+    (void)_session->routeMenuCommand("transport.stop");
     self.transportPlaying = NO;
 }
 
 - (void)showPrimaryPanel:(id)sender {
     auto* item = (NSMenuItem*)sender;
+    if ([item.title isEqualToString:@"Show Browser"]) {
+        (void)_session->routeMenuCommand("view.browser");
+    } else if ([item.title isEqualToString:@"Show Timeline"]) {
+        (void)_session->routeMenuCommand("view.timeline");
+    } else if ([item.title isEqualToString:@"Show Mixer"]) {
+        (void)_session->routeMenuCommand("view.mixer");
+    } else if ([item.title isEqualToString:@"Show Inspector"]) {
+        (void)_session->routeMenuCommand("view.inspector");
+    }
     self.mainWindow.title = [NSString stringWithFormat:@"LaMusica - %@", item.title];
 }
 

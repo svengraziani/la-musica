@@ -28,6 +28,16 @@ EditToolResult denied(std::string message) {
             .message = std::move(message)};
 }
 
+bool commandNameRequiresConfirmation(std::string_view commandName) noexcept {
+    constexpr std::array destructiveCommands{"remove_clip", "remove_routing_connection",
+                                             "remove_plugin_insert"};
+    return std::ranges::find(destructiveCommands, commandName) != destructiveCommands.end();
+}
+
+std::string confirmationTokenForMetadata(const commands::CommandMetadata& metadata) {
+    return metadata.commandId + ":" + metadata.auditId + ":confirm";
+}
+
 template <typename Store, typename CommandVariant>
 const commands::CommandMetadata& variantMetadata(const CommandVariant& command) noexcept {
     return std::visit(
@@ -45,12 +55,15 @@ EditToolResult previewStoreCommand(const Store& store, const CommandVariant& com
     const auto preview = std::visit(
         [&store](const auto& concreteCommand) { return concreteCommand.preview(store); }, command);
     const auto& metadata = variantMetadata<Store>(command);
+    const auto confirmationRequired = commandNameRequiresConfirmation(metadata.name);
     return {.commandId = metadata.commandId,
             .auditId = metadata.auditId,
             .validationOk = validation.ok,
             .applied = false,
             .undoAvailable = undoAvailable,
             .redoAvailable = redoAvailable,
+            .confirmationRequired = confirmationRequired,
+            .confirmationToken = confirmationRequired ? confirmationTokenForMetadata(metadata) : "",
             .message = validation.message,
             .preview = preview};
 }
@@ -326,13 +339,11 @@ bool PluginEditHistory::canRedo() const noexcept {
 }
 
 bool requiresConfirmation(const commands::ICommand& command) noexcept {
-    constexpr std::array destructiveCommands{"remove_clip"};
-    const auto commandName = command.metadata().name;
-    return std::ranges::find(destructiveCommands, commandName) != destructiveCommands.end();
+    return commandNameRequiresConfirmation(command.metadata().name);
 }
 
 std::string confirmationTokenFor(const commands::ICommand& command) {
-    return command.metadata().commandId + ":" + command.metadata().auditId + ":confirm";
+    return confirmationTokenForMetadata(command.metadata());
 }
 
 EditToolResult previewCommand(const DaemonSession& session,
@@ -564,9 +575,19 @@ EditToolResult previewPluginCommand(const DaemonSession& session,
 
 EditToolResult applyPluginCommand(const DaemonSession& session,
                                   commands::PluginInsertChainStore& store,
-                                  PluginEditHistory& history, PluginEditCommand command) {
+                                  PluginEditHistory& history, PluginEditCommand command,
+                                  EditApplyOptions options) {
     if (!session.canMutateProject()) {
         return denied("MCP edit capability is required");
+    }
+
+    auto preview = previewStoreCommand(store, command, history.canUndo(), history.canRedo());
+    if (!preview.validationOk) {
+        return preview;
+    }
+    if (preview.confirmationRequired && options.confirmationToken != preview.confirmationToken) {
+        preview.message = "Confirmation token is required";
+        return preview;
     }
 
     return history.execute(store, std::move(command));

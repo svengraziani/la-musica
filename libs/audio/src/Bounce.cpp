@@ -50,6 +50,8 @@ void validateOptions(const BounceOptions& options) {
     switch (options.bitDepth) {
     case ExportBitDepth::Pcm16:
         break;
+    case ExportBitDepth::Pcm24:
+        break;
     }
 }
 
@@ -88,6 +90,9 @@ void applyDither(RenderedAudio& audio, DitherMode mode, ExportBitDepth bitDepth)
     switch (bitDepth) {
     case ExportBitDepth::Pcm16:
         leastSignificantBit = 1.0F / 32767.0F;
+        break;
+    case ExportBitDepth::Pcm24:
+        leastSignificantBit = 1.0F / 8388607.0F;
         break;
     }
 
@@ -129,6 +134,9 @@ BounceResult bounceGraphToWav(const AudioGraph& graph, const BounceOptions& opti
     switch (options.bitDepth) {
     case ExportBitDepth::Pcm16:
         writePcm16Wav(options.outputPath, rendered, options.sampleRate);
+        break;
+    case ExportBitDepth::Pcm24:
+        writePcm24Wav(options.outputPath, rendered, options.sampleRate);
         break;
     }
 

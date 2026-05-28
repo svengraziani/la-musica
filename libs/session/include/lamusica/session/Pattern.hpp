@@ -51,6 +51,9 @@ struct PatternClipPlacement {
 [[nodiscard]] MidiClipData patternToMidi(const PatternClip& pattern, std::string midiClipId);
 [[nodiscard]] MidiClipData patternClipToMidi(const PatternClipPlacement& placement,
                                              std::string midiClipId);
+[[nodiscard]] std::vector<MidiPlaybackEvent>
+patternPlaybackEventsInRange(const PatternClipPlacement& placement, std::int64_t rangeStartSample,
+                             std::int64_t rangeEndSample);
 [[nodiscard]] PatternClip midiToPattern(const MidiClipData& midi, std::string patternId,
                                         std::string patternName, std::int64_t stepLengthSamples,
                                         std::uint32_t lengthSteps);

@@ -137,6 +137,41 @@ std::int64_t quantizeSample(std::int64_t sample, QuantizeSettings settings) {
            static_cast<std::int64_t>(std::llround(static_cast<float>(delta) * settings.strength));
 }
 
+double midiSamplesToPpq(std::int64_t samples, MidiTimingContext context) {
+    if (context.sampleRate <= 0.0 || context.tempoBpm <= 0.0) {
+        throw std::runtime_error("MIDI timing context requires positive sample rate and tempo");
+    }
+    const auto seconds =
+        static_cast<double>(std::max<std::int64_t>(0, samples)) / context.sampleRate;
+    return seconds * (context.tempoBpm / 60.0);
+}
+
+std::int64_t midiPpqToSamples(double ppq, MidiTimingContext context) {
+    if (context.sampleRate <= 0.0 || context.tempoBpm <= 0.0) {
+        throw std::runtime_error("MIDI timing context requires positive sample rate and tempo");
+    }
+    if (!std::isfinite(ppq) || ppq < 0.0) {
+        throw std::runtime_error("MIDI PPQ value must be finite and non-negative");
+    }
+    const auto seconds = ppq / (context.tempoBpm / 60.0);
+    return static_cast<std::int64_t>(std::llround(seconds * context.sampleRate));
+}
+
+MidiMusicalTiming midiNoteToMusicalTiming(const MidiNote& note, MidiTimingContext context) {
+    if (note.startSample < 0 || note.lengthSamples < 0) {
+        throw std::runtime_error("MIDI note timing must not be negative");
+    }
+    return {.startPpq = midiSamplesToPpq(note.startSample, context),
+            .lengthPpq = midiSamplesToPpq(note.lengthSamples, context)};
+}
+
+MidiNote midiNoteFromMusicalTiming(MidiNote note, MidiMusicalTiming timing,
+                                   MidiTimingContext context) {
+    note.startSample = midiPpqToSamples(timing.startPpq, context);
+    note.lengthSamples = midiPpqToSamples(timing.lengthPpq, context);
+    return note;
+}
+
 void quantizeNotes(MidiClipData& clip, QuantizeSettings settings) {
     for (auto& note : clip.notes) {
         note.startSample = quantizeSample(note.startSample, settings);

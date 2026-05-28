@@ -6,11 +6,22 @@
 namespace lamusica::mcp_bridge {
 
 HealthStatus DaemonSession::health() const {
+    if (connectionInterrupted_) {
+        return {.ok = true, .message = "interrupted"};
+    }
     return {.ok = true, .message = attached() ? "attached" : "idle"};
 }
 
 bool DaemonSession::attached() const noexcept {
     return !projectPath_.empty();
+}
+
+bool DaemonSession::connectionInterrupted() const noexcept {
+    return connectionInterrupted_;
+}
+
+bool DaemonSession::canRecoverConnection() const noexcept {
+    return connectionInterrupted_ && !recoveryProjectPath_.empty();
 }
 
 std::string_view DaemonSession::projectPath() const noexcept {
@@ -21,6 +32,9 @@ std::string DaemonSession::attachProject(std::string projectPath,
                                          std::set<Capability> capabilities) {
     projectPath_ = std::move(projectPath);
     capabilities_ = std::move(capabilities);
+    recoveryProjectPath_ = projectPath_;
+    recoveryCapabilities_ = capabilities_;
+    connectionInterrupted_ = false;
 
     std::ostringstream token;
     token << "project:" << projectPath_ << ":capabilities:" << capabilities_.size();
@@ -32,6 +46,30 @@ void DaemonSession::detachProject() noexcept {
     projectPath_.clear();
     authToken_.clear();
     capabilities_.clear();
+    recoveryProjectPath_.clear();
+    recoveryCapabilities_.clear();
+    connectionInterrupted_ = false;
+}
+
+void DaemonSession::markConnectionLost() noexcept {
+    if (!attached()) {
+        connectionInterrupted_ = false;
+        return;
+    }
+    recoveryProjectPath_ = projectPath_;
+    recoveryCapabilities_ = capabilities_;
+    projectPath_.clear();
+    authToken_.clear();
+    capabilities_.clear();
+    connectionInterrupted_ = true;
+}
+
+bool DaemonSession::recoverConnection() {
+    if (!canRecoverConnection()) {
+        return false;
+    }
+    attachProject(recoveryProjectPath_, recoveryCapabilities_);
+    return true;
 }
 
 bool DaemonSession::hasCapability(Capability capability) const noexcept {

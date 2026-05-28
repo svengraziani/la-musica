@@ -161,6 +161,26 @@ class TrimClipCommand final : public ICommand {
     bool applied_{false};
 };
 
+class SlipClipCommand final : public ICommand {
+  public:
+    SlipClipCommand(std::string commandId, std::string auditId, std::string clipId,
+                    std::int64_t newSourceOffsetSamples);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept override;
+    [[nodiscard]] CommandResult validate(const session::ProjectManifest& manifest) const override;
+    [[nodiscard]] std::string preview(const session::ProjectManifest& manifest) const override;
+    CommandResult apply(session::ProjectManifest& manifest) override;
+    CommandResult undo(session::ProjectManifest& manifest) override;
+    [[nodiscard]] std::string serialize() const override;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    std::int64_t newSourceOffsetSamples_{0};
+    std::int64_t previousSourceOffsetSamples_{0};
+    bool applied_{false};
+};
+
 class SetClipFadeCommand final : public ICommand {
   public:
     SetClipFadeCommand(std::string commandId, std::string auditId, std::string clipId,
@@ -178,6 +198,28 @@ class SetClipFadeCommand final : public ICommand {
     std::string clipId_;
     std::int64_t fadeInSamples_{0};
     std::int64_t fadeOutSamples_{0};
+    session::Clip previousClip_;
+    bool applied_{false};
+};
+
+class SetClipRenderPropertiesCommand final : public ICommand {
+  public:
+    SetClipRenderPropertiesCommand(std::string commandId, std::string auditId, std::string clipId,
+                                   float gainDb, bool muted, bool reversed);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept override;
+    [[nodiscard]] CommandResult validate(const session::ProjectManifest& manifest) const override;
+    [[nodiscard]] std::string preview(const session::ProjectManifest& manifest) const override;
+    CommandResult apply(session::ProjectManifest& manifest) override;
+    CommandResult undo(session::ProjectManifest& manifest) override;
+    [[nodiscard]] std::string serialize() const override;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    float gainDb_{0.0F};
+    bool muted_{false};
+    bool reversed_{false};
     session::Clip previousClip_;
     bool applied_{false};
 };
@@ -236,6 +278,78 @@ class RemoveRoutingConnectionCommand final : public ICommand {
     CommandMetadata metadata_;
     session::RoutingConnection connection_;
     std::size_t removedIndex_{0};
+    bool applied_{false};
+};
+
+class SetProjectNameCommand final : public ICommand {
+  public:
+    SetProjectNameCommand(std::string commandId, std::string auditId, std::string name);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept override;
+    [[nodiscard]] CommandResult validate(const session::ProjectManifest& manifest) const override;
+    [[nodiscard]] std::string preview(const session::ProjectManifest& manifest) const override;
+    CommandResult apply(session::ProjectManifest& manifest) override;
+    CommandResult undo(session::ProjectManifest& manifest) override;
+    [[nodiscard]] std::string serialize() const override;
+
+  private:
+    CommandMetadata metadata_;
+    std::string name_;
+    std::string previousName_;
+    bool applied_{false};
+};
+
+class AddMarkerCommand final : public ICommand {
+  public:
+    AddMarkerCommand(std::string commandId, std::string auditId, session::Marker marker);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept override;
+    [[nodiscard]] CommandResult validate(const session::ProjectManifest& manifest) const override;
+    [[nodiscard]] std::string preview(const session::ProjectManifest& manifest) const override;
+    CommandResult apply(session::ProjectManifest& manifest) override;
+    CommandResult undo(session::ProjectManifest& manifest) override;
+    [[nodiscard]] std::string serialize() const override;
+
+  private:
+    CommandMetadata metadata_;
+    session::Marker marker_;
+    bool applied_{false};
+};
+
+class RemoveMarkerCommand final : public ICommand {
+  public:
+    RemoveMarkerCommand(std::string commandId, std::string auditId, std::string markerId);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept override;
+    [[nodiscard]] CommandResult validate(const session::ProjectManifest& manifest) const override;
+    [[nodiscard]] std::string preview(const session::ProjectManifest& manifest) const override;
+    CommandResult apply(session::ProjectManifest& manifest) override;
+    CommandResult undo(session::ProjectManifest& manifest) override;
+    [[nodiscard]] std::string serialize() const override;
+
+  private:
+    CommandMetadata metadata_;
+    std::string markerId_;
+    session::Marker removedMarker_;
+    std::size_t removedIndex_{0};
+    bool applied_{false};
+};
+
+class AddTempoEventCommand final : public ICommand {
+  public:
+    AddTempoEventCommand(std::string commandId, std::string auditId, session::TempoEvent event);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept override;
+    [[nodiscard]] CommandResult validate(const session::ProjectManifest& manifest) const override;
+    [[nodiscard]] std::string preview(const session::ProjectManifest& manifest) const override;
+    CommandResult apply(session::ProjectManifest& manifest) override;
+    CommandResult undo(session::ProjectManifest& manifest) override;
+    [[nodiscard]] std::string serialize() const override;
+
+  private:
+    CommandMetadata metadata_;
+    session::TempoEvent event_;
+    std::size_t insertedIndex_{0};
     bool applied_{false};
 };
 
@@ -308,6 +422,84 @@ class TransposeMidiClipCommand final {
     bool applied_{false};
 };
 
+class TransformMidiVelocityCommand final {
+  public:
+    TransformMidiVelocityCommand(std::string commandId, std::string auditId, std::string clipId,
+                                 session::VelocityTransform transform);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    session::VelocityTransform transform_;
+    session::MidiClipData previousClip_;
+    bool applied_{false};
+};
+
+class HumanizeMidiClipCommand final {
+  public:
+    HumanizeMidiClipCommand(std::string commandId, std::string auditId, std::string clipId,
+                            session::HumanizeSettings settings);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    session::HumanizeSettings settings_;
+    session::MidiClipData previousClip_;
+    bool applied_{false};
+};
+
+class SetMidiNoteLengthsCommand final {
+  public:
+    SetMidiNoteLengthsCommand(std::string commandId, std::string auditId, std::string clipId,
+                              std::int64_t lengthSamples);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    std::int64_t lengthSamples_{0};
+    session::MidiClipData previousClip_;
+    bool applied_{false};
+};
+
+class LegatoMidiClipCommand final {
+  public:
+    LegatoMidiClipCommand(std::string commandId, std::string auditId, std::string clipId);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    session::MidiClipData previousClip_;
+    bool applied_{false};
+};
+
 class EditMidiNoteCommand final {
   public:
     EditMidiNoteCommand(std::string commandId, std::string auditId, std::string clipId,
@@ -326,6 +518,108 @@ class EditMidiNoteCommand final {
     std::string noteId_;
     session::MidiNote replacement_;
     session::MidiNote previous_;
+    bool applied_{false};
+};
+
+class SplitMidiNoteCommand final {
+  public:
+    SplitMidiNoteCommand(std::string commandId, std::string auditId, std::string clipId,
+                         std::string noteId, std::string rightNoteId, std::int64_t splitSample);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    std::string noteId_;
+    std::string rightNoteId_;
+    std::int64_t splitSample_{0};
+    session::MidiNote previous_;
+    bool applied_{false};
+};
+
+class AddMidiControlChangeCommand final {
+  public:
+    AddMidiControlChangeCommand(std::string commandId, std::string auditId, std::string clipId,
+                                session::MidiControlChange change);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    session::MidiControlChange change_;
+    session::MidiClipData previousClip_;
+    bool applied_{false};
+};
+
+class AddMidiPitchBendCommand final {
+  public:
+    AddMidiPitchBendCommand(std::string commandId, std::string auditId, std::string clipId,
+                            session::MidiPitchBend bend);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    session::MidiPitchBend bend_;
+    session::MidiClipData previousClip_;
+    bool applied_{false};
+};
+
+class AddMidiAftertouchCommand final {
+  public:
+    AddMidiAftertouchCommand(std::string commandId, std::string auditId, std::string clipId,
+                             session::MidiAftertouch pressure);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    session::MidiAftertouch pressure_;
+    session::MidiClipData previousClip_;
+    bool applied_{false};
+};
+
+class AddMidiProgramChangeCommand final {
+  public:
+    AddMidiProgramChangeCommand(std::string commandId, std::string auditId, std::string clipId,
+                                session::MidiProgramChange change);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const MidiClipStore& store) const;
+    [[nodiscard]] std::string preview(const MidiClipStore& store) const;
+    CommandResult apply(MidiClipStore& store);
+    CommandResult undo(MidiClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    session::MidiProgramChange change_;
+    session::MidiClipData previousClip_;
     bool applied_{false};
 };
 
@@ -379,6 +673,28 @@ class DuplicatePatternVariationCommand final {
     bool applied_{false};
 };
 
+class EditPatternStepCommand final {
+  public:
+    EditPatternStepCommand(std::string commandId, std::string auditId, std::string patternId,
+                           std::string laneId, std::uint32_t stepIndex, session::PatternStep step);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const PatternClipStore& store) const;
+    [[nodiscard]] std::string preview(const PatternClipStore& store) const;
+    CommandResult apply(PatternClipStore& store);
+    CommandResult undo(PatternClipStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string patternId_;
+    std::string laneId_;
+    std::uint32_t stepIndex_{0};
+    session::PatternStep step_;
+    session::PatternLane previousLane_;
+    bool applied_{false};
+};
+
 class AutomationLaneStore {
   public:
     [[nodiscard]] session::AutomationLaneData* find(std::string_view laneId) noexcept;
@@ -426,6 +742,7 @@ class CaptureAutomationWriteCommand final {
     CommandResult apply(AutomationLaneStore& store);
     CommandResult undo(AutomationLaneStore& store);
     [[nodiscard]] std::string serialize() const;
+    [[nodiscard]] const session::AutomationCommandBatch& capturedBatch() const noexcept;
 
   private:
     CommandMetadata metadata_;
@@ -651,6 +968,27 @@ class QuantizeWarpMarkersCommand final {
     bool applied_{false};
 };
 
+class ApplyWarpGrooveCommand final {
+  public:
+    ApplyWarpGrooveCommand(std::string commandId, std::string auditId, std::string clipId,
+                           session::GrooveTemplate groove, float strength);
+
+    [[nodiscard]] const CommandMetadata& metadata() const noexcept;
+    [[nodiscard]] CommandResult validate(const WarpStateStore& store) const;
+    [[nodiscard]] std::string preview(const WarpStateStore& store) const;
+    CommandResult apply(WarpStateStore& store);
+    CommandResult undo(WarpStateStore& store);
+    [[nodiscard]] std::string serialize() const;
+
+  private:
+    CommandMetadata metadata_;
+    std::string clipId_;
+    session::GrooveTemplate groove_;
+    float strength_{1.0F};
+    session::WarpState previousWarp_;
+    bool applied_{false};
+};
+
 class TransactionCommand final : public ICommand {
   public:
     TransactionCommand(std::string commandId, std::string auditId, std::string name,
@@ -711,9 +1049,16 @@ replaySerializedCommands(session::ProjectManifest& manifest,
                                              std::string clipId, std::int64_t newStartSample,
                                              std::int64_t newLengthSamples,
                                              std::int64_t newSourceOffsetSamples);
+[[nodiscard]] CommandPtr makeSlipClipCommand(std::string commandId, std::string auditId,
+                                             std::string clipId,
+                                             std::int64_t newSourceOffsetSamples);
 [[nodiscard]] CommandPtr makeSetClipFadeCommand(std::string commandId, std::string auditId,
                                                 std::string clipId, std::int64_t fadeInSamples,
                                                 std::int64_t fadeOutSamples);
+[[nodiscard]] CommandPtr makeSetClipRenderPropertiesCommand(std::string commandId,
+                                                            std::string auditId, std::string clipId,
+                                                            float gainDb, bool muted,
+                                                            bool reversed);
 [[nodiscard]] CommandPtr makeSplitClipCommand(const session::ProjectManifest& manifest,
                                               std::string commandId, std::string auditId,
                                               std::string leftClipId, std::string rightClipId,
@@ -725,5 +1070,13 @@ replaySerializedCommands(session::ProjectManifest& manifest,
 [[nodiscard]] CommandPtr makeRemoveRoutingConnectionCommand(std::string commandId,
                                                             std::string auditId,
                                                             session::RoutingConnection connection);
+[[nodiscard]] CommandPtr makeSetProjectNameCommand(std::string commandId, std::string auditId,
+                                                   std::string name);
+[[nodiscard]] CommandPtr makeAddMarkerCommand(std::string commandId, std::string auditId,
+                                              session::Marker marker);
+[[nodiscard]] CommandPtr makeRemoveMarkerCommand(std::string commandId, std::string auditId,
+                                                 std::string markerId);
+[[nodiscard]] CommandPtr makeAddTempoEventCommand(std::string commandId, std::string auditId,
+                                                  session::TempoEvent event);
 
 } // namespace lamusica::commands

@@ -15,6 +15,8 @@ struct WavAudioData {
 
 void writePcm16Wav(const std::filesystem::path& path, const RenderedAudio& audio,
                    double sampleRate);
+void writePcm24Wav(const std::filesystem::path& path, const RenderedAudio& audio,
+                   double sampleRate);
 [[nodiscard]] WavAudioData readPcm16Wav(const std::filesystem::path& path);
 
 } // namespace lamusica::audio

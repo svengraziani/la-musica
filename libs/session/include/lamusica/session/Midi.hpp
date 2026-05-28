@@ -74,6 +74,16 @@ struct HumanizeSettings {
     std::uint32_t seed{0};
 };
 
+struct MidiTimingContext {
+    double sampleRate{48000.0};
+    double tempoBpm{120.0};
+};
+
+struct MidiMusicalTiming {
+    double startPpq{0.0};
+    double lengthPpq{0.0};
+};
+
 enum class MidiEventType {
     NoteOn,
     NoteOff,
@@ -168,6 +178,12 @@ enabledMidiInputs(const MidiDeviceConfiguration& configuration);
 [[nodiscard]] const MidiOutputRoute*
 findMidiOutputRoute(const MidiDeviceConfiguration& configuration, std::string_view trackId);
 [[nodiscard]] std::int64_t quantizeSample(std::int64_t sample, QuantizeSettings settings);
+[[nodiscard]] double midiSamplesToPpq(std::int64_t samples, MidiTimingContext context);
+[[nodiscard]] std::int64_t midiPpqToSamples(double ppq, MidiTimingContext context);
+[[nodiscard]] MidiMusicalTiming midiNoteToMusicalTiming(const MidiNote& note,
+                                                        MidiTimingContext context);
+[[nodiscard]] MidiNote midiNoteFromMusicalTiming(MidiNote note, MidiMusicalTiming timing,
+                                                 MidiTimingContext context);
 void quantizeNotes(MidiClipData& clip, QuantizeSettings settings);
 void transposeNotes(MidiClipData& clip, int semitones);
 void transformVelocity(MidiClipData& clip, VelocityTransform transform);

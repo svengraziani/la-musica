@@ -108,6 +108,15 @@ enum class BrowserDropDestination {
     PluginArea,
 };
 
+enum class BrowserSectionKind {
+    ProjectMedia,
+    UserFolders,
+    PluginPresets,
+    DrumKits,
+    Templates,
+    RecentFiles,
+};
+
 struct BrowserDropRequest {
     std::string assetId;
     BrowserDropDestination destination{BrowserDropDestination::Timeline};
@@ -124,6 +133,19 @@ struct BrowserDropPlan {
     bool createsProjectClip{false};
     bool assignsToInstrument{false};
     bool opensPluginArea{false};
+};
+
+struct BrowserSectionItem {
+    std::string id;
+    std::filesystem::path path;
+    std::optional<AssetKind> assetKind;
+    bool favorite{false};
+    bool missing{false};
+};
+
+struct BrowserSection {
+    BrowserSectionKind kind{BrowserSectionKind::ProjectMedia};
+    std::vector<BrowserSectionItem> items;
 };
 
 struct AssetCatalog {
@@ -202,6 +224,8 @@ void revokeUserFolder(AssetCatalog& catalog, std::string_view grantId);
 void recordRecentBrowserItem(AssetCatalog& catalog, RecentBrowserItem item, std::size_t limit = 16);
 [[nodiscard]] std::vector<RecentBrowserItem>
 recentBrowserItems(const AssetCatalog& catalog, RecentBrowserItemKind kind, std::size_t limit = 16);
+[[nodiscard]] std::vector<BrowserSection> buildBrowserSections(const AssetCatalog& catalog,
+                                                               std::size_t recentLimit = 16);
 [[nodiscard]] BrowserDropPlan planBrowserDrop(const AssetCatalog& catalog,
                                               BrowserDropRequest request);
 [[nodiscard]] std::vector<AssetRecord> searchAssets(const AssetCatalog& catalog,

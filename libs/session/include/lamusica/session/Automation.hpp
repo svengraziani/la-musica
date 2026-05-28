@@ -10,6 +10,7 @@ namespace lamusica::session {
 struct MixerState;
 struct Clip;
 struct PluginInsertChain;
+struct PluginScanCache;
 
 enum class AutomationCurve {
     Step,
@@ -87,11 +88,20 @@ struct AutomationLaneSelection {
 [[nodiscard]] std::vector<float> evaluateAutomationBlock(const AutomationLaneData& lane,
                                                          std::int64_t startSample,
                                                          std::uint32_t frames);
+[[nodiscard]] std::vector<AutomationPoint> automationPointsInRange(const AutomationLaneData& lane,
+                                                                   std::int64_t startSample,
+                                                                   std::int64_t endSample);
 [[nodiscard]] float effectiveAutomationValue(const AutomationLaneData& lane,
                                              std::int64_t samplePosition, float currentValue);
 [[nodiscard]] const AutomationLaneData*
 selectAutomationLane(std::span<const AutomationLaneData> lanes,
                      const AutomationLaneSelection& selection);
+[[nodiscard]] std::vector<AutomationParameterBinding>
+automationBindingsForMixer(const MixerState& mixer);
+[[nodiscard]] std::vector<AutomationParameterBinding>
+automationBindingsForPluginChain(const PluginInsertChain& chain, const PluginScanCache& cache,
+                                 AutomationTargetKind targetKind = AutomationTargetKind::Plugin);
+[[nodiscard]] std::vector<AutomationParameterBinding> automationBindingsForClip(const Clip& clip);
 void addAutomationPoint(AutomationLaneData& lane, std::int64_t samplePosition, float value,
                         AutomationCurve curveToNext = AutomationCurve::Linear);
 [[nodiscard]] AutomationCommandBatch

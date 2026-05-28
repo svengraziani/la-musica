@@ -34,6 +34,15 @@ std::string noteId(std::string_view laneId, std::uint32_t stepIndex, std::uint32
     return output.str();
 }
 
+std::uint32_t tiedStepSpan(const PatternLane& lane, std::uint32_t laneStepIndex) {
+    std::uint32_t span = 1;
+    while (laneStepIndex + span < lane.steps.size() && lane.steps[laneStepIndex + span - 1U].tie &&
+           lane.steps[laneStepIndex + span].enabled) {
+        ++span;
+    }
+    return span;
+}
+
 } // namespace
 
 bool probabilityHit(float probability, std::uint32_t seed, std::uint32_t laneIndex,
@@ -71,6 +80,10 @@ MidiClipData patternToMidi(const PatternClip& pattern, std::string midiClipId) {
             if (!step.enabled) {
                 continue;
             }
+            if (laneStepIndex > 0U && lane.steps[laneStepIndex - 1U].enabled &&
+                lane.steps[laneStepIndex - 1U].tie) {
+                continue;
+            }
 
             const auto ratchets = std::max<std::uint8_t>(1, step.ratchets);
             const auto ratchetLength = pattern.stepLengthSamples / ratchets;
@@ -85,7 +98,11 @@ MidiClipData patternToMidi(const PatternClip& pattern, std::string midiClipId) {
                     {.id = generatedNoteId,
                      .startSample = swungStepStart(pattern, stepIndex) +
                                     static_cast<std::int64_t>(ratchetIndex) * ratchetLength,
-                     .lengthSamples = step.tie ? pattern.stepLengthSamples : ratchetLength,
+                     .lengthSamples =
+                         step.tie && ratchets == 1U
+                             ? static_cast<std::int64_t>(tiedStepSpan(lane, laneStepIndex)) *
+                                   pattern.stepLengthSamples
+                             : ratchetLength,
                      .pitch = step.pitch == 0 ? lane.defaultPitch : step.pitch,
                      .velocity = step.accent ? static_cast<std::uint8_t>(std::min<int>(
                                                    127, static_cast<int>(step.velocity) + 16))
@@ -116,6 +133,21 @@ MidiClipData patternClipToMidi(const PatternClipPlacement& placement, std::strin
         note.startSample += placement.timelineStartSample;
     }
     return midi;
+}
+
+std::vector<MidiPlaybackEvent> patternPlaybackEventsInRange(const PatternClipPlacement& placement,
+                                                            std::int64_t rangeStartSample,
+                                                            std::int64_t rangeEndSample) {
+    if (rangeStartSample < 0 || rangeEndSample < rangeStartSample) {
+        throw std::runtime_error("Pattern playback range is invalid");
+    }
+
+    auto midi = patternClipToMidi(placement, placement.pattern.id + "-playback");
+    auto events = midiEventsInSampleRange(midi, rangeStartSample, rangeEndSample);
+    for (auto& event : events) {
+        event.samplePosition -= rangeStartSample;
+    }
+    return events;
 }
 
 PatternClip midiToPattern(const MidiClipData& midi, std::string patternId, std::string patternName,

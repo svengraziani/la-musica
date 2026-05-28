@@ -3,6 +3,7 @@
 #include "lamusica/audio/WavFile.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -36,7 +37,42 @@ std::int64_t latencyAlignedStart(const RecordingOptions& options) noexcept {
                                          options.measuredInputLatencySamples);
 }
 
+std::pair<std::int64_t, float> firstPeakAtOrAbove(std::span<const float> samples,
+                                                  float threshold) noexcept {
+    float peak = 0.0F;
+    for (std::int64_t index = 0; index < static_cast<std::int64_t>(samples.size()); ++index) {
+        const auto magnitude = std::abs(samples[static_cast<std::size_t>(index)]);
+        peak = std::max(peak, magnitude);
+        if (magnitude >= threshold) {
+            return {index, peak};
+        }
+    }
+    return {-1, peak};
+}
+
 } // namespace
+
+RecordingLatencyMeasurement measureRecordingLatency(std::span<const float> referenceImpulse,
+                                                    std::span<const float> recordedInput,
+                                                    float threshold) {
+    if (referenceImpulse.empty() || recordedInput.empty()) {
+        throw std::invalid_argument("Recording latency measurement requires non-empty buffers");
+    }
+    if (threshold <= 0.0F) {
+        throw std::invalid_argument("Recording latency threshold must be positive");
+    }
+
+    const auto [referenceIndex, referencePeak] = firstPeakAtOrAbove(referenceImpulse, threshold);
+    const auto [recordedIndex, recordedPeak] = firstPeakAtOrAbove(recordedInput, threshold);
+    if (referenceIndex < 0 || recordedIndex < 0 || recordedIndex < referenceIndex) {
+        return {.referencePeak = referencePeak, .recordedPeak = recordedPeak, .valid = false};
+    }
+
+    return {.measuredInputLatencySamples = recordedIndex - referenceIndex,
+            .referencePeak = referencePeak,
+            .recordedPeak = recordedPeak,
+            .valid = true};
+}
 
 RecordingPlan makeRecordingPlan(const RecordingWorkflowOptions& options) {
     if (options.trackId.empty()) {

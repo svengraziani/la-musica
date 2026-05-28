@@ -8,11 +8,15 @@
 - Formatting: `find apps libs tools tests \( -name '*.cpp' -o -name '*.hpp' -o -name '*.mm' \) -exec xcrun clang-format --dry-run --Werror {} +`
 - Package: `cpack --config build/unix-release/CPackConfig.cmake`
 - Headless package verification: `cpack -G TGZ --config build/unix-release/CPackConfig.cmake`
+- Package contents: `cmake -DPACKAGE=LaMusica-0.1.0-Darwin.tar.gz -P cmake/VerifyPackage.cmake`
+- Example verification: `build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/examples`
+- Tutorial verification: `build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/tutorials`
 
 ## macOS Packaging
 
 - Produce `LaMusica.app` from the release build.
-- Include `lamusica_mcpd`, `lamusica_cli`, docs, and example projects.
+- Include `lamusica_mcpd`, `lamusica_cli`, docs, example projects, and tutorial projects.
+- Include release docs: changelog, security disclosure process, contributing guide, and user manual.
 - Sign app bundle with the maintainer Developer ID.
 - Sign daemon and CLI binaries with the same Developer ID.
 - Notarize app bundle or disk image.
@@ -25,7 +29,8 @@
 ## Assets And Examples
 
 - Include only redistributable assets.
-- Verify example projects load without missing assets.
+- Verify example projects load without missing assets: `lamusica_cli verify-examples fixtures/examples`.
+- Verify tutorial projects load without missing assets: `lamusica_cli verify-examples fixtures/tutorials`.
 - Keep generated caches out of source distributions.
 
 ## MCP

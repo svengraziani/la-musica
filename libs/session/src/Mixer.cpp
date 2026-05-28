@@ -28,6 +28,11 @@ bool sendExists(const ChannelStrip& channel, std::string_view sendId) {
                                [sendId](const Send& send) { return send.id == sendId; });
 }
 
+bool sidechainExists(const MixerState& mixer, std::string_view routeId) {
+    return std::ranges::any_of(
+        mixer.sidechains, [routeId](const SidechainRoute& route) { return route.id == routeId; });
+}
+
 FaderGroup* findFaderGroup(MixerState& mixer, std::string_view groupId) {
     const auto found = std::ranges::find_if(
         mixer.faderGroups, [groupId](const FaderGroup& group) { return group.id == groupId; });
@@ -337,6 +342,34 @@ void addRoute(MixerState& mixer, RoutingEdge route) {
     }
 }
 
+void addSidechainRoute(MixerState& mixer, SidechainRoute route) {
+    if (route.id.empty()) {
+        throw std::runtime_error("Sidechain route id must not be empty");
+    }
+    if (!channelExists(mixer, route.sourceChannelId) ||
+        !channelExists(mixer, route.destinationChannelId)) {
+        throw std::runtime_error("Sidechain route references unknown channel");
+    }
+    if (route.sourceChannelId == route.destinationChannelId) {
+        throw std::runtime_error("Sidechain route cannot target the same channel");
+    }
+    if (route.targetInsertId.empty()) {
+        throw std::runtime_error("Sidechain route target insert id must not be empty");
+    }
+    if (sidechainExists(mixer, route.id)) {
+        throw std::runtime_error("Sidechain route id already exists");
+    }
+    if (std::ranges::any_of(mixer.sidechains, [&route](const SidechainRoute& existing) {
+            return existing.sourceChannelId == route.sourceChannelId &&
+                   existing.destinationChannelId == route.destinationChannelId &&
+                   existing.targetInsertId == route.targetInsertId;
+        })) {
+        throw std::runtime_error("Sidechain route already exists");
+    }
+
+    mixer.sidechains.push_back(std::move(route));
+}
+
 void addSend(MixerState& mixer, std::string_view sourceChannelId, Send send) {
     auto* source = findChannel(mixer, sourceChannelId);
     if (source == nullptr) {
@@ -463,6 +496,48 @@ bool validateRouting(const MixerState& mixer, std::string* errorMessage) {
             }
         }
     }
+    std::set<std::string> sidechainIds;
+    for (const auto& sidechain : mixer.sidechains) {
+        if (sidechain.id.empty()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = "Sidechain route id must not be empty";
+            }
+            return false;
+        }
+        if (sidechainIds.contains(sidechain.id)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = "Sidechain route id is duplicated: " + sidechain.id;
+            }
+            return false;
+        }
+        sidechainIds.insert(sidechain.id);
+        if (!channelExists(mixer, sidechain.sourceChannelId)) {
+            if (errorMessage != nullptr) {
+                *errorMessage =
+                    "Sidechain source channel does not exist: " + sidechain.sourceChannelId;
+            }
+            return false;
+        }
+        if (!channelExists(mixer, sidechain.destinationChannelId)) {
+            if (errorMessage != nullptr) {
+                *errorMessage = "Sidechain destination channel does not exist: " +
+                                sidechain.destinationChannelId;
+            }
+            return false;
+        }
+        if (sidechain.sourceChannelId == sidechain.destinationChannelId) {
+            if (errorMessage != nullptr) {
+                *errorMessage = "Sidechain route cannot target the same channel";
+            }
+            return false;
+        }
+        if (sidechain.targetInsertId.empty()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = "Sidechain route target insert id must not be empty";
+            }
+            return false;
+        }
+    }
 
     if (hasRoutingCycle(mixer)) {
         if (errorMessage != nullptr) {
@@ -472,6 +547,57 @@ bool validateRouting(const MixerState& mixer, std::string* errorMessage) {
     }
 
     return true;
+}
+
+std::vector<RoutingMatrixCell> buildRoutingMatrix(const MixerState& mixer) {
+    std::vector<RoutingMatrixCell> cells;
+    cells.reserve(mixer.channels.size() * mixer.channels.size());
+
+    for (const auto& source : mixer.channels) {
+        for (const auto& destination : mixer.channels) {
+            if (source.id == destination.id) {
+                continue;
+            }
+
+            const auto existingRoute =
+                std::ranges::any_of(mixer.routing, [&source, &destination](const auto& route) {
+                    return route.sourceChannelId == source.id &&
+                           route.destinationChannelId == destination.id;
+                });
+            const auto existingSend =
+                std::ranges::any_of(source.sends, [&destination](const Send& send) {
+                    return send.destinationChannelId == destination.id;
+                });
+            const auto existingSidechain = std::ranges::any_of(
+                mixer.sidechains, [&source, &destination](const SidechainRoute& route) {
+                    return route.sourceChannelId == source.id &&
+                           route.destinationChannelId == destination.id;
+                });
+
+            auto routeProbe = mixer;
+            routeProbe.routing.push_back(
+                {.sourceChannelId = source.id, .destinationChannelId = destination.id});
+            const auto routeWouldCreateFeedback = hasRoutingCycle(routeProbe);
+
+            auto sendProbe = mixer;
+            if (auto* probeSource = findChannel(sendProbe, source.id); probeSource != nullptr) {
+                probeSource->sends.push_back(
+                    {.id = "__matrix_probe__", .destinationChannelId = destination.id});
+            }
+            const auto sendWouldCreateFeedback = hasRoutingCycle(sendProbe);
+
+            cells.push_back(
+                {.sourceChannelId = source.id,
+                 .destinationChannelId = destination.id,
+                 .existingRoute = existingRoute,
+                 .routeAllowed = !existingRoute && !routeWouldCreateFeedback,
+                 .sendAllowed = !existingSend && !sendWouldCreateFeedback,
+                 .sidechainAllowed = !existingSidechain,
+                 .wouldCreateFeedback = routeWouldCreateFeedback || sendWouldCreateFeedback});
+        }
+    }
+
+    return cells;
 }
 
 MeterReading measureInterleaved(std::span<const float> samples, std::uint32_t channels) {
@@ -541,6 +667,18 @@ std::string serializeMixerState(const MixerState& mixer) {
             output << ',';
         }
     }
+    output << "],\"sidechains\":[";
+    for (std::size_t sidechainIndex = 0; sidechainIndex < mixer.sidechains.size();
+         ++sidechainIndex) {
+        const auto& sidechain = mixer.sidechains[sidechainIndex];
+        output << "{\"id\":\"" << escapeJson(sidechain.id) << "\",\"sourceChannelId\":\""
+               << escapeJson(sidechain.sourceChannelId) << "\",\"destinationChannelId\":\""
+               << escapeJson(sidechain.destinationChannelId) << "\",\"targetInsertId\":\""
+               << escapeJson(sidechain.targetInsertId) << "\"}";
+        if (sidechainIndex + 1 < mixer.sidechains.size()) {
+            output << ',';
+        }
+    }
     output << "],\"faderGroups\":[";
     for (std::size_t groupIndex = 0; groupIndex < mixer.faderGroups.size(); ++groupIndex) {
         const auto& group = mixer.faderGroups[groupIndex];
@@ -598,6 +736,14 @@ MixerState parseMixerState(std::string_view json) {
         addRoute(mixer,
                  {.sourceChannelId = readRequiredString(routeJson, "sourceChannelId"),
                   .destinationChannelId = readRequiredString(routeJson, "destinationChannelId")});
+    }
+    for (const auto sidechainJson : objectArrayItems(json, "sidechains")) {
+        addSidechainRoute(
+            mixer,
+            {.id = readRequiredString(sidechainJson, "id"),
+             .sourceChannelId = readRequiredString(sidechainJson, "sourceChannelId"),
+             .destinationChannelId = readRequiredString(sidechainJson, "destinationChannelId"),
+             .targetInsertId = readRequiredString(sidechainJson, "targetInsertId")});
     }
     for (const auto groupJson : objectArrayItems(json, "faderGroups")) {
         addFaderGroup(mixer, {.id = readRequiredString(groupJson, "id"),

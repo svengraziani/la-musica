@@ -98,8 +98,8 @@ bool parsePage(const std::vector<std::string>& words, QueryPage& page) {
     return words.size() <= 4;
 }
 
-bool parseAutomationRangeQuery(const std::vector<std::string>& words, QuerySampleRange& range,
-                               QueryPage& page) {
+bool parseSampleRangeQuery(const std::vector<std::string>& words, QuerySampleRange& range,
+                           QueryPage& page) {
     if (words.size() < 4) {
         return false;
     }
@@ -152,11 +152,13 @@ ProtocolResponse handleQuery(DaemonSession& session, const ProtocolProjectState&
 
     const auto& manifest = state.manifest == nullptr ? emptyManifest : *state.manifest;
     QueryPage page;
-    if (toolName == "automation_range") {
+    if (toolName == "automation_range" || toolName == "clips_range") {
         QuerySampleRange range;
-        if (!parseAutomationRangeQuery(words, range, page)) {
-            return {.ok = false,
-                    .body = "automation_range_query_must_be_start_end_offset_and_limit"};
+        if (!parseSampleRangeQuery(words, range, page)) {
+            return {.ok = false, .body = toolName + "_query_must_be_start_end_offset_and_limit"};
+        }
+        if (toolName == "clips_range") {
+            return success(clipsInRangeJson(manifest, range, page));
         }
         return success(automationInRangeJson(manifest, range, page));
     }
@@ -277,6 +279,16 @@ ProtocolResponse handleProtocolLine(DaemonSession& session, std::string_view lin
     if (words.front() == "detach") {
         session.detachProject();
         return {.ok = true, .body = "detached"};
+    }
+    if (words.front() == "connection_lost") {
+        session.markConnectionLost();
+        return {.ok = true, .body = session.connectionInterrupted() ? "interrupted" : "idle"};
+    }
+    if (words.front() == "recover") {
+        if (!session.recoverConnection()) {
+            return {.ok = false, .body = "recover_requires_interrupted_connection"};
+        }
+        return {.ok = true, .body = "recovered token=" + session.authToken()};
     }
     if (words.front() == "can_mutate") {
         return {.ok = true, .body = session.canMutateProject() ? "true" : "false"};

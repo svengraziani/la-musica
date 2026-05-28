@@ -82,6 +82,9 @@ struct WarpRenderPlan {
                                                 float strength);
 [[nodiscard]] std::int64_t mapSourceToTimeline(const WarpState& warp, std::int64_t sourceSample);
 [[nodiscard]] WarpState retargetWarpTempo(const WarpState& warp, double newTargetTempoBpm);
+[[nodiscard]] WarpState conformWarpToTempo(const WarpState& warp,
+                                           std::span<const Transient> transients,
+                                           std::int64_t sourceEndSample, double newTargetTempoBpm);
 [[nodiscard]] std::vector<Transient> detectTransients(std::span<const float> monoSamples,
                                                       float threshold);
 [[nodiscard]] std::vector<BeatSlice> makeBeatSlices(const WarpState& warp,
@@ -90,6 +93,7 @@ struct WarpRenderPlan {
 [[nodiscard]] GrooveTemplate extractGroove(std::string id, std::span<const Transient> transients,
                                            std::int64_t gridSamples);
 void quantizeWarpMarkers(WarpState& warp, std::int64_t gridSamples, float strength);
+void applyGrooveToWarpMarkers(WarpState& warp, const GrooveTemplate& groove, float strength);
 [[nodiscard]] std::string makeWarpCacheKey(const WarpState& warp);
 [[nodiscard]] double pitchShiftRatio(float semitones) noexcept;
 [[nodiscard]] const RenderCacheEntry*

@@ -25,11 +25,44 @@ void validateClipRenderRange(const Clip& clip, const audio::RenderedAudio& sourc
     }
 }
 
+void validateClipEnvelope(const Clip& clip, const ClipGainEnvelope& envelope) {
+    if (!envelope.clipId.empty() && envelope.clipId != clip.id) {
+        throw std::runtime_error("Clip envelope references a different clip");
+    }
+
+    std::int64_t previousSample = -1;
+    for (const auto& point : envelope.points) {
+        if (point.samplePosition < 0 || point.samplePosition > clip.lengthSamples) {
+            throw std::runtime_error("Clip envelope point is outside clip range");
+        }
+        if (point.samplePosition < previousSample) {
+            throw std::runtime_error("Clip envelope points must be sorted by sample position");
+        }
+        if (!std::isfinite(point.gain) || point.gain < 0.0F) {
+            throw std::runtime_error("Clip envelope gain must be finite and non-negative");
+        }
+        previousSample = point.samplePosition;
+    }
+}
+
 float linearToDb(float gain) noexcept {
     if (gain <= 0.0F) {
         return -120.0F;
     }
     return 20.0F * std::log10(gain);
+}
+
+const ClipTake* findTake(const ClipTakeLane& takeLane, std::string_view takeId) noexcept {
+    const auto found = std::ranges::find_if(
+        takeLane.takes, [takeId](const ClipTake& take) { return take.id == takeId; });
+    return found == takeLane.takes.end() ? nullptr : &*found;
+}
+
+const ClipTakeSource* findTakeSource(std::span<const ClipTakeSource> sources,
+                                     std::string_view takeId) noexcept {
+    const auto found = std::ranges::find_if(
+        sources, [takeId](const ClipTakeSource& source) { return source.takeId == takeId; });
+    return found == sources.end() ? nullptr : &*found;
 }
 
 } // namespace
@@ -55,6 +88,106 @@ float clipFadeGain(const Clip& clip, std::int64_t clipRelativeSample) noexcept {
     }
 
     return gain;
+}
+
+float evaluateClipEnvelope(const ClipGainEnvelope& envelope, std::int64_t clipRelativeSample) {
+    if (envelope.points.empty()) {
+        return 1.0F;
+    }
+    if (clipRelativeSample <= envelope.points.front().samplePosition) {
+        return envelope.points.front().gain;
+    }
+
+    for (std::size_t index = 1; index < envelope.points.size(); ++index) {
+        const auto& left = envelope.points[index - 1U];
+        const auto& right = envelope.points[index];
+        if (clipRelativeSample <= right.samplePosition) {
+            const auto distance = right.samplePosition - left.samplePosition;
+            if (distance <= 0) {
+                return right.gain;
+            }
+            const auto ratio = static_cast<float>(clipRelativeSample - left.samplePosition) /
+                               static_cast<float>(distance);
+            return left.gain + ((right.gain - left.gain) * ratio);
+        }
+    }
+
+    return envelope.points.back().gain;
+}
+
+void validateClipTakeLane(const Clip& clip, const ClipTakeLane& takeLane, const ClipComp& comp,
+                          std::span<const ClipTakeSource> sources) {
+    if (!takeLane.clipId.empty() && takeLane.clipId != clip.id) {
+        throw std::runtime_error("Clip take lane references a different clip");
+    }
+    if (!comp.clipId.empty() && comp.clipId != clip.id) {
+        throw std::runtime_error("Clip comp references a different clip");
+    }
+    if (clip.lengthSamples < 0) {
+        throw std::runtime_error("Clip comp range must not be negative");
+    }
+    if (takeLane.takes.empty()) {
+        throw std::runtime_error("Clip take lane must contain at least one take");
+    }
+    if (sources.empty()) {
+        throw std::runtime_error("Clip take lane render requires at least one take source");
+    }
+
+    std::vector<std::string> takeIds;
+    for (const auto& take : takeLane.takes) {
+        if (take.id.empty() || take.name.empty()) {
+            throw std::runtime_error("Clip take id and name are required");
+        }
+        if (std::ranges::find(takeIds, take.id) != takeIds.end()) {
+            throw std::runtime_error("Duplicate clip take id: " + take.id);
+        }
+        if (take.sourceOffsetSamples < 0 || take.lengthSamples < 0) {
+            throw std::runtime_error("Clip take ranges must not be negative");
+        }
+        takeIds.push_back(take.id);
+    }
+
+    std::uint32_t channelCount = 0;
+    for (const auto& source : sources) {
+        if (source.audio.channels == 0U) {
+            throw std::runtime_error("Clip take source must have at least one channel");
+        }
+        if (channelCount == 0U) {
+            channelCount = source.audio.channels;
+        } else if (channelCount != source.audio.channels) {
+            throw std::runtime_error("Clip take sources must have matching channel counts");
+        }
+    }
+
+    std::int64_t previousSegmentEnd = 0;
+    for (const auto& segment : comp.segments) {
+        const auto* take = findTake(takeLane, segment.takeId);
+        if (take == nullptr) {
+            throw std::runtime_error("Clip comp references missing take id: " + segment.takeId);
+        }
+        const auto* source = findTakeSource(sources, segment.takeId);
+        if (source == nullptr) {
+            throw std::runtime_error("Clip comp references missing take source: " + segment.takeId);
+        }
+        if (segment.clipStartSample < 0 || segment.lengthSamples <= 0 ||
+            segment.takeSourceOffsetSamples < 0) {
+            throw std::runtime_error("Clip comp segment ranges are invalid");
+        }
+        if (segment.clipStartSample < previousSegmentEnd) {
+            throw std::runtime_error("Clip comp segments must be sorted and non-overlapping");
+        }
+        const auto clipEnd = segment.clipStartSample + segment.lengthSamples;
+        if (clipEnd > clip.lengthSamples) {
+            throw std::runtime_error("Clip comp segment extends beyond clip length");
+        }
+        const auto takeEnd = segment.takeSourceOffsetSamples + segment.lengthSamples;
+        if (segment.takeSourceOffsetSamples < take->sourceOffsetSamples ||
+            takeEnd > take->sourceOffsetSamples + take->lengthSamples ||
+            takeEnd > source->audio.frames) {
+            throw std::runtime_error("Clip comp segment extends beyond take source");
+        }
+        previousSegmentEnd = clipEnd;
+    }
 }
 
 float clipPeakAmplitude(const Clip& clip, const audio::RenderedAudio& source) {
@@ -118,6 +251,59 @@ audio::RenderedAudio renderClipRegion(const Clip& clip, const audio::RenderedAud
                 source.interleavedSamples[static_cast<std::size_t>(sourceFrame) * source.channels +
                                           channel] *
                 fadeGain;
+        }
+    }
+
+    return rendered;
+}
+
+audio::RenderedAudio renderClipRegionWithEnvelope(const Clip& clip,
+                                                  const audio::RenderedAudio& source,
+                                                  const ClipGainEnvelope& envelope) {
+    validateClipRenderRange(clip, source);
+    validateClipEnvelope(clip, envelope);
+
+    auto rendered = renderClipRegion(clip, source);
+    for (std::int64_t frame = 0; frame < clip.lengthSamples; ++frame) {
+        const auto envelopeGain = evaluateClipEnvelope(envelope, frame);
+        for (std::uint32_t channel = 0; channel < rendered.channels; ++channel) {
+            rendered.interleavedSamples[static_cast<std::size_t>(frame) * rendered.channels +
+                                        channel] *= envelopeGain;
+        }
+    }
+    return rendered;
+}
+
+audio::RenderedAudio renderCompedClip(const Clip& clip, const ClipTakeLane& takeLane,
+                                      const ClipComp& comp,
+                                      std::span<const ClipTakeSource> sources) {
+    validateClipTakeLane(clip, takeLane, comp, sources);
+
+    const auto channels = sources.empty() ? 0U : sources.front().audio.channels;
+    audio::RenderedAudio rendered{.channels = channels,
+                                  .frames = static_cast<std::uint32_t>(clip.lengthSamples),
+                                  .interleavedSamples = std::vector<float>(
+                                      static_cast<std::size_t>(clip.lengthSamples) * channels)};
+    const auto linearGain = clip.muted ? 0.0F : dbToLinearGain(clip.gainDb);
+
+    for (const auto& segment : comp.segments) {
+        const auto* take = findTake(takeLane, segment.takeId);
+        const auto* source = findTakeSource(sources, segment.takeId);
+        if (take == nullptr || source == nullptr || take->muted) {
+            continue;
+        }
+        for (std::int64_t frame = 0; frame < segment.lengthSamples; ++frame) {
+            const auto clipFrame = segment.clipStartSample + frame;
+            const auto sourceFrame = segment.takeSourceOffsetSamples + frame;
+            const auto fadeGain = clipFadeGain(clip, clipFrame) * linearGain;
+            for (std::uint32_t channel = 0; channel < channels; ++channel) {
+                rendered
+                    .interleavedSamples[static_cast<std::size_t>(clipFrame) * channels + channel] =
+                    source->audio
+                        .interleavedSamples[static_cast<std::size_t>(sourceFrame) * channels +
+                                            channel] *
+                    fadeGain;
+            }
         }
     }
 

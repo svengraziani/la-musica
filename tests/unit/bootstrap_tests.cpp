@@ -200,6 +200,26 @@ int main() {
     require(invertedCompiledRender.interleavedSamples[2] * compiledRender.interleavedSamples[2] <
                 0.0F,
             "session graph compiler applies mixer phase inversion");
+    lamusica::session::MixerState hardwareOutputMixer;
+    lamusica::session::addChannel(
+        hardwareOutputMixer,
+        {.id = "master-track", .name = "Master", .type = lamusica::session::ChannelType::Master});
+    lamusica::session::addChannel(hardwareOutputMixer,
+                                  {.id = "output-1-2",
+                                   .name = "Output 1-2",
+                                   .type = lamusica::session::ChannelType::HardwareOutput});
+    lamusica::session::addRoute(hardwareOutputMixer, {.sourceChannelId = "master-track",
+                                                      .destinationChannelId = "output-1-2"});
+    const auto hardwareOutputGraph =
+        lamusica::session::compileProjectAudioGraph(graphManifest, hardwareOutputMixer);
+    require(hardwareOutputGraph.outputNodeId == "channel:output-1-2",
+            "session graph compiler routes master output to hardware output channel");
+    lamusica::audio::AudioEngine hardwareOutputEngine{{.sampleRate = 48000.0, .maxBlockSize = 64}};
+    const auto hardwareOutputRender =
+        hardwareOutputEngine.renderGraphOffline(hardwareOutputGraph, 64);
+    require(std::ranges::any_of(hardwareOutputRender.interleavedSamples,
+                                [](float sample) { return sample != 0.0F; }),
+            "session graph compiler renders through hardware output routing");
     require(lamusica::session::dbToLinearGain(0.0F) == 1.0F,
             "session graph compiler maps 0 dB to unity");
 
@@ -324,6 +344,19 @@ int main() {
     require(mixExport.bitDepth == lamusica::audio::ExportBitDepth::Pcm16 &&
                 mixExport.ditherMode == lamusica::audio::DitherMode::Triangular,
             "project export preserves bit depth and dithering options");
+    const auto mix24Export = lamusica::session::exportProjectMixToWav(
+        stemManifest, {},
+        {.outputPath = stemDirectory / "mix-24.wav",
+         .startSample = 0,
+         .frames = 32,
+         .sampleRate = 48000.0,
+         .channels = 2,
+         .bitDepth = lamusica::audio::ExportBitDepth::Pcm24,
+         .ditherMode = lamusica::audio::DitherMode::Triangular});
+    const auto importedMix24 = lamusica::audio::readPcm16Wav(stemDirectory / "mix-24.wav");
+    require(mix24Export.bitDepth == lamusica::audio::ExportBitDepth::Pcm24 &&
+                importedMix24.bitsPerSample == 24 && importedMix24.audio.frames == 32,
+            "project mix export writes PCM24 WAV when requested");
     const auto stemExports = lamusica::session::exportProjectStemsToWav(
         stemManifest, {},
         {.outputDirectory = stemDirectory,
@@ -504,6 +537,18 @@ int main() {
     require(history.undo(commandManifest).ok, "set clip fade command undoes");
     require(commandManifest.clips.front().fadeInSamples == 0, "fade undo restores fade in");
 
+    auto renderPropertiesClip = lamusica::commands::makeSetClipRenderPropertiesCommand(
+        "cmd-2aa", "audit-2aa", "clip-1", -6.0F, true, true);
+    require(history.execute(commandManifest, std::move(renderPropertiesClip)).ok,
+            "set clip render properties command applies");
+    require(commandManifest.clips.front().gainDb == -6.0F && commandManifest.clips.front().muted &&
+                commandManifest.clips.front().reversed,
+            "set clip render properties command mutates gain mute and reverse metadata");
+    require(history.undo(commandManifest).ok, "set clip render properties command undoes");
+    require(commandManifest.clips.front().gainDb == 0.0F && !commandManifest.clips.front().muted &&
+                !commandManifest.clips.front().reversed,
+            "set clip render properties undo restores clip metadata");
+
     auto trimClip =
         lamusica::commands::makeTrimClipCommand("cmd-2b", "audit-2b", "clip-1", 200, 900, 100);
     require(history.execute(commandManifest, std::move(trimClip)).ok, "trim clip command applies");
@@ -514,6 +559,20 @@ int main() {
     require(history.undo(commandManifest).ok, "trim clip command undoes");
     require(commandManifest.clips.front().startSample == 100, "trim undo restores start");
 
+    auto slipClip = lamusica::commands::makeSlipClipCommand("cmd-2bb", "audit-2bb", "clip-1", 384);
+    require(slipClip->preview(commandManifest) == "Slip clip \"clip-1\" to source sample 384",
+            "slip clip command previews");
+    require(history.execute(commandManifest, std::move(slipClip)).ok, "slip clip command applies");
+    require(commandManifest.clips.front().startSample == 100 &&
+                commandManifest.clips.front().lengthSamples == 1000 &&
+                commandManifest.clips.front().sourceOffsetSamples == 384,
+            "slip clip command preserves timeline placement while changing source offset");
+    require(history.undo(commandManifest).ok, "slip clip command undoes");
+    require(commandManifest.clips.front().startSample == 100 &&
+                commandManifest.clips.front().lengthSamples == 1000 &&
+                commandManifest.clips.front().sourceOffsetSamples == 0,
+            "slip clip undo restores source offset only");
+
     auto splitClip = lamusica::commands::makeSplitClipCommand(commandManifest, "cmd-2c", "audit-2c",
                                                               "clip-1", "clip-1-right", 600);
     require(history.execute(commandManifest, std::move(splitClip)).ok,
@@ -523,6 +582,34 @@ int main() {
     require(history.undo(commandManifest).ok, "split clip command undoes");
     require(commandManifest.clips.size() == 1, "split undo removes right clip");
     require(commandManifest.clips.front().lengthSamples == 1000, "split undo restores left length");
+
+    lamusica::session::ProjectManifest transactionManifest;
+    std::vector<lamusica::commands::CommandPtr> dependentCommands;
+    dependentCommands.push_back(
+        lamusica::commands::makeAddTrackCommand("cmd-transaction-track", "audit-transaction-track",
+                                                {.id = "transaction-track",
+                                                 .name = "Transaction Track",
+                                                 .type = lamusica::session::TrackType::Audio}));
+    dependentCommands.push_back(
+        lamusica::commands::makeAddClipCommand("cmd-transaction-clip", "audit-transaction-clip",
+                                               {.id = "transaction-clip",
+                                                .trackId = "transaction-track",
+                                                .type = lamusica::session::ClipType::Audio,
+                                                .startSample = 0,
+                                                .lengthSamples = 48000}));
+    auto dependentTransaction = std::make_unique<lamusica::commands::TransactionCommand>(
+        "cmd-transaction", "audit-transaction", "create_track_with_clip",
+        std::move(dependentCommands));
+    require(dependentTransaction->validate(transactionManifest).ok &&
+                transactionManifest.tracks.empty() && transactionManifest.clips.empty(),
+            "transaction validation simulates dependent commands without mutating manifest");
+    require(history.execute(transactionManifest, std::move(dependentTransaction)).ok,
+            "transaction command applies dependent multi-step edit");
+    require(transactionManifest.tracks.size() == 1 && transactionManifest.clips.size() == 1,
+            "transaction command applies all subcommands atomically");
+    require(history.undo(transactionManifest).ok && transactionManifest.tracks.empty() &&
+                transactionManifest.clips.empty(),
+            "transaction command undo rolls back all subcommands");
 
     auto moveClip = lamusica::commands::makeMoveClipCommand("cmd-3", "audit-3", "clip-1", 24000);
     require(moveClip->preview(commandManifest) == "Move clip \"clip-1\" to sample 24000",
@@ -582,6 +669,52 @@ int main() {
     require(reversedClip.interleavedSamples.front() == 5.0F &&
                 reversedClip.interleavedSamples.back() == 2.0F,
             "audio clip render applies source offset and reverse metadata");
+    fadeRenderClip.reversed = false;
+    fadeRenderClip.sourceOffsetSamples = 0;
+    const lamusica::session::ClipGainEnvelope clipEnvelope{
+        .clipId = "fade-render",
+        .points = {{.samplePosition = 0, .gain = 0.0F}, {.samplePosition = 3, .gain = 1.0F}}};
+    const auto envelopedClip =
+        lamusica::session::renderClipRegionWithEnvelope(fadeRenderClip, clipSource, clipEnvelope);
+    require(envelopedClip.interleavedSamples.front() == 0.0F &&
+                std::abs(envelopedClip.interleavedSamples.back() - 3.0F) < 0.000001F &&
+                clipSource.interleavedSamples[3] == 3.0F,
+            "audio clip envelope renders nondestructive gain automation over clip content");
+    fadeRenderClip.lengthSamples = 6;
+    const lamusica::audio::RenderedAudio takeA{
+        .channels = 1, .frames = 6, .interleavedSamples = {1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F}};
+    const lamusica::audio::RenderedAudio takeB{
+        .channels = 1,
+        .frames = 6,
+        .interleavedSamples = {10.0F, 20.0F, 30.0F, 40.0F, 50.0F, 60.0F}};
+    const lamusica::session::ClipTakeLane clipTakeLane{
+        .clipId = "fade-render",
+        .takes = {{.id = "take-a", .name = "Take A", .lengthSamples = 6},
+                  {.id = "take-b", .name = "Take B", .lengthSamples = 6}}};
+    const lamusica::session::ClipComp clipComp{
+        .clipId = "fade-render",
+        .segments = {{.takeId = "take-a", .clipStartSample = 0, .lengthSamples = 3},
+                     {.takeId = "take-b", .clipStartSample = 3, .lengthSamples = 3}}};
+    const std::vector<lamusica::session::ClipTakeSource> takeSources{
+        {.takeId = "take-a", .audio = takeA}, {.takeId = "take-b", .audio = takeB}};
+    const auto compedClip =
+        lamusica::session::renderCompedClip(fadeRenderClip, clipTakeLane, clipComp, takeSources);
+    require(compedClip.interleavedSamples[0] == 1.0F && compedClip.interleavedSamples[2] == 3.0F &&
+                compedClip.interleavedSamples[3] == 10.0F &&
+                compedClip.interleavedSamples[5] == 30.0F && takeB.interleavedSamples[0] == 10.0F,
+            "audio clip comping renders selected take segments nondestructively");
+    bool rejectedOverlappingComp = false;
+    try {
+        const lamusica::session::ClipComp overlappingComp{
+            .clipId = "fade-render",
+            .segments = {{.takeId = "take-a", .clipStartSample = 0, .lengthSamples = 4},
+                         {.takeId = "take-b", .clipStartSample = 3, .lengthSamples = 2}}};
+        (void)lamusica::session::renderCompedClip(fadeRenderClip, clipTakeLane, overlappingComp,
+                                                  takeSources);
+    } catch (const std::exception&) {
+        rejectedOverlappingComp = true;
+    }
+    require(rejectedOverlappingComp, "audio clip comping rejects overlapping edit boundaries");
     const lamusica::audio::RenderedAudio abruptLeft{
         .channels = 1,
         .frames = 8,
@@ -634,12 +767,56 @@ int main() {
     require(history.undo(commandManifest).ok, "add clip command undoes");
     require(commandManifest.clips.empty(), "add clip undo removes clip");
 
+    auto setProjectName = lamusica::commands::makeSetProjectNameCommand(
+        "cmd-project-name", "audit-project-name", "Command Project");
+    require(setProjectName->preview(commandManifest) == "Rename project to \"Command Project\"",
+            "set project name command previews");
+    require(history.execute(commandManifest, std::move(setProjectName)).ok,
+            "set project name command applies");
+    require(commandManifest.name == "Command Project", "set project name command mutates manifest");
+    require(history.undo(commandManifest).ok, "set project name command undoes");
+    require(commandManifest.name == "Untitled", "set project name undo restores manifest name");
+    auto addMarker = lamusica::commands::makeAddMarkerCommand(
+        "cmd-marker-add", "audit-marker-add",
+        {.id = "marker-command", .name = "Verse", .samplePosition = 96000});
+    require(history.execute(commandManifest, std::move(addMarker)).ok,
+            "add marker command applies");
+    require(commandManifest.markers.size() == 1 &&
+                commandManifest.markers.front().samplePosition == 96000,
+            "add marker command mutates manifest");
+    auto removeMarker = lamusica::commands::makeRemoveMarkerCommand(
+        "cmd-marker-remove", "audit-marker-remove", "marker-command");
+    require(history.execute(commandManifest, std::move(removeMarker)).ok,
+            "remove marker command applies");
+    require(commandManifest.markers.empty(), "remove marker command mutates manifest");
+    require(history.undo(commandManifest).ok, "remove marker command undoes");
+    require(commandManifest.markers.size() == 1, "remove marker undo restores marker");
+    require(history.undo(commandManifest).ok, "add marker command undoes");
+    require(commandManifest.markers.empty(), "add marker undo removes marker");
+    auto addTempo = lamusica::commands::makeAddTempoEventCommand(
+        "cmd-tempo-add", "audit-tempo-add", {.samplePosition = 48000, .bpm = 90.0});
+    require(history.execute(commandManifest, std::move(addTempo)).ok,
+            "add tempo event command applies");
+    require(commandManifest.tempoMap.size() == 2 &&
+                commandManifest.tempoMap.front().samplePosition == 0 &&
+                commandManifest.tempoMap.back().samplePosition == 48000,
+            "add tempo event command keeps tempo map sorted");
+    require(history.undo(commandManifest).ok, "add tempo event command undoes");
+    require(commandManifest.tempoMap.size() == 1, "add tempo event undo restores tempo map");
+
     const auto registeredCommands = lamusica::commands::registeredProjectCommandNames();
-    require(std::ranges::contains(registeredCommands, std::string{"add_track"}) &&
-                std::ranges::contains(registeredCommands, std::string{"add_clip"}) &&
-                std::ranges::contains(registeredCommands, std::string{"add_routing_connection"}) &&
-                std::ranges::contains(registeredCommands, std::string{"remove_routing_connection"}),
-            "command registry lists project command names");
+    require(
+        std::ranges::contains(registeredCommands, std::string{"add_track"}) &&
+            std::ranges::contains(registeredCommands, std::string{"add_clip"}) &&
+            std::ranges::contains(registeredCommands, std::string{"set_clip_render_properties"}) &&
+            std::ranges::contains(registeredCommands, std::string{"slip_clip"}) &&
+            std::ranges::contains(registeredCommands, std::string{"add_routing_connection"}) &&
+            std::ranges::contains(registeredCommands, std::string{"remove_routing_connection"}) &&
+            std::ranges::contains(registeredCommands, std::string{"set_project_name"}) &&
+            std::ranges::contains(registeredCommands, std::string{"add_marker"}) &&
+            std::ranges::contains(registeredCommands, std::string{"remove_marker"}) &&
+            std::ranges::contains(registeredCommands, std::string{"add_tempo_event"}),
+        "command registry lists project command names");
     auto journalTrack =
         lamusica::commands::makeAddTrackCommand("journal-track", "journal-audit-track",
                                                 {.id = "journal-track",
@@ -652,24 +829,61 @@ int main() {
         lamusica::commands::makeAddClipCommand("journal-clip", "journal-audit-clip",
                                                {.id = "journal-clip",
                                                 .trackId = "journal-track",
-                                                .type = lamusica::session::ClipType::Audio,
+                                                .type = lamusica::session::ClipType::Midi,
                                                 .startSample = 128,
-                                                .lengthSamples = 512});
+                                                .lengthSamples = 512,
+                                                .sourceOffsetSamples = 32,
+                                                .fadeInSamples = 8,
+                                                .fadeOutSamples = 16,
+                                                .gainDb = -3.0F,
+                                                .muted = true,
+                                                .reversed = true,
+                                                .assetId = "journal-asset"});
     auto journalRename = lamusica::commands::makeSetTrackNameCommand(
         "journal-rename", "journal-audit-rename", "journal-track", "Journal Renamed");
+    auto journalSlip = lamusica::commands::makeSlipClipCommand("journal-slip", "journal-audit-slip",
+                                                               "journal-clip", 96);
     auto journalAddRoute = lamusica::commands::makeAddRoutingConnectionCommand(
         "journal-route", "journal-audit-route",
         {.sourceTrackId = "journal-track", .destinationTrackId = "journal-bus"});
     auto journalRemoveRoute = lamusica::commands::makeRemoveRoutingConnectionCommand(
         "journal-remove-route", "journal-audit-remove-route",
         {.sourceTrackId = "journal-track", .destinationTrackId = "journal-bus"});
+    auto journalProjectName = lamusica::commands::makeSetProjectNameCommand(
+        "journal-project-name", "journal-audit-project-name", "Journal Project");
+    auto journalMarker = lamusica::commands::makeAddMarkerCommand(
+        "journal-marker", "journal-audit-marker",
+        {.id = "journal-marker", .name = "Drop", .samplePosition = 12000});
+    auto journalTempo = lamusica::commands::makeAddTempoEventCommand(
+        "journal-tempo", "journal-audit-tempo", {.samplePosition = 24000, .bpm = 132.0});
     std::vector<std::string> serializedJournal;
     serializedJournal.push_back(journalTrack->serialize());
     serializedJournal.push_back(journalBus->serialize());
     serializedJournal.push_back(journalClip->serialize());
     serializedJournal.push_back(journalRename->serialize());
+    serializedJournal.push_back(journalSlip->serialize());
     serializedJournal.push_back(journalAddRoute->serialize());
     serializedJournal.push_back(journalRemoveRoute->serialize());
+    serializedJournal.push_back(journalProjectName->serialize());
+    serializedJournal.push_back(journalMarker->serialize());
+    serializedJournal.push_back(journalTempo->serialize());
+    std::vector<lamusica::commands::CommandPtr> journalTransactionCommands;
+    journalTransactionCommands.push_back(lamusica::commands::makeAddTrackCommand(
+        "journal-transaction-track", "journal-transaction-audit-track",
+        {.id = "journal-transaction-track",
+         .name = "Journal Transaction",
+         .type = lamusica::session::TrackType::Audio}));
+    journalTransactionCommands.push_back(lamusica::commands::makeAddClipCommand(
+        "journal-transaction-clip", "journal-transaction-audit-clip",
+        {.id = "journal-transaction-clip",
+         .trackId = "journal-transaction-track",
+         .type = lamusica::session::ClipType::Audio,
+         .startSample = 0,
+         .lengthSamples = 24000}));
+    auto journalTransaction = std::make_unique<lamusica::commands::TransactionCommand>(
+        "journal-transaction", "journal-transaction-audit", "transaction",
+        std::move(journalTransactionCommands));
+    serializedJournal.push_back(journalTransaction->serialize());
     lamusica::session::ProjectManifest replayedManifest;
     const auto replayReport =
         lamusica::commands::replaySerializedCommands(replayedManifest, serializedJournal);
@@ -678,12 +892,27 @@ int main() {
                     replayReport.results,
                     [](const lamusica::commands::CommandResult& result) { return result.ok; }),
             "serialized command journal replays successfully");
-    require(replayedManifest.tracks.size() == 2 &&
+    require(replayedManifest.tracks.size() == 3 && replayedManifest.name == "Journal Project" &&
                 replayedManifest.tracks.front().name == "Journal Renamed" &&
-                replayedManifest.clips.size() == 1 &&
+                replayedManifest.clips.size() == 2 &&
                 replayedManifest.clips.front().trackId == "journal-track" &&
-                replayedManifest.routing.empty(),
+                replayedManifest.clips.front().type == lamusica::session::ClipType::Midi &&
+                replayedManifest.clips.front().sourceOffsetSamples == 96 &&
+                replayedManifest.clips.front().fadeOutSamples == 16 &&
+                replayedManifest.clips.front().gainDb == -3.0F &&
+                replayedManifest.clips.front().muted && replayedManifest.clips.front().reversed &&
+                replayedManifest.clips.front().assetId == "journal-asset" &&
+                replayedManifest.clips.back().id == "journal-transaction-clip" &&
+                replayedManifest.markers.size() == 1 &&
+                replayedManifest.markers.front().id == "journal-marker" &&
+                replayedManifest.tempoMap.size() == 2 &&
+                replayedManifest.tempoMap.back().bpm == 132.0 && replayedManifest.routing.empty(),
             "serialized command replay deterministically rebuilds manifest state");
+    auto replayedTransactionCommand =
+        lamusica::commands::commandFromSerialized(journalTransaction->serialize());
+    lamusica::session::ProjectManifest replayedTransactionManifest;
+    require(replayedTransactionCommand->validate(replayedTransactionManifest).ok,
+            "serialized transaction command validates dependent child commands");
     lamusica::session::ProjectManifest failedReplayManifest;
     const auto failedReplay = lamusica::commands::replaySerializedCommands(
         failedReplayManifest, {serializedJournal[2], serializedJournal[0]});
@@ -701,8 +930,18 @@ int main() {
         {lamusica::mcp_bridge::Capability::ReadOnly, lamusica::mcp_bridge::Capability::Edit});
     require(!token.empty(), "MCP daemon attach returns token");
     require(daemonSession.canMutateProject(), "MCP daemon edit capability allows mutation");
+    daemonSession.recordRead("project_summary");
+    daemonSession.markConnectionLost();
+    require(daemonSession.connectionInterrupted() && !daemonSession.attached() &&
+                !daemonSession.canMutateProject() && daemonSession.canRecoverConnection(),
+            "MCP daemon lost connection clears active capabilities but preserves recovery state");
+    require(daemonSession.recoverConnection() && daemonSession.canMutateProject() &&
+                daemonSession.readAuditLog().size() == 1,
+            "MCP daemon recovers lost connection without corrupting session audit state");
     daemonSession.detachProject();
     require(!daemonSession.attached(), "MCP daemon detaches project");
+    require(!daemonSession.canRecoverConnection(),
+            "MCP daemon explicit detach clears recovery state");
     require(lamusica::mcp_bridge::serializeProtocolResponse(
                 lamusica::mcp_bridge::handleProtocolLine(daemonSession, "health")) ==
                 "ok health=ok state=idle",
@@ -713,6 +952,12 @@ int main() {
             "MCP protocol attaches project");
     require(!daemonSession.canMutateProject(),
             "MCP protocol read-only attachment cannot mutate project");
+    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "connection_lost").ok &&
+                daemonSession.connectionInterrupted(),
+            "MCP protocol records interrupted app connection");
+    require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "recover").ok &&
+                daemonSession.attached() && !daemonSession.canMutateProject(),
+            "MCP protocol recovers interrupted read-only attachment");
     require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "can_mutate").body == "false",
             "MCP protocol reports mutate scope");
     require(lamusica::mcp_bridge::handleProtocolLine(daemonSession, "detach").ok,
@@ -770,6 +1015,25 @@ int main() {
     lamusica::audio::TransportState queryTransport;
     queryTransport.playing = true;
     queryTransport.samplePosition = 12000;
+    lamusica::session::MixerState queryMixer;
+    queryMixer.channels.push_back({.id = "query-audio",
+                                   .name = "Query Audio",
+                                   .type = lamusica::session::ChannelType::Audio,
+                                   .sends = {{.id = "query-send",
+                                              .destinationChannelId = "query-return",
+                                              .gainDb = -6.0F,
+                                              .preFader = true}}});
+    queryMixer.channels.push_back({.id = "query-return",
+                                   .name = "Query Return",
+                                   .type = lamusica::session::ChannelType::Return});
+    queryMixer.channels.push_back(
+        {.id = "query-bus", .name = "Query Bus", .type = lamusica::session::ChannelType::Group});
+    queryMixer.routing.push_back(
+        {.sourceChannelId = "query-audio", .destinationChannelId = "query-bus"});
+    queryMixer.sidechains.push_back({.id = "query-sidechain",
+                                     .sourceChannelId = "query-audio",
+                                     .destinationChannelId = "query-bus",
+                                     .targetInsertId = "query-compressor"});
     lamusica::session::AssetCatalog queryCatalog;
     queryCatalog.projectRoot = "/project";
     queryCatalog.assets.push_back({.id = "catalog-asset",
@@ -784,6 +1048,8 @@ int main() {
                                      .peakAmplitude = 0.5F,
                                      .rmsAmplitude = 0.25F,
                                      .loudnessLufs = -12.0F,
+                                     .tempoBpm = 120.0,
+                                     .musicalKey = "A major",
                                      .transientSamples = {0, 12000}});
     queryCatalog.waveforms.push_back(
         {.assetId = "catalog-asset",
@@ -813,6 +1079,17 @@ int main() {
     require(lamusica::mcp_bridge::routingJson(queryManifest).find("destinationTrackId") !=
                 std::string::npos,
             "MCP manifest routing query has route endpoints");
+    const auto mixerRoutingJson = lamusica::mcp_bridge::routingJson(queryMixer);
+    require(mixerRoutingJson.find("\"sends\"") != std::string::npos &&
+                mixerRoutingJson.find("\"id\":\"query-send\"") != std::string::npos &&
+                mixerRoutingJson.find("\"destination\":\"query-return\"") != std::string::npos &&
+                mixerRoutingJson.find("\"preFader\":true") != std::string::npos,
+            "MCP mixer routing query includes sends");
+    require(mixerRoutingJson.find("\"sidechains\"") != std::string::npos &&
+                mixerRoutingJson.find("\"id\":\"query-sidechain\"") != std::string::npos &&
+                mixerRoutingJson.find("\"targetInsertId\":\"query-compressor\"") !=
+                    std::string::npos,
+            "MCP mixer routing query includes sidechain routes");
     require(lamusica::mcp_bridge::pluginsJson(queryManifest).find("query-plugin") !=
                 std::string::npos,
             "MCP project plugins query includes plugin references");
@@ -834,6 +1111,10 @@ int main() {
     require(lamusica::mcp_bridge::assetCatalogJson(queryCatalog).find("\"waveform\"") !=
                 std::string::npos,
             "MCP asset catalog query includes waveform analysis metadata");
+    require(
+        lamusica::mcp_bridge::assetCatalogJson(queryCatalog).find("\"musicalKey\":\"A major\"") !=
+            std::string::npos,
+        "MCP asset catalog query includes tempo and key analysis metadata");
     require(lamusica::mcp_bridge::renderCapabilitiesJson().find("\"wavPcm16\":true") !=
                 std::string::npos,
             "MCP render capabilities describe WAV support");
@@ -864,6 +1145,10 @@ int main() {
                                                      "query automation_range 0 48000 0 1")
                     .body.find("\"tool\":\"automation_range\"") != std::string::npos,
             "MCP protocol exposes ranged automation query");
+    require(lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
+                                                     "query clips_range 0 96000 0 1")
+                    .body.find("\"tool\":\"clips_range\"") != std::string::npos,
+            "MCP protocol exposes ranged clip query");
     require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState,
                                                       "query automation_range 48000 0")
                  .ok,
@@ -876,7 +1161,7 @@ int main() {
         "MCP protocol rejects unrestricted filesystem query tools");
     require(!lamusica::mcp_bridge::handleProtocolLine(querySession, queryState, "query shell").ok,
             "MCP protocol rejects shell-like query tools");
-    require(querySession.readAuditLog().size() == 3 &&
+    require(querySession.readAuditLog().size() == 4 &&
                 querySession.readAuditLog().front().toolName == "tracks",
             "MCP protocol records successful read queries outside the project manifest");
     const auto queryStress =
@@ -886,7 +1171,8 @@ int main() {
             "MCP large project clip query is paged");
     const auto rangedClipQuery = lamusica::mcp_bridge::clipsInRangeJson(
         queryStress, {.startSample = 0, .endSample = 96000}, {.offset = 0, .limit = 3});
-    require(rangedClipQuery.find("\"range\":{\"startSample\":0,\"endSample\":96000}") !=
+    require(rangedClipQuery.find("\"tool\":\"clips_range\"") != std::string::npos &&
+                rangedClipQuery.find("\"range\":{\"startSample\":0,\"endSample\":96000}") !=
                     std::string::npos &&
                 rangedClipQuery.find("\"limit\":3") != std::string::npos &&
                 rangedClipQuery.find("\"total\":32") != std::string::npos,
@@ -941,6 +1227,16 @@ int main() {
         lamusica::mcp_bridge::redoLastCommand(editSession, editManifest, editHistory);
     require(redoResult.applied && editManifest.tracks.size() == 1,
             "MCP edit redo uses command history");
+    auto mcpRenameTrack = lamusica::mcp_bridge::applyCommand(
+        editSession, editManifest, editHistory,
+        lamusica::commands::makeSetTrackNameCommand("mcp-label", "mcp-label-audit", "mcp-track",
+                                                    "MCP Label"));
+    require(mcpRenameTrack.applied && editManifest.tracks.front().name == "MCP Label",
+            "MCP label edit applies through command history");
+    const auto undoMcpRename =
+        lamusica::mcp_bridge::undoLastCommand(editSession, editManifest, editHistory);
+    require(undoMcpRename.applied && editManifest.tracks.front().name == "MCP Track",
+            "MCP label edit undo restores track name");
     editManifest.clips.push_back({.id = "mcp-cut-clip",
                                   .trackId = "mcp-track",
                                   .type = lamusica::session::ClipType::Audio,
@@ -974,11 +1270,22 @@ int main() {
             {.sourceTrackId = "mcp-track", .destinationTrackId = "mcp-bus"}));
     require(mcpAddRoute.applied && editManifest.routing.size() == 1,
             "MCP routing edit applies through command history");
-    auto mcpRemoveRoute = lamusica::mcp_bridge::applyCommand(
+    auto deniedMcpRemoveRoute = lamusica::mcp_bridge::applyCommand(
         editSession, editManifest, editHistory,
         lamusica::commands::makeRemoveRoutingConnectionCommand(
             "mcp-route-remove", "mcp-route-audit-remove",
             {.sourceTrackId = "mcp-track", .destinationTrackId = "mcp-bus"}));
+    require(!deniedMcpRemoveRoute.applied && deniedMcpRemoveRoute.confirmationRequired &&
+                editManifest.routing.size() == 1,
+            "MCP routing removal requires confirmation before mutation");
+    auto confirmedMcpRemoveRouteCommand = lamusica::commands::makeRemoveRoutingConnectionCommand(
+        "mcp-route-remove", "mcp-route-audit-remove",
+        {.sourceTrackId = "mcp-track", .destinationTrackId = "mcp-bus"});
+    const auto routeConfirmToken =
+        lamusica::mcp_bridge::confirmationTokenFor(*confirmedMcpRemoveRouteCommand);
+    auto mcpRemoveRoute = lamusica::mcp_bridge::applyCommand(
+        editSession, editManifest, editHistory, std::move(confirmedMcpRemoveRouteCommand),
+        {.confirmationToken = routeConfirmToken});
     require(mcpRemoveRoute.applied && editManifest.routing.empty(),
             "MCP routing removal applies through command history");
     const auto undoMcpRemoveRoute =
@@ -1141,10 +1448,24 @@ int main() {
                     *lamusica::session::findInsert(*mcpPluginStore.find("mcp-track"), "mcp-insert"),
                     "gain") == 0.7F,
             "MCP plugin redo reapplies insert state");
-    const auto mcpPluginRemove = lamusica::mcp_bridge::applyPluginCommand(
+    const auto mcpPluginRemovePreview = lamusica::mcp_bridge::previewPluginCommand(
+        editSession, mcpPluginStore,
+        lamusica::mcp_bridge::PluginEditCommand{lamusica::commands::RemovePluginInsertCommand{
+            "mcp-plugin-remove", "mcp-plugin-audit-remove", "mcp-track", "mcp-insert"}});
+    require(mcpPluginRemovePreview.confirmationRequired &&
+                !mcpPluginRemovePreview.confirmationToken.empty(),
+            "MCP plugin remove preview requires confirmation");
+    const auto deniedMcpPluginRemove = lamusica::mcp_bridge::applyPluginCommand(
         editSession, mcpPluginStore, mcpPluginHistory,
         lamusica::mcp_bridge::PluginEditCommand{lamusica::commands::RemovePluginInsertCommand{
             "mcp-plugin-remove", "mcp-plugin-audit-remove", "mcp-track", "mcp-insert"}});
+    require(!deniedMcpPluginRemove.applied && !mcpPluginStore.find("mcp-track")->inserts.empty(),
+            "MCP plugin remove requires confirmation before mutation");
+    const auto mcpPluginRemove = lamusica::mcp_bridge::applyPluginCommand(
+        editSession, mcpPluginStore, mcpPluginHistory,
+        lamusica::mcp_bridge::PluginEditCommand{lamusica::commands::RemovePluginInsertCommand{
+            "mcp-plugin-remove", "mcp-plugin-audit-remove", "mcp-track", "mcp-insert"}},
+        {.confirmationToken = mcpPluginRemovePreview.confirmationToken});
     require(mcpPluginRemove.applied && mcpPluginStore.find("mcp-track")->inserts.empty(),
             "MCP plugin remove applies through history");
 
@@ -1179,10 +1500,14 @@ int main() {
     require(lamusica::mcp_bridge::renderJobJson(renderJob).find("\"type\":\"wav_analysis\"") !=
                 std::string::npos,
             "MCP test tone render includes result manifest");
+    require(renderJob.resultManifestJson.find("\"explicitExport\":true") != std::string::npos,
+            "MCP generated test tone is marked as an explicit export");
     const auto analysisJob = renderQueue.enqueueAnalyzeWav(editSession, "analyze-1", mcpRenderPath);
     require(analysisJob.status == lamusica::mcp_bridge::RenderJobStatus::Completed &&
                 analysisJob.resultManifestJson.find("\"peak\"") != std::string::npos,
             "MCP render queue analyzes WAV outputs");
+    require(analysisJob.resultManifestJson.find("\"explicitExport\":false") != std::string::npos,
+            "MCP analysis of existing WAV is not marked as a generated export");
     const auto mcpBouncePath = std::filesystem::temp_directory_path() / "lamusica-mcp-bounce.wav";
     std::filesystem::remove(mcpBouncePath);
     const lamusica::audio::AudioGraph mcpBounceGraph{
@@ -1204,6 +1529,8 @@ int main() {
     require(bounceJob.status == lamusica::mcp_bridge::RenderJobStatus::Completed &&
                 bounceJob.resultManifestJson.find("\"type\":\"graph_bounce\"") != std::string::npos,
             "MCP render queue bounces selected graph range");
+    require(bounceJob.resultManifestJson.find("\"explicitExport\":true") != std::string::npos,
+            "MCP graph bounce is marked as an explicit export");
     require(std::abs(lamusica::audio::peakAbsoluteSample(
                          lamusica::audio::readPcm16Wav(mcpBouncePath).audio) -
                      0.5F) < 0.001F,
@@ -1406,6 +1733,20 @@ int main() {
     lamusica::session::MidiClipData workflowMidi{.clipId = "workflow-midi"};
     workflowMidi.notes.push_back(
         {.id = "wf-note", .startSample = 0, .lengthSamples = 12000, .pitch = 60});
+    lamusica::mcp_bridge::DaemonSession orchestrationSession;
+    orchestrationSession.attachProject("fixtures/empty.Project.lamusica",
+                                       {lamusica::mcp_bridge::Capability::ReadOnly});
+    const auto deniedWorkflowPlan =
+        lamusica::mcp_bridge::createHarmonizeMidiPlan(orchestrationSession, workflowMidi, 7, 123);
+    require(!deniedWorkflowPlan.allowed && deniedWorkflowPlan.plan.steps.empty(),
+            "workflow plan creation requires orchestration capability");
+    orchestrationSession.attachProject("fixtures/empty.Project.lamusica",
+                                       {lamusica::mcp_bridge::Capability::ReadOnly,
+                                        lamusica::mcp_bridge::Capability::Orchestration});
+    const auto allowedWorkflowPlan =
+        lamusica::mcp_bridge::createHarmonizeMidiPlan(orchestrationSession, workflowMidi, 7, 123);
+    require(allowedWorkflowPlan.allowed && allowedWorkflowPlan.plan.steps.size() == 1,
+            "workflow plan creation allows scoped orchestration capability");
     auto harmonyPlan = lamusica::mcp_bridge::createHarmonizeMidiPlan(workflowMidi, 7, 123);
     require(harmonyPlan.steps.size() == 1, "workflow harmonize creates one step per note");
     require(harmonyPlan.steps.front().commandPreview.find("67") != std::string::npos,
@@ -1488,6 +1829,27 @@ int main() {
             "workflow template library rejects duplicate id");
     require(templateLibrary.find("mix-prep") != nullptr,
             "workflow template library finds stored template");
+    require(!templateLibrary.addTemplate({.id = "invalid-template",
+                                          .name = "",
+                                          .description = "Missing name",
+                                          .workflowType = "mix_preparation"}),
+            "workflow template library rejects incomplete templates");
+    const auto templateJson = lamusica::mcp_bridge::workflowTemplateLibraryJson(templateLibrary);
+    require(templateJson.find("\"workflowType\":\"mix_preparation\"") != std::string::npos,
+            "workflow template library serializes template records");
+    const auto parsedTemplateLibrary =
+        lamusica::mcp_bridge::parseWorkflowTemplateLibrary(templateJson);
+    require(parsedTemplateLibrary.find("mix-prep") != nullptr &&
+                parsedTemplateLibrary.templates().size() == 1,
+            "workflow template library parses serialized templates");
+    const auto templateLibraryPath =
+        std::filesystem::temp_directory_path() / "lamusica-workflow-templates.json";
+    lamusica::mcp_bridge::saveWorkflowTemplateLibrary(templateLibrary, templateLibraryPath);
+    const auto loadedTemplateLibrary =
+        lamusica::mcp_bridge::loadWorkflowTemplateLibrary(templateLibraryPath);
+    require(loadedTemplateLibrary.find("mix-prep") != nullptr,
+            "workflow template library saves and loads from user library file");
+    std::filesystem::remove(templateLibraryPath);
 
     const auto stressFixture =
         lamusica::session::makeStressProjectFixture({.tracks = 4,
@@ -1523,8 +1885,10 @@ int main() {
     require(lamusica::session::thresholdsArePositive({}),
             "benchmark thresholds are positive by default");
     const auto machineContext = lamusica::session::currentMachineContext();
-    require(!machineContext.operatingSystem.empty() && !machineContext.compiler.empty(),
-            "benchmark machine context records environment");
+    require(!machineContext.cpuModel.empty() && machineContext.logicalCores > 0U &&
+                machineContext.memoryMegabytes > 0U && !machineContext.operatingSystem.empty() &&
+                !machineContext.compiler.empty(),
+            "benchmark machine context records CPU memory OS and compiler");
     const auto passingBenchmark = lamusica::session::evaluateBenchmarkResult(
         {.saveLoadMilliseconds = 10.0, .queryMilliseconds = 2.0, .renderRealtimeFactor = 0.5}, {});
     require(passingBenchmark.passed, "benchmark report passes within thresholds");
@@ -1749,6 +2113,12 @@ int main() {
     require(exampleDocument.manifest().clips.size() == 1, "project document opens example clips");
     require(exampleDocument.manifest().routing.size() == 1,
             "project document opens example routing");
+    const auto tutorialDocument =
+        lamusica::session::ProjectDocument::open("fixtures/tutorials/first-song.Project.lamusica");
+    require(tutorialDocument.manifest().markers.size() == 2 &&
+                tutorialDocument.manifest().tracks.size() == 3 &&
+                tutorialDocument.manifest().clips.size() == 2,
+            "project document opens redistributable tutorial fixture");
     lamusica::session::ApplicationSession appSession;
     const auto appShellProject =
         std::filesystem::temp_directory_path() / "lamusica-app-shell.Project.lamusica";
@@ -1769,6 +2139,59 @@ int main() {
     std::filesystem::remove_all(appShellProject);
     require(!appSession.recoverLastProject(appShellProject),
             "application shell startup ignores missing recovery project");
+    lamusica::session::ApplicationPreferences appPreferences{
+        .audioDeviceId = "built-in-output",
+        .enabledMidiInputIds = {"keyboard"},
+        .pluginSearchPaths = {"/Library/Audio/Plug-Ins/VST3"},
+        .mcpEnabled = true,
+        .allowMcpProjectMutation = true,
+        .keyboardShortcuts = {{.command = "transport.play", .keyEquivalent = "space"}},
+        .allowUserFolderScanning = true,
+        .shareDiagnostics = false};
+    appSession.setPreferences(appPreferences);
+    require(appSession.preferences().audioDeviceId == "built-in-output" &&
+                appSession.preferences().enabledMidiInputIds.front() == "keyboard" &&
+                appSession.preferences().pluginSearchPaths.front().find("VST3") !=
+                    std::string::npos &&
+                appSession.preferences().mcpEnabled &&
+                appSession.preferences().allowMcpProjectMutation &&
+                appSession.preferences().allowUserFolderScanning,
+            "application preferences store audio MIDI plugin MCP and privacy settings");
+    appSession.setKeyboardShortcut("transport.play", "p");
+    require(appSession.preferences().keyboardShortcuts.size() == 1 &&
+                appSession.preferences().keyboardShortcuts.front().keyEquivalent == "p",
+            "application preferences update keyboard shortcuts by command");
+    const auto appShellRoutingProject =
+        std::filesystem::temp_directory_path() / "lamusica-app-shell-routing.Project.lamusica";
+    std::filesystem::remove_all(appShellRoutingProject);
+    appSession.createProject(appShellRoutingProject, "App Routing");
+    require(appSession.focusedPanel() == lamusica::session::ApplicationPanel::Timeline,
+            "application shell defaults keyboard focus to timeline");
+    appSession.focusPanel(lamusica::session::ApplicationPanel::Mixer);
+    const auto mixerCutRoute = appSession.routeMenuCommand("edit.cut");
+    require(mixerCutRoute.handled && mixerCutRoute.enabled &&
+                mixerCutRoute.panel == lamusica::session::ApplicationPanel::Mixer,
+            "application shell routes edit menu commands to focused primary panel");
+    const auto browserRoute = appSession.routeMenuCommand("view.browser");
+    require(browserRoute.handled && browserRoute.enabled &&
+                appSession.focusedPanel() == lamusica::session::ApplicationPanel::Browser,
+            "application shell view commands update focused primary panel");
+    const auto playRoute = appSession.routeMenuCommand("transport.play");
+    require(playRoute.handled && playRoute.enabled &&
+                appSession.focusedPanel() == lamusica::session::ApplicationPanel::Transport,
+            "application shell transport commands route to transport panel");
+    bool rejectedUnsafeMcpPreferences = false;
+    try {
+        appSession.setPreferences({.mcpEnabled = false, .allowMcpProjectMutation = true});
+    } catch (const std::exception&) {
+        rejectedUnsafeMcpPreferences = true;
+    }
+    require(rejectedUnsafeMcpPreferences,
+            "application preferences reject MCP mutation when MCP is disabled");
+    appSession.closeProject();
+    require(!appSession.routeMenuCommand("project.save").enabled,
+            "application shell disables project menu commands without an open project");
+    std::filesystem::remove_all(appShellRoutingProject);
 
     manifest.clips.push_back({.id = "clip-a",
                               .trackId = "track-1",
@@ -1844,6 +2267,35 @@ int main() {
     require(timelineView.visibleRange.length() == 48000 &&
                 timelineView.visibleRange.contains(48000),
             "timeline zoom keeps anchor sample visible with stable range dimensions");
+    lamusica::session::setTimelinePlayhead(timelineView, 48000);
+    const auto timelineLayout = lamusica::session::buildTimelineLayout(
+        manifest, timelineView,
+        {.viewportWidth = 1000.0, .headerWidth = 200.0, .rulerHeight = 24.0, .trackHeight = 40.0});
+    require(timelineLayout.trackHeaders.size() == manifest.tracks.size() &&
+                timelineLayout.lanes.size() == manifest.tracks.size() &&
+                timelineLayout.trackHeaders.front().bounds.width == 200.0 &&
+                timelineLayout.lanes.front().bounds.height == 40.0,
+            "timeline layout creates stable track headers and lanes");
+    require(std::ranges::any_of(timelineLayout.clips,
+                                [](const lamusica::session::TimelineClipLayout& clip) {
+                                    return clip.clipId == "clip-a" && clip.selected &&
+                                           clip.bounds.width > 1.0;
+                                }),
+            "timeline layout positions visible selected clips");
+    require(timelineLayout.loopRegion.has_value() && timelineLayout.loopRegion->x == 200.0 &&
+                timelineLayout.loopRegion->width == 800.0,
+            "timeline layout maps visible loop region to content bounds");
+    require(std::ranges::any_of(timelineLayout.markers,
+                                [](const lamusica::session::TimelineMarkerLayout& marker) {
+                                    return marker.markerId == "marker-1";
+                                }) &&
+                std::ranges::any_of(timelineLayout.rulerTicks,
+                                    [](const lamusica::session::TimelineRulerTick& tick) {
+                                        return tick.samplePosition == 48000;
+                                    }),
+            "timeline layout includes markers and ruler ticks");
+    require(timelineLayout.playheadX > 200.0 && timelineLayout.playheadX < 1000.0,
+            "timeline layout maps playhead inside visible content");
     bool rejectedInvalidLoopRegion = false;
     try {
         lamusica::session::setTimelineLoopRegion(timelineView,
@@ -1925,6 +2377,16 @@ int main() {
             "MIDI humanize respects timing and velocity bounds");
     lamusica::session::setNoteLengths(midiClip, 4800);
     require(midiClip.notes.front().lengthSamples == 4800, "MIDI note length transform applies");
+    const auto musicalTiming = lamusica::session::midiNoteToMusicalTiming(
+        {.id = "musical-note", .startSample = 24000, .lengthSamples = 12000},
+        {.sampleRate = 48000.0, .tempoBpm = 120.0});
+    require(musicalTiming.startPpq == 1.0 && musicalTiming.lengthPpq == 0.5,
+            "MIDI note timing converts samples to PPQ");
+    const auto sampleTimedNote = lamusica::session::midiNoteFromMusicalTiming(
+        {.id = "sample-note", .pitch = 67}, {.startPpq = 2.0, .lengthPpq = 0.25},
+        {.sampleRate = 44100.0, .tempoBpm = 60.0});
+    require(sampleTimedNote.startSample == 88200 && sampleTimedNote.lengthSamples == 11025,
+            "MIDI note timing converts PPQ to sample positions");
     const auto orderedNotes = lamusica::session::notesInPlaybackOrder(midiClip);
     require(orderedNotes.front().id == "note-a", "MIDI playback order sorts by sample");
     midiClip.controlChanges.push_back(
@@ -2066,8 +2528,118 @@ int main() {
     require(editMidiNote.undo(midiStore).ok, "MIDI note edit command undoes");
     require(!midiStore.find("midi-command-clip")->notes.front().muted,
             "MIDI note edit undo restores mute");
+    lamusica::commands::SplitMidiNoteCommand splitMidiNote{"cmd-midi-3b",          "audit-midi-3b",
+                                                           "midi-command-clip",    "note-command-1",
+                                                           "note-command-1-right", 13201};
+    require(splitMidiNote.apply(midiStore).ok, "MIDI note split command applies");
+    require(midiStore.find("midi-command-clip")->notes.size() == 2 &&
+                midiStore.find("midi-command-clip")->notes.front().lengthSamples == 1200 &&
+                midiStore.find("midi-command-clip")->notes.back().startSample == 13201,
+            "MIDI note split command creates right-hand note");
+    require(splitMidiNote.undo(midiStore).ok, "MIDI note split command undoes");
+    require(midiStore.find("midi-command-clip")->notes.size() == 1 &&
+                midiStore.find("midi-command-clip")->notes.front().lengthSamples == 2400,
+            "MIDI note split undo restores original note length");
+    lamusica::commands::AddMidiControlChangeCommand addMidiControl{
+        "cmd-midi-3c",
+        "audit-midi-3c",
+        "midi-command-clip",
+        {.samplePosition = 12200, .controller = 74, .value = 96, .channel = 1}};
+    require(addMidiControl.apply(midiStore).ok, "MIDI CC command applies");
+    require(midiStore.find("midi-command-clip")->controlChanges.size() == 1 &&
+                midiStore.find("midi-command-clip")->notes.size() == 1,
+            "MIDI CC command edits controller lane without corrupting notes");
+    require(addMidiControl.undo(midiStore).ok, "MIDI CC command undoes");
+    require(midiStore.find("midi-command-clip")->controlChanges.empty() &&
+                midiStore.find("midi-command-clip")->notes.size() == 1,
+            "MIDI CC undo restores controller lane independently");
+    lamusica::commands::AddMidiPitchBendCommand addMidiPitchBend{
+        "cmd-midi-3d",
+        "audit-midi-3d",
+        "midi-command-clip",
+        {.samplePosition = 12300, .value = -2048, .channel = 1}};
+    require(addMidiPitchBend.apply(midiStore).ok, "MIDI pitch bend command applies");
+    require(midiStore.find("midi-command-clip")->pitchBends.size() == 1 &&
+                midiStore.find("midi-command-clip")->notes.size() == 1,
+            "MIDI pitch bend command edits controller lane without corrupting notes");
+    require(addMidiPitchBend.undo(midiStore).ok, "MIDI pitch bend command undoes");
+    require(midiStore.find("midi-command-clip")->pitchBends.empty() &&
+                midiStore.find("midi-command-clip")->notes.size() == 1,
+            "MIDI pitch bend undo restores controller lane independently");
+    lamusica::commands::AddMidiAftertouchCommand addMidiAftertouch{
+        "cmd-midi-3e",
+        "audit-midi-3e",
+        "midi-command-clip",
+        {.samplePosition = 12400, .pressure = 92, .channel = 1, .pitch = 67, .polyphonic = true}};
+    require(addMidiAftertouch.apply(midiStore).ok, "MIDI aftertouch command applies");
+    require(midiStore.find("midi-command-clip")->aftertouch.size() == 1 &&
+                midiStore.find("midi-command-clip")->notes.size() == 1,
+            "MIDI aftertouch command edits controller lane without corrupting notes");
+    require(addMidiAftertouch.undo(midiStore).ok, "MIDI aftertouch command undoes");
+    require(midiStore.find("midi-command-clip")->aftertouch.empty() &&
+                midiStore.find("midi-command-clip")->notes.size() == 1,
+            "MIDI aftertouch undo restores controller lane independently");
+    lamusica::commands::AddMidiProgramChangeCommand addMidiProgram{
+        "cmd-midi-3f",
+        "audit-midi-3f",
+        "midi-command-clip",
+        {.samplePosition = 12500, .program = 12, .channel = 1}};
+    require(addMidiProgram.apply(midiStore).ok, "MIDI program change command applies");
+    require(midiStore.find("midi-command-clip")->programChanges.size() == 1 &&
+                midiStore.find("midi-command-clip")->notes.size() == 1,
+            "MIDI program change command edits event list without corrupting notes");
+    require(addMidiProgram.undo(midiStore).ok, "MIDI program change command undoes");
+    require(midiStore.find("midi-command-clip")->programChanges.empty() &&
+                midiStore.find("midi-command-clip")->notes.size() == 1,
+            "MIDI program change undo restores event list independently");
     require(addMidiNote.undo(midiStore).ok, "add MIDI note command undoes");
     require(midiStore.find("midi-command-clip")->notes.empty(), "MIDI add undo removes note");
+
+    lamusica::commands::MidiClipStore midiTransformStore;
+    auto& midiTransformClip = midiTransformStore.getOrCreate("midi-transform-clip");
+    midiTransformClip.notes.push_back(
+        {.id = "vel-a", .startSample = 1000, .lengthSamples = 1200, .pitch = 60, .velocity = 80});
+    midiTransformClip.notes.push_back(
+        {.id = "vel-b", .startSample = 4000, .lengthSamples = 1000, .pitch = 64, .velocity = 100});
+    lamusica::commands::TransformMidiVelocityCommand velocityMidi{
+        "cmd-midi-4", "audit-midi-4", "midi-transform-clip", {.add = 10, .scale = 0.5F}};
+    require(velocityMidi.apply(midiTransformStore).ok, "MIDI velocity command applies");
+    require(midiTransformStore.find("midi-transform-clip")->notes.front().velocity == 50,
+            "MIDI velocity command mutates note velocities");
+    require(velocityMidi.undo(midiTransformStore).ok, "MIDI velocity command undoes");
+    require(midiTransformStore.find("midi-transform-clip")->notes.front().velocity == 80,
+            "MIDI velocity undo restores note velocities");
+    lamusica::commands::HumanizeMidiClipCommand humanizeMidi{
+        "cmd-midi-5",
+        "audit-midi-5",
+        "midi-transform-clip",
+        {.maxTimingOffsetSamples = 24, .maxVelocityOffset = 4, .seed = 7}};
+    auto expectedHumanized = *midiTransformStore.find("midi-transform-clip");
+    lamusica::session::humanizeNotes(
+        expectedHumanized, {.maxTimingOffsetSamples = 24, .maxVelocityOffset = 4, .seed = 7});
+    require(humanizeMidi.apply(midiTransformStore).ok, "MIDI humanize command applies");
+    require(midiTransformStore.find("midi-transform-clip")->notes.front().startSample ==
+                    expectedHumanized.notes.front().startSample &&
+                midiTransformStore.find("midi-transform-clip")->notes.front().velocity ==
+                    expectedHumanized.notes.front().velocity,
+            "MIDI humanize command is deterministic for a seed");
+    require(humanizeMidi.undo(midiTransformStore).ok, "MIDI humanize command undoes");
+    lamusica::commands::SetMidiNoteLengthsCommand lengthMidi{"cmd-midi-6", "audit-midi-6",
+                                                             "midi-transform-clip", 2400};
+    require(lengthMidi.apply(midiTransformStore).ok, "MIDI length command applies");
+    require(midiTransformStore.find("midi-transform-clip")->notes.front().lengthSamples == 2400,
+            "MIDI length command mutates note lengths");
+    require(lengthMidi.undo(midiTransformStore).ok, "MIDI length command undoes");
+    require(midiTransformStore.find("midi-transform-clip")->notes.front().lengthSamples == 1200,
+            "MIDI length undo restores note lengths");
+    lamusica::commands::LegatoMidiClipCommand legatoMidi{"cmd-midi-7", "audit-midi-7",
+                                                         "midi-transform-clip"};
+    require(legatoMidi.apply(midiTransformStore).ok, "MIDI legato command applies");
+    require(midiTransformStore.find("midi-transform-clip")->notes.front().lengthSamples == 3000,
+            "MIDI legato command extends notes to the next note");
+    require(legatoMidi.undo(midiTransformStore).ok, "MIDI legato command undoes");
+    require(midiTransformStore.find("midi-transform-clip")->notes.front().lengthSamples == 1200,
+            "MIDI legato undo restores previous clip state");
 
     lamusica::commands::AutomationLaneStore automationStore;
     lamusica::session::AutomationLaneData commandAutomationLane{
@@ -2095,6 +2667,9 @@ int main() {
     require(captureAutomation.apply(automationStore).ok, "automation write command applies");
     require(automationStore.find("automation-command-lane")->regions.front().points.size() == 2,
             "automation write command captures batch points");
+    require(captureAutomation.capturedBatch().laneId == "automation-command-lane" &&
+                captureAutomation.capturedBatch().points.size() == 2,
+            "automation write command exposes captured undoable batch");
     require(captureAutomation.undo(automationStore).ok, "automation write command undoes");
     require(automationStore.find("automation-command-lane")->regions.empty(),
             "automation write undo restores previous lane");
@@ -2156,6 +2731,24 @@ int main() {
     require(!pianoRollView.controllerLanes.back().visible &&
                 pianoRollView.selection.noteIds.size() == 3,
             "piano roll controller lane visibility changes do not corrupt note selection");
+    lamusica::session::AutomationLaneData pianoRollAutomation{
+        .id = "piano-auto-volume",
+        .targetKind = lamusica::session::AutomationTargetKind::Mixer,
+        .targetId = "piano-track",
+        .parameterId = "volumeDb"};
+    lamusica::session::addAutomationPoint(pianoRollAutomation, 120, -6.0F);
+    lamusica::session::addAutomationPoint(pianoRollAutomation, 240, -3.0F);
+    const auto automationControllerEvents = lamusica::session::automationLinkedControllerLaneEvents(
+        {std::array{pianoRollAutomation}},
+        {.type = lamusica::session::ControllerLaneType::Automation,
+         .automationTargetKind = lamusica::session::AutomationTargetKind::Mixer,
+         .automationTargetId = "piano-track",
+         .automationParameterId = "volumeDb"});
+    require(automationControllerEvents.size() == 2 &&
+                automationControllerEvents.front().automationValue == -6.0F &&
+                automationControllerEvents.back().sourceId == "piano-auto-volume" &&
+                pianoRollView.selection.noteIds.size() == 3,
+            "piano roll automation-linked controller lane renders independently from notes");
     lamusica::session::MidiClipData ghostClip{.clipId = "ghost"};
     ghostClip.notes.push_back(
         {.id = "ghost-1", .startSample = 6000, .lengthSamples = 12000, .pitch = 72});
@@ -2170,6 +2763,60 @@ int main() {
     const auto audition = lamusica::session::auditionForNote(pianoRollClip.notes.front(), 3600);
     require(audition.pitch == 60 && audition.lengthSamples == 3600,
             "piano roll audition event follows selected note");
+    lamusica::session::PianoRollLayoutOptions pianoRollLayoutOptions{
+        .visibleRange = {.startSample = 0, .endSample = 48000, .lowPitch = 60, .highPitch = 72},
+        .contentWidth = 480.0F,
+        .keyboardWidth = 80.0F,
+        .noteRowHeight = 10.0F,
+        .controllerLaneHeight = 48.0F,
+        .majorGridSamples = 24000,
+        .minorGridSamples = 12000};
+    const auto pianoRollLayout = lamusica::session::buildPianoRollLayout(
+        pianoRollClip, pianoRollView, pianoRollLayoutOptions);
+    require(pianoRollLayout.noteArea.x == 80.0F && pianoRollLayout.keyboardArea.width == 80.0F &&
+                pianoRollLayout.keys.size() == 13 && pianoRollLayout.gridLines.size() == 5,
+            "piano roll layout builds stable grid and keyboard geometry");
+    require(std::ranges::any_of(pianoRollLayout.notes,
+                                [](const lamusica::session::PianoRollNoteRect& note) {
+                                    return note.noteId == "pr-1" && note.bounds.x == 80.0F &&
+                                           note.bounds.y == 120.0F && note.selected;
+                                }),
+            "piano roll layout exposes selected note drawing rectangles");
+    require(pianoRollLayout.controllerLanes.size() == 1 &&
+                pianoRollLayout.controllerLanes.front().bounds.y == pianoRollLayout.noteArea.height,
+            "piano roll layout gives controller lanes independent bounds");
+    const auto draftedPianoNote =
+        lamusica::session::noteDraftFromGridDrag(pianoRollLayoutOptions, 200.0F, 320.0F, 20.0F);
+    require(draftedPianoNote.startSample == 12000 && draftedPianoNote.lengthSamples == 12000 &&
+                draftedPianoNote.pitch == 70,
+            "piano roll note drawing maps pointer drag to sample and pitch values");
+    lamusica::session::MidiClipData densePianoRollClip{.clipId = "dense-piano-roll"};
+    densePianoRollClip.notes.reserve(4096);
+    for (int index = 0; index < 4096; ++index) {
+        densePianoRollClip.notes.push_back({.id = "dense-" + std::to_string(index),
+                                            .startSample = static_cast<std::int64_t>(index) * 120,
+                                            .lengthSamples = 60,
+                                            .pitch = static_cast<std::uint8_t>(36 + index % 48),
+                                            .velocity = 80});
+    }
+    const auto densePianoRollLayout =
+        lamusica::session::buildPianoRollLayout(densePianoRollClip, {},
+                                                {.visibleRange = {.startSample = 12000,
+                                                                  .endSample = 24000,
+                                                                  .lowPitch = 48,
+                                                                  .highPitch = 72},
+                                                 .contentWidth = 600.0F,
+                                                 .keyboardWidth = 64.0F,
+                                                 .noteRowHeight = 8.0F,
+                                                 .majorGridSamples = 6000,
+                                                 .minorGridSamples = 1000});
+    require(!densePianoRollLayout.notes.empty() && densePianoRollLayout.notes.size() < 4096 &&
+                std::ranges::all_of(densePianoRollLayout.notes,
+                                    [](const lamusica::session::PianoRollNoteRect& note) {
+                                        return note.bounds.x >= 64.0F && note.bounds.x <= 664.0F &&
+                                               note.pitch >= 48 && note.pitch <= 72;
+                                    }),
+            "piano roll dense clips render only visible note rectangles");
 
     lamusica::session::DrumMachinePreset drumPreset{
         .id = "kit-1",
@@ -2206,6 +2853,26 @@ int main() {
     drumPreset.pads.front().velocityLayers = {
         {.minVelocity = 1, .maxVelocity = 63, .assetId = "kick-soft.wav"},
         {.minVelocity = 64, .maxVelocity = 127, .assetId = "kick-hard.wav"}};
+    lamusica::session::assignAssetToPad(
+        drumPreset, "kick", {.minVelocity = 64, .maxVelocity = 127, .assetId = "kick-drop.wav"});
+    require(lamusica::session::findPadById(drumPreset, "kick")->velocityLayers.size() == 2 &&
+                lamusica::session::selectLayerAsset(drumPreset.pads.front(), 120) ==
+                    "kick-drop.wav",
+            "drum machine pad browser assignment replaces matching velocity layer");
+    lamusica::session::assignAssetToPad(
+        drumPreset, "kick", {.minVelocity = 100, .maxVelocity = 127, .assetId = "kick-accent.wav"});
+    require(lamusica::session::findPadById(drumPreset, "kick")->velocityLayers.size() == 3,
+            "drum machine pad browser assignment adds new velocity layer");
+    bool rejectedMissingPadAssignment = false;
+    try {
+        lamusica::session::assignAssetToPad(
+            drumPreset, "missing-pad",
+            {.minVelocity = 1, .maxVelocity = 127, .assetId = "missing.wav"});
+    } catch (const std::exception&) {
+        rejectedMissingPadAssignment = true;
+    }
+    require(rejectedMissingPadAssignment,
+            "drum machine pad browser assignment rejects missing pads");
     const auto drumTriggers = lamusica::session::renderDrumTriggers(
         drumPreset, std::vector<std::pair<std::int64_t, std::uint8_t>>{{0, 42}, {2400, 46}});
     require(drumTriggers.size() == 2, "drum machine renders triggers");
@@ -2216,7 +2883,7 @@ int main() {
                         {.samplePosition = 0, .midiNote = 36, .velocity = 48},
                         {.samplePosition = 2400, .midiNote = 36, .velocity = 120}});
     require(velocityTriggers.size() == 2 && velocityTriggers.front().assetId == "kick-soft.wav" &&
-                velocityTriggers.back().assetId == "kick-hard.wav" &&
+                velocityTriggers.back().assetId == "kick-drop.wav" &&
                 velocityTriggers.back().velocity == 120,
             "drum machine trigger rendering selects velocity layers from MIDI velocity");
     lamusica::audio::RenderedAudio drumSource{
@@ -2264,7 +2931,7 @@ int main() {
          {.samplePosition = 4, .midiNote = 36, .velocity = 127}},
         {{.assetId = "ch.wav", .audio = drumSource},
          {.assetId = "oh.wav", .audio = drumSource},
-         {.assetId = "kick-hard.wav", .audio = drumSource}},
+         {.assetId = "kick-drop.wav", .audio = drumSource}},
         8, 1);
     const auto hatRoute =
         std::ranges::find_if(routedDrums, [](const lamusica::session::DrumRouteRender& route) {
@@ -2287,9 +2954,44 @@ int main() {
     require(parsedDrumPreset.name == "Kit 1" && parsedDrumPreset.license == "CC0-1.0" &&
                 parsedDrumPreset.pads.front().color == "#ff6600" &&
                 parsedDrumPreset.pads.front().gainDb == -3.0F &&
-                parsedDrumPreset.pads.front().velocityLayers.size() == 2 &&
-                parsedDrumPreset.pads.front().velocityLayers.back().assetId == "kick-hard.wav",
+                parsedDrumPreset.pads.front().velocityLayers.size() == 3 &&
+                parsedDrumPreset.pads.front().velocityLayers[1].assetId == "kick-drop.wav",
             "drum machine preset serializes and parses portable pad metadata");
+    const auto drumAssetReferences =
+        lamusica::session::collectDrumPresetAssetReferences(parsedDrumPreset);
+    require(std::ranges::any_of(drumAssetReferences,
+                                [](const lamusica::session::DrumPresetAssetReference& reference) {
+                                    return reference.assetId == "kick-drop.wav" &&
+                                           std::ranges::contains(reference.padIds, "kick");
+                                }),
+            "drum machine preset collection enumerates pad asset dependencies");
+    const auto portableDrumPreset = lamusica::session::makePortableDrumMachinePreset(
+        parsedDrumPreset,
+        {std::array{
+            lamusica::session::DrumPresetAssetMapping{.sourceAssetId = "kick-soft.wav",
+                                                      .collectedAssetId = "Samples/kick-soft.wav"},
+            lamusica::session::DrumPresetAssetMapping{.sourceAssetId = "kick-drop.wav",
+                                                      .collectedAssetId = "Samples/kick-drop.wav"},
+            lamusica::session::DrumPresetAssetMapping{
+                .sourceAssetId = "kick-accent.wav", .collectedAssetId = "Samples/kick-accent.wav"},
+            lamusica::session::DrumPresetAssetMapping{.sourceAssetId = "ch.wav",
+                                                      .collectedAssetId = "Samples/ch.wav"},
+            lamusica::session::DrumPresetAssetMapping{.sourceAssetId = "oh.wav",
+                                                      .collectedAssetId = "Samples/oh.wav"}}});
+    require(lamusica::session::selectLayerAsset(portableDrumPreset.pads.front(), 120) ==
+                "Samples/kick-drop.wav",
+            "drum machine portable preset remaps velocity layers to collected assets");
+    bool rejectedIncompleteDrumCollection = false;
+    try {
+        (void)lamusica::session::makePortableDrumMachinePreset(
+            parsedDrumPreset,
+            {std::array{lamusica::session::DrumPresetAssetMapping{
+                .sourceAssetId = "kick-soft.wav", .collectedAssetId = "Samples/kick-soft.wav"}}});
+    } catch (const std::exception&) {
+        rejectedIncompleteDrumCollection = true;
+    }
+    require(rejectedIncompleteDrumCollection,
+            "drum machine portable preset rejects incomplete asset collection mappings");
     require(lamusica::session::hasClearDrumPresetRedistributionRights(parsedDrumPreset),
             "drum machine preset records clear bundled asset rights");
     const auto placeholderKit = lamusica::session::parseDrumMachinePreset(
@@ -2350,6 +3052,30 @@ int main() {
     require(placedPatternMidi.notes.front().startSample ==
                 patternMidi.notes.front().startSample + 48000,
             "pattern clip placement offsets notes on the arrangement timeline");
+    const auto patternPlaybackWindow = lamusica::session::patternPlaybackEventsInRange(
+        {.pattern = pattern, .timelineStartSample = 48000}, 54000, 66000);
+    require(!patternPlaybackWindow.empty() &&
+                std::ranges::all_of(patternPlaybackWindow,
+                                    [](const lamusica::session::MidiPlaybackEvent& event) {
+                                        return event.samplePosition >= 0 &&
+                                               event.samplePosition < 12000;
+                                    }) &&
+                std::ranges::any_of(patternPlaybackWindow,
+                                    [](const lamusica::session::MidiPlaybackEvent& event) {
+                                        return event.type ==
+                                                   lamusica::session::MidiEventType::NoteOn &&
+                                               event.samplePosition == 1500 &&
+                                               event.sourceId == "lane-hat-1-0";
+                                    }),
+            "pattern playback range emits sample-aligned buffer-relative events");
+    bool rejectedBadPatternPlaybackRange = false;
+    try {
+        (void)lamusica::session::patternPlaybackEventsInRange(
+            {.pattern = pattern, .timelineStartSample = 48000}, 66000, 54000);
+    } catch (const std::exception&) {
+        rejectedBadPatternPlaybackRange = true;
+    }
+    require(rejectedBadPatternPlaybackRange, "pattern playback range rejects unordered windows");
     lamusica::session::PatternClip polymeterPattern{
         .id = "polymeter",
         .name = "Polymeter",
@@ -2365,6 +3091,22 @@ int main() {
     require(polymeterMidi.notes.size() == 2 && polymeterMidi.notes[0].startSample == 0 &&
                 polymeterMidi.notes[1].startSample == 2000,
             "pattern per-lane length cycles shorter lanes across the pattern");
+    lamusica::session::PatternClip tiedPattern{
+        .id = "tied-pattern",
+        .name = "Tied Pattern",
+        .lengthSteps = 4,
+        .stepLengthSamples = 1000,
+        .lanes = {{.id = "tied-lane",
+                   .name = "Tied Lane",
+                   .defaultPitch = 60,
+                   .lengthSteps = 4,
+                   .steps = {{.enabled = true, .pitch = 60, .velocity = 100, .tie = true},
+                             {.enabled = true, .pitch = 60, .velocity = 100, .tie = true},
+                             {.enabled = true, .pitch = 60, .velocity = 100},
+                             {}}}}};
+    const auto tiedMidi = lamusica::session::patternToMidi(tiedPattern, "tied-midi");
+    require(tiedMidi.notes.size() == 1 && tiedMidi.notes.front().lengthSamples == 3000,
+            "pattern tied steps sustain without retriggering continuation steps");
     const auto roundTripPattern =
         lamusica::session::midiToPattern(patternMidi, "round-trip-pattern", "Round Trip", 6000, 4);
     const auto roundTripMidi =
@@ -2396,6 +3138,20 @@ int main() {
     require(duplicatePatternCommand.apply(patternStore).ok, "pattern variation command applies");
     require(patternStore.find("pattern-command-variation")->seed == pattern.seed + 23,
             "pattern variation command duplicates with deterministic seed offset");
+    lamusica::commands::EditPatternStepCommand editPatternStep{
+        "cmd-pattern-3",
+        "audit-pattern-3",
+        "pattern-1",
+        "lane-kick",
+        1,
+        {.enabled = true, .pitch = 38, .velocity = 90, .probability = 1.0F, .ratchets = 1}};
+    require(editPatternStep.apply(patternStore).ok, "pattern step edit command applies");
+    require(patternStore.find("pattern-1")->lanes.front().steps[1].enabled &&
+                patternStore.find("pattern-1")->lanes.front().steps[1].pitch == 38,
+            "pattern step edit command mutates step grid");
+    require(editPatternStep.undo(patternStore).ok, "pattern step edit command undoes");
+    require(!patternStore.find("pattern-1")->lanes.front().steps[1].enabled,
+            "pattern step edit undo restores previous step");
     require(duplicatePatternCommand.undo(patternStore).ok, "pattern variation command undoes");
     require(patternStore.find("pattern-command-variation") == nullptr,
             "pattern variation undo removes duplicate");
@@ -2411,15 +3167,124 @@ int main() {
                          .format = lamusica::session::PluginFormat::BuiltIn,
                          .parameters = {{.id = "gain", .name = "Gain", .defaultValue = 0.0F}}},
          .valid = true});
+    lamusica::session::mergeScanResult(
+        pluginCache,
+        {.description = {.identifier = "builtin.synth",
+                         .name = "Synth",
+                         .vendor = "LaMusica",
+                         .format = lamusica::session::PluginFormat::BuiltIn,
+                         .instrument = true,
+                         .parameters = {{.id = "cutoff", .name = "Cutoff", .defaultValue = 0.5F}}},
+         .valid = true});
     require(lamusica::session::findPlugin(pluginCache, "builtin.eq").has_value(),
             "plugin cache finds valid plugin");
     require(lamusica::session::stableParameterAddress("builtin.eq", "gain") == "builtin.eq::gain",
             "plugin parameter address is stable");
+    const auto discoveredParameters = lamusica::session::discoverPluginParameters(
+        *lamusica::session::findPlugin(pluginCache, "builtin.eq"));
+    require(discoveredParameters.size() == 1 &&
+                discoveredParameters.front().automationAddress == "builtin.eq::gain" &&
+                discoveredParameters.front().defaultValue == 0.0F,
+            "plugin parameter discovery exposes stable automation addresses");
+    bool rejectedIncompletePluginParameter = false;
+    try {
+        (void)lamusica::session::discoverPluginParameters(
+            {.identifier = "bad.parameters",
+             .parameters = {{.id = "", .name = "Missing Id", .defaultValue = 0.0F}}});
+    } catch (const std::exception&) {
+        rejectedIncompletePluginParameter = true;
+    }
+    require(rejectedIncompletePluginParameter,
+            "plugin parameter discovery rejects incomplete parameter metadata");
+    lamusica::session::PluginInstrumentRack instrumentRack;
+    lamusica::session::assignInstrumentSlot(
+        instrumentRack, pluginCache, "instrument-track",
+        {.id = "synth-slot", .pluginIdentifier = "builtin.synth"});
+    require(lamusica::session::findInstrumentSlot(instrumentRack, "instrument-track")
+                    ->instrument.pluginIdentifier == "builtin.synth",
+            "plugin instrument slot accepts discovered instrument plugin");
+    bool rejectedEffectInstrumentSlot = false;
+    try {
+        lamusica::session::assignInstrumentSlot(
+            instrumentRack, pluginCache, "effect-track",
+            {.id = "effect-slot", .pluginIdentifier = "builtin.eq"});
+    } catch (const std::exception&) {
+        rejectedEffectInstrumentSlot = true;
+    }
+    require(rejectedEffectInstrumentSlot,
+            "plugin instrument slot rejects effect plugins as instruments");
+    const auto reloadedInstrumentRack = lamusica::session::parsePluginInstrumentRack(
+        lamusica::session::serializePluginInstrumentRack(instrumentRack));
+    require(lamusica::session::findInstrumentSlot(reloadedInstrumentRack, "instrument-track")
+                    ->instrument.id == "synth-slot",
+            "plugin instrument slot state saves and reloads");
+    lamusica::session::PluginEditorState editorState;
+    lamusica::session::openPluginEditor(editorState, {.trackId = "instrument-track",
+                                                      .insertId = "synth-slot",
+                                                      .pinned = true,
+                                                      .x = 120,
+                                                      .y = 80,
+                                                      .width = 900,
+                                                      .height = 620});
+    require(
+        lamusica::session::findEditorWindow(editorState, "instrument-track", "synth-slot")->pinned,
+        "plugin editor window state tracks opened editors");
+    lamusica::session::closePluginEditor(editorState, "instrument-track", "synth-slot");
+    const auto reloadedEditorState = lamusica::session::parsePluginEditorState(
+        lamusica::session::serializePluginEditorState(editorState));
+    const auto* reloadedEditor =
+        lamusica::session::findEditorWindow(reloadedEditorState, "instrument-track", "synth-slot");
+    require(reloadedEditor != nullptr && !reloadedEditor->open && reloadedEditor->width == 900,
+            "plugin editor window state saves closed geometry");
     lamusica::session::blacklistPlugin(pluginCache, "bad.plugin", "scan failed");
     require(lamusica::session::isBlacklisted(pluginCache, "bad.plugin"),
             "plugin blacklist records bad plugin");
     require(!lamusica::session::findPlugin(pluginCache, "bad.plugin").has_value(),
             "plugin blacklist hides bad plugin");
+    const auto macPluginFormats =
+        lamusica::session::pluginFormatSupport({.macOS = true,
+                                                .audioUnitRuntimeAvailable = true,
+                                                .vst3SdkAvailable = false,
+                                                .vst3LicenseAccepted = false});
+    require(std::ranges::any_of(macPluginFormats,
+                                [](const lamusica::session::PluginFormatSupport& support) {
+                                    return support.format ==
+                                               lamusica::session::PluginFormat::AudioUnit &&
+                                           support.available;
+                                }) &&
+                std::ranges::any_of(macPluginFormats,
+                                    [](const lamusica::session::PluginFormatSupport& support) {
+                                        return support.format ==
+                                                   lamusica::session::PluginFormat::Vst3 &&
+                                               !support.available &&
+                                               support.reason == "vst3_sdk_not_available";
+                                    }),
+            "plugin host exposes AU on macOS and gates VST3 on SDK availability");
+    const auto licensedVst3Formats =
+        lamusica::session::pluginFormatSupport({.macOS = true,
+                                                .audioUnitRuntimeAvailable = true,
+                                                .vst3SdkAvailable = true,
+                                                .vst3LicenseAccepted = true});
+    require(std::ranges::any_of(licensedVst3Formats,
+                                [](const lamusica::session::PluginFormatSupport& support) {
+                                    return support.format ==
+                                               lamusica::session::PluginFormat::Vst3 &&
+                                           support.available;
+                                }),
+            "plugin host enables VST3 only after SDK and license checks pass");
+    const auto nonMacPluginFormats =
+        lamusica::session::pluginFormatSupport({.macOS = false,
+                                                .audioUnitRuntimeAvailable = true,
+                                                .vst3SdkAvailable = true,
+                                                .vst3LicenseAccepted = false});
+    require(std::ranges::any_of(nonMacPluginFormats,
+                                [](const lamusica::session::PluginFormatSupport& support) {
+                                    return support.format ==
+                                               lamusica::session::PluginFormat::AudioUnit &&
+                                           !support.available &&
+                                           support.reason == "audio_unit_requires_macos";
+                                }),
+            "plugin host disables AU formats outside macOS");
     const std::array pluginScanCandidates{
         lamusica::session::PluginScanCandidate{
             .description = {.identifier = "safe.plugin",
@@ -2650,6 +3515,23 @@ int main() {
     require(sendEditMixer.channels.front().sends.size() == 1 &&
                 lamusica::session::validateRouting(sendEditMixer),
             "mixer send edit validates and publishes safe sends");
+    const auto sendEditMatrix = lamusica::session::buildRoutingMatrix(sendEditMixer);
+    const auto sendSourceToReturn =
+        std::ranges::find_if(sendEditMatrix, [](const lamusica::session::RoutingMatrixCell& cell) {
+            return cell.sourceChannelId == "send-source" &&
+                   cell.destinationChannelId == "send-return";
+        });
+    const auto sendReturnToSource =
+        std::ranges::find_if(sendEditMatrix, [](const lamusica::session::RoutingMatrixCell& cell) {
+            return cell.sourceChannelId == "send-return" &&
+                   cell.destinationChannelId == "send-source";
+        });
+    require(sendSourceToReturn != sendEditMatrix.end() && sendSourceToReturn->routeAllowed &&
+                !sendSourceToReturn->sendAllowed && sendSourceToReturn->sidechainAllowed,
+            "mixer routing matrix previews route send and sidechain availability");
+    require(sendReturnToSource != sendEditMatrix.end() && !sendReturnToSource->routeAllowed &&
+                !sendReturnToSource->sendAllowed && sendReturnToSource->wouldCreateFeedback,
+            "mixer routing matrix flags feedback before mutation");
     bool rejectedDuplicateSend = false;
     try {
         lamusica::session::addSend(
@@ -2670,6 +3552,23 @@ int main() {
     }
     require(rejectedSendCycle && sendEditMixer.channels.back().sends.empty(),
             "mixer send edit rejects feedback before publishing");
+    lamusica::session::addSidechainRoute(mixer, {.id = "kick-ducks-bus",
+                                                 .sourceChannelId = "audio-1",
+                                                 .destinationChannelId = "bus-1",
+                                                 .targetInsertId = "bus-compressor"});
+    require(mixer.sidechains.size() == 1 && lamusica::session::validateRouting(mixer),
+            "mixer sidechain route validates without creating an audio feedback edge");
+    bool rejectedDuplicateSidechain = false;
+    try {
+        lamusica::session::addSidechainRoute(mixer, {.id = "kick-ducks-bus",
+                                                     .sourceChannelId = "audio-1",
+                                                     .destinationChannelId = "bus-1",
+                                                     .targetInsertId = "bus-compressor"});
+    } catch (const std::exception&) {
+        rejectedDuplicateSidechain = true;
+    }
+    require(rejectedDuplicateSidechain && mixer.sidechains.size() == 1,
+            "mixer sidechain route rejects duplicate ids without mutation");
     bool rejectedCycle = false;
     try {
         lamusica::session::addRoute(
@@ -2708,13 +3607,22 @@ int main() {
     const auto serializedMixer = lamusica::session::serializeMixerState(mixer);
     const auto parsedMixer = lamusica::session::parseMixerState(serializedMixer);
     require(parsedMixer.channels.size() == 3 && parsedMixer.routing.size() == 2 &&
-                parsedMixer.faderGroups.size() == 1 &&
+                parsedMixer.sidechains.size() == 1 && parsedMixer.faderGroups.size() == 1 &&
                 lamusica::session::validateRouting(parsedMixer),
-            "mixer state saves, reloads, and keeps valid routing");
+            "mixer state saves, reloads, and keeps valid routing and sidechains");
     require(lamusica::session::findChannel(parsedMixer, "audio-1")->sends.front().gainDb ==
                     -12.0F &&
                 lamusica::session::findChannel(parsedMixer, "audio-1")->muted,
             "mixer state reload preserves sends and channel strip flags");
+    const auto serializedHardwareOutputMixer =
+        lamusica::session::serializeMixerState(hardwareOutputMixer);
+    const auto parsedHardwareOutputMixer =
+        lamusica::session::parseMixerState(serializedHardwareOutputMixer);
+    require(lamusica::session::findChannel(parsedHardwareOutputMixer, "output-1-2")->type ==
+                    lamusica::session::ChannelType::HardwareOutput &&
+                parsedHardwareOutputMixer.routing.size() == 1 &&
+                lamusica::session::validateRouting(parsedHardwareOutputMixer),
+            "mixer state reload preserves hardware output routing");
     lamusica::commands::SetChannelMixCommand mixCommand{
         "cmd-mix-1",
         "audit-mix-1",
@@ -2752,6 +3660,29 @@ int main() {
     require(automationBlock.front() == lamusica::session::evaluateAutomation(automation, 48) &&
                 automationBlock.back() == lamusica::session::evaluateAutomation(automation, 51),
             "automation block evaluation is sample deterministic");
+    const auto rangedAutomationPoints =
+        lamusica::session::automationPointsInRange(automation, 50, 150);
+    require(rangedAutomationPoints.size() == 1 &&
+                rangedAutomationPoints.front().samplePosition == 100,
+            "automation lane range query returns visible timeline points");
+    bool rejectedBadAutomationPointRange = false;
+    try {
+        (void)lamusica::session::automationPointsInRange(automation, 150, 50);
+    } catch (const std::exception&) {
+        rejectedBadAutomationPointRange = true;
+    }
+    require(rejectedBadAutomationPointRange,
+            "automation lane range query rejects unordered ranges");
+    const auto fullAutomationBlock = lamusica::session::evaluateAutomationBlock(automation, 0, 128);
+    std::vector<float> chunkedAutomationBlock;
+    for (std::int64_t start = 0; start < 128;) {
+        const auto frames = static_cast<std::uint32_t>(std::min<std::int64_t>(17, 128 - start));
+        const auto chunk = lamusica::session::evaluateAutomationBlock(automation, start, frames);
+        chunkedAutomationBlock.insert(chunkedAutomationBlock.end(), chunk.begin(), chunk.end());
+        start += frames;
+    }
+    require(chunkedAutomationBlock == fullAutomationBlock,
+            "automation playback is deterministic across buffer sizes");
     lamusica::session::addAutomationPoint(automation, 200, 0.25F,
                                           lamusica::session::AutomationCurve::Step);
     require(lamusica::session::evaluateAutomation(automation, 250) == 0.25F,
@@ -2847,6 +3778,15 @@ int main() {
     lamusica::session::applyAutomationToMixer(automationMixer, offVolumeAutomation, 50);
     require(lamusica::session::findChannel(automationMixer, "auto-track")->volumeDb == -18.0F,
             "automation off mode does not overwrite mixer playback values");
+    const auto mixerAutomationBindings =
+        lamusica::session::automationBindingsForMixer(automationMixer);
+    require(std::ranges::any_of(mixerAutomationBindings,
+                                [](const lamusica::session::AutomationParameterBinding& binding) {
+                                    return binding.targetId == "auto-track" &&
+                                           binding.parameterId == "volumeDb" &&
+                                           binding.minimumValue < binding.maximumValue;
+                                }),
+            "automation exposes mixer-linked parameter bindings");
     bool rejectedAutomationTarget = false;
     try {
         lamusica::session::applyAutomationToMixer(automationMixer,
@@ -2876,6 +3816,13 @@ int main() {
     require(lamusica::session::findParameterValue(automationPluginChain.inserts.front(), "gain") ==
                 0.25F,
             "automation applies interpolated plugin parameter value");
+    const auto pluginAutomationBindings = lamusica::session::automationBindingsForPluginChain(
+        automationPluginChain, pluginCache, lamusica::session::AutomationTargetKind::Plugin);
+    require(pluginAutomationBindings.size() == 1 &&
+                pluginAutomationBindings.front().targetId == "auto-insert" &&
+                pluginAutomationBindings.front().parameterId == "gain" &&
+                pluginAutomationBindings.front().defaultValue == 0.25F,
+            "automation exposes plugin parameter bindings with current values");
     lamusica::session::AutomationLaneData instrumentAutomation = pluginAutomation;
     instrumentAutomation.id = "auto-instrument-gain";
     instrumentAutomation.targetKind = lamusica::session::AutomationTargetKind::Instrument;
@@ -2928,6 +3875,15 @@ int main() {
     lamusica::session::applyAutomationBlockToClips({&automationClip, 1}, clipAutomationLanes, 50);
     require(automationClip.gainDb == -6.0F && automationClip.muted,
             "automation applies clip gain and boolean parameters");
+    const auto clipAutomationBindings =
+        lamusica::session::automationBindingsForClip(automationClip);
+    require(std::ranges::any_of(clipAutomationBindings,
+                                [](const lamusica::session::AutomationParameterBinding& binding) {
+                                    return binding.targetKind ==
+                                               lamusica::session::AutomationTargetKind::Clip &&
+                                           binding.parameterId == "sourceOffsetSamples";
+                                }),
+            "automation exposes clip parameter bindings for timeline lanes");
 
     lamusica::session::WarpState warp{
         .clipId = "clip-warp",
@@ -2952,12 +3908,49 @@ int main() {
     const auto transients =
         lamusica::session::detectTransients(std::array{0.0F, 0.1F, 0.9F, 0.92F, -0.2F}, 0.5F);
     require(transients.size() == 2, "warp transient detector finds threshold crossings");
+    const auto conformedWarp = lamusica::session::conformWarpToTempo(
+        {.clipId = "conform-warp",
+         .enabled = false,
+         .sourceTempoBpm = 120.0,
+         .targetTempoBpm = 120.0,
+         .pitchShiftSemitones = -2.0F,
+         .quality = lamusica::session::StretchQuality::High},
+        {std::array{lamusica::session::Transient{.sourceSample = 12000, .strength = 0.8F},
+                    lamusica::session::Transient{.sourceSample = 24000, .strength = 0.7F}}},
+        48000, 60.0);
+    require(conformedWarp.enabled && conformedWarp.targetTempoBpm == 60.0 &&
+                conformedWarp.pitchShiftSemitones == -2.0F &&
+                conformedWarp.quality == lamusica::session::StretchQuality::High &&
+                conformedWarp.markers.size() == 4 &&
+                conformedWarp.markers[1].sourceSample == 12000 &&
+                conformedWarp.markers[1].timelineSample == 24000 &&
+                conformedWarp.markers.back().timelineSample == 96000,
+            "warp tempo conform seeds editable transient markers without losing metadata");
+    require(lamusica::session::makeWarpCacheKey(conformedWarp) !=
+                lamusica::session::makeWarpCacheKey(retargetedWarp),
+            "warp tempo conform changes render-cache identity with marker metadata");
     const auto slices = lamusica::session::makeBeatSlices(warp, transients, 48000);
     require(slices.size() == 2 && slices.front().sourceStartSample == 2,
             "warp beat slicing creates transient slices");
     const auto groove = lamusica::session::extractGroove("groove-1", transients, 3);
     require(groove.points.size() == 2 && groove.points.back().offsetSamples == 1,
             "warp groove extraction stores offsets from grid");
+    lamusica::session::WarpState groovedWarp{
+        .clipId = "grooved-warp",
+        .enabled = true,
+        .sourceTempoBpm = 120.0,
+        .targetTempoBpm = 120.0,
+        .markers = {{.id = "g1", .sourceSample = 0, .timelineSample = 0},
+                    {.id = "g2", .sourceSample = 1000, .timelineSample = 6}}};
+    lamusica::session::applyGrooveToWarpMarkers(
+        groovedWarp,
+        {.id = "apply-groove",
+         .points = {{.gridSample = 0, .offsetSamples = 2, .strength = 1.0F},
+                    {.gridSample = 6, .offsetSamples = -2, .strength = 1.0F}}},
+        1.0F);
+    require(groovedWarp.markers.front().timelineSample == 2 &&
+                groovedWarp.markers.back().timelineSample == 4,
+            "warp groove application moves markers onto extracted groove offsets");
     lamusica::session::WarpState quantizedWarp{
         .clipId = "quantized-warp",
         .enabled = true,
@@ -2996,6 +3989,20 @@ int main() {
     require(quantizeWarpMarkers.undo(warpCommandStore).ok, "warp marker quantize command undoes");
     require(warpCommandStore.find("cmd-warp")->markers.front().timelineSample == 120,
             "warp marker quantize undo restores marker");
+    lamusica::commands::ApplyWarpGrooveCommand applyWarpGroove{
+        "warp-cmd-groove",
+        "warp-audit-groove",
+        "cmd-warp",
+        {.id = "cmd-groove",
+         .points = {{.gridSample = 0, .offsetSamples = 25, .strength = 1.0F},
+                    {.gridSample = 500, .offsetSamples = -25, .strength = 1.0F}}},
+        1.0F};
+    require(applyWarpGroove.apply(warpCommandStore).ok, "warp groove command applies");
+    require(warpCommandStore.find("cmd-warp")->markers.front().timelineSample == 25,
+            "warp groove command changes marker timing");
+    require(applyWarpGroove.undo(warpCommandStore).ok, "warp groove command undoes");
+    require(warpCommandStore.find("cmd-warp")->markers.front().timelineSample == 120,
+            "warp groove undo restores marker timing");
     lamusica::commands::RemoveWarpMarkerCommand removeWarpMarker{
         "warp-cmd-remove", "warp-audit-remove", "cmd-warp", "cmd-w1"};
     require(removeWarpMarker.apply(warpCommandStore).ok, "warp marker remove command applies");
@@ -3123,6 +4130,25 @@ int main() {
                 analysisResult.waveform.buckets.front().maxSample == 0.8F &&
                 analysisResult.waveform.buckets.back().minSample == -0.5F,
             "asset media analysis builds waveform buckets");
+    lamusica::audio::RenderedAudio tempoAudio{
+        .channels = 1, .frames = 48001, .interleavedSamples = std::vector<float>(48001)};
+    tempoAudio.interleavedSamples[0] = 1.0F;
+    tempoAudio.interleavedSamples[24000] = 1.0F;
+    tempoAudio.interleavedSamples[48000] = 1.0F;
+    const auto tempoAnalysis =
+        lamusica::session::analyzeAudioAsset("tempo", tempoAudio, 48000.0, 12000);
+    require(std::abs(tempoAnalysis.analysis.tempoBpm - 120.0) < 0.001 &&
+                tempoAnalysis.analysis.transientSamples.size() == 3,
+            "asset media analysis estimates tempo from transient spacing");
+    lamusica::audio::RenderedAudio keyAudio{
+        .channels = 1, .frames = 4800, .interleavedSamples = std::vector<float>(4800)};
+    for (std::uint32_t frame = 0; frame < keyAudio.frames; ++frame) {
+        keyAudio.interleavedSamples[frame] = static_cast<float>(
+            std::sin(2.0 * std::numbers::pi * 440.0 * static_cast<double>(frame) / 48000.0));
+    }
+    const auto keyAnalysis = lamusica::session::analyzeAudioAsset("key-a", keyAudio, 48000.0, 512);
+    require(keyAnalysis.analysis.musicalKey == "A major",
+            "asset media analysis estimates musical key from pitch content");
     const auto mediaAnalysisJob =
         lamusica::session::scheduleMediaAnalysis(catalog, "analysis-1", "kick");
     require(mediaAnalysisJob.status == lamusica::session::MediaAnalysisJobStatus::Pending &&
@@ -3225,6 +4251,43 @@ int main() {
         catalog, lamusica::session::RecentBrowserItemKind::Asset);
     require(recentAssets.size() == 2 && recentAssets.front().id == "kick",
             "asset browser recent items dedupe and sort by recency");
+    lamusica::session::addAsset(catalog, {.id = "kit",
+                                          .relativePath = "Audio/kick.wav",
+                                          .kind = lamusica::session::AssetKind::DrumKit});
+    lamusica::session::addAsset(catalog, {.id = "preset",
+                                          .relativePath = "Audio/kick.wav",
+                                          .kind = lamusica::session::AssetKind::Preset});
+    lamusica::session::addAsset(catalog, {.id = "template",
+                                          .relativePath = "Audio/kick.wav",
+                                          .kind = lamusica::session::AssetKind::Template});
+    lamusica::session::recordRecentBrowserItem(
+        catalog, {.id = "template",
+                  .kind = lamusica::session::RecentBrowserItemKind::Template,
+                  .path = "Audio/kick.wav",
+                  .lastUsedUnixSeconds = 40});
+    const auto browserSections = lamusica::session::buildBrowserSections(catalog);
+    auto browserSection = [&browserSections](lamusica::session::BrowserSectionKind kind)
+        -> const lamusica::session::BrowserSection& {
+        const auto found = std::ranges::find_if(
+            browserSections, [kind](const auto& section) { return section.kind == kind; });
+        require(found != browserSections.end(), "asset browser exposes required section");
+        return *found;
+    };
+    require(browserSection(lamusica::session::BrowserSectionKind::ProjectMedia).items.size() >= 2,
+            "asset browser sections include project media assets");
+    require(browserSection(lamusica::session::BrowserSectionKind::UserFolders).items.size() == 1,
+            "asset browser sections include granted user folders");
+    require(browserSection(lamusica::session::BrowserSectionKind::PluginPresets).items.size() == 1,
+            "asset browser sections include plugin presets");
+    require(browserSection(lamusica::session::BrowserSectionKind::DrumKits).items.size() == 1,
+            "asset browser sections include drum kits");
+    require(browserSection(lamusica::session::BrowserSectionKind::Templates).items.size() == 1,
+            "asset browser sections include templates");
+    const auto& recentSection =
+        browserSection(lamusica::session::BrowserSectionKind::RecentFiles).items;
+    require(!recentSection.empty() && recentSection.front().id == "template" &&
+                recentSection.front().assetKind == lamusica::session::AssetKind::Template,
+            "asset browser sections include recent files with resolved asset metadata");
     const auto timelineDrop = lamusica::session::planBrowserDrop(
         catalog, {.assetId = "kick",
                   .destination = lamusica::session::BrowserDropDestination::Timeline,
@@ -3237,9 +4300,6 @@ int main() {
                   .destination = lamusica::session::BrowserDropDestination::DrumPad,
                   .targetId = "pad-1"});
     require(drumDrop.assignsToInstrument, "asset browser plans drum pad sample assignment");
-    lamusica::session::addAsset(catalog, {.id = "preset",
-                                          .relativePath = "Audio/kick.wav",
-                                          .kind = lamusica::session::AssetKind::Preset});
     const auto pluginDrop = lamusica::session::planBrowserDrop(
         catalog, {.assetId = "preset",
                   .destination = lamusica::session::BrowserDropDestination::PluginArea,
@@ -3276,6 +4336,18 @@ int main() {
     renderEngine.setTempo(120.0);
     require(renderEngine.ppqToSamples(1.0) == 24000, "PPQ to samples at 120 BPM");
     require(renderEngine.samplesToPpq(24000) == 1.0, "samples to PPQ at 120 BPM");
+    renderEngine.setTimeSignature({.numerator = 6, .denominator = 8});
+    require(renderEngine.barBeatToSamples({.bar = 2, .beat = 1}) == 72000,
+            "bar beat clock converts 6/8 bar boundary to samples");
+    require(renderEngine.barBeatToSamples({.bar = 2, .beat = 3, .ppqOffset = 0.25}) == 102000,
+            "bar beat clock converts sub-beat PPQ offsets to samples");
+    const auto barBeat = renderEngine.samplesToBarBeat(102000);
+    require(barBeat.bar == 2 && barBeat.beat == 3 && std::abs(barBeat.ppqOffset - 0.25) < 0.0001,
+            "sample clock converts samples to bar beat position");
+    lamusica::audio::AudioEngine slowClock{{.sampleRate = 44100.0, .maxBlockSize = 128}};
+    slowClock.setTempo(60.0);
+    require(slowClock.ppqToSamples(1.0) == 44100,
+            "PPQ to sample conversion follows engine sample rate");
 
     auto silence = renderEngine.renderSilenceOffline(64);
     require(silence.channels == 2, "silence channel count");
@@ -3425,20 +4497,33 @@ int main() {
     require(!std::filesystem::exists(discardedRecordingPath),
             "discarded recording does not create final file");
 
-    const auto recordingPlan =
-        lamusica::audio::makeRecordingPlan({.trackId = "record-track",
-                                            .transportStartSample = 1000,
-                                            .punchInSample = 2000,
-                                            .punchOutSample = 3000,
-                                            .preRollSamples = 256,
-                                            .countInSamples = 128,
-                                            .measuredInputLatencySamples = 32,
-                                            .punchEnabled = true,
-                                            .inputMonitoringEnabled = true});
+    const std::vector<float> latencyReference{0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+    const std::vector<float> latencyRecorded{0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+    const auto latencyMeasurement =
+        lamusica::audio::measureRecordingLatency(latencyReference, latencyRecorded, 0.75F);
+    require(latencyMeasurement.valid && latencyMeasurement.measuredInputLatencySamples == 3 &&
+                latencyMeasurement.referencePeak == 1.0F && latencyMeasurement.recordedPeak == 1.0F,
+            "recording latency measurement derives latency from impulse fixtures");
+    const std::vector<float> earlyRecorded{1.0F, 0.0F, 0.0F, 0.0F};
+    const auto invalidLatency =
+        lamusica::audio::measureRecordingLatency(latencyReference, earlyRecorded, 0.75F);
+    require(!invalidLatency.valid,
+            "recording latency measurement rejects recorded impulses before reference impulses");
+
+    const auto recordingPlan = lamusica::audio::makeRecordingPlan(
+        {.trackId = "record-track",
+         .transportStartSample = 1000,
+         .punchInSample = 2000,
+         .punchOutSample = 3000,
+         .preRollSamples = 256,
+         .countInSamples = 128,
+         .measuredInputLatencySamples = latencyMeasurement.measuredInputLatencySamples,
+         .punchEnabled = true,
+         .inputMonitoringEnabled = true});
     require(recordingPlan.captureStartSample == 1616,
             "recording plan includes pre-roll and count-in before punch");
-    require(recordingPlan.clipStartSample == 1968,
-            "recording plan latency-aligns punch clip start");
+    require(recordingPlan.clipStartSample == 1997,
+            "recording plan uses measured latency to align punch clip start");
     require(recordingPlan.punchOutSample == 3000, "recording plan preserves punch out");
     require(recordingPlan.inputMonitoringEnabled, "recording plan carries input monitoring intent");
     bool rejectedBadPunch = false;

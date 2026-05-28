@@ -14,6 +14,13 @@ Realtime checks should be enforced through tests, code review, and instrumentati
 Transport advancement must stay sample based and deterministic. Looping render callbacks wrap at
 the configured sample loop end without consulting wall-clock time, file state, JSON, or project
 metadata; fixture tests cover silence, oscillator, and metronome paths crossing loop boundaries.
+Timeline clock helpers convert samples, PPQ, and bar/beat positions from the engine sample rate,
+tempo, and time signature only; fixture tests cover sample-rate-dependent PPQ math and 6/8
+bar/beat conversion.
+The engine graph callback uses bounded node/connection arrays and constructor-allocated scratch
+buffers sized from the configured maximum block size. General offline graph rendering may allocate,
+but `AudioEngine::renderGraphBlock` must keep graph scheduling and audio buffers inside those
+preallocated limits.
 
 ## Stress Fixtures
 
@@ -36,3 +43,10 @@ The fixed stress benchmark measures:
 
 CI thresholds should be intentionally conservative for regular checks and tighter in nightly or
 dedicated performance jobs.
+
+## Automated Regression Checks
+
+`lamusica_cli benchmark-smoke` runs a fixed small stress project with conservative thresholds and
+prints machine context plus startup, plugin scan, CPU work, save/load, query, render, memory, and
+disk measurements. CI runs this smoke benchmark on every push and pull request as a hard regression
+gate. Larger stress sizes and tighter thresholds belong in scheduled or dedicated performance jobs.

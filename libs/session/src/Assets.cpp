@@ -3,6 +3,7 @@
 #include "lamusica/audio/WavFile.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -68,6 +69,94 @@ const UserFolderGrant* findUserFolderGrant(const AssetCatalog& catalog,
             return grant.id == grantId;
         });
     return found == catalog.userFolders.end() ? nullptr : &*found;
+}
+
+BrowserSectionItem makeAssetBrowserItem(const AssetRecord& asset,
+                                        const std::filesystem::path& projectRoot) {
+    return {.id = asset.id,
+            .path = projectRoot / asset.relativePath,
+            .assetKind = asset.kind,
+            .favorite = asset.favorite,
+            .missing = asset.missing};
+}
+
+double estimateTempoBpm(std::span<const std::int64_t> transientSamples, double sampleRate) {
+    if (transientSamples.size() < 2 || sampleRate <= 0.0) {
+        return 0.0;
+    }
+
+    double totalIntervalSamples = 0.0;
+    std::size_t intervals = 0;
+    for (std::size_t index = 1; index < transientSamples.size(); ++index) {
+        const auto interval = transientSamples[index] - transientSamples[index - 1];
+        if (interval > 0) {
+            totalIntervalSamples += static_cast<double>(interval);
+            ++intervals;
+        }
+    }
+    if (intervals == 0) {
+        return 0.0;
+    }
+
+    auto bpm = 60.0 * sampleRate / (totalIntervalSamples / static_cast<double>(intervals));
+    while (bpm < 60.0) {
+        bpm *= 2.0;
+    }
+    while (bpm > 200.0) {
+        bpm *= 0.5;
+    }
+    return bpm;
+}
+
+std::string estimateMusicalKey(const audio::RenderedAudio& audio, double sampleRate) {
+    if (audio.frames < 3U || sampleRate <= 0.0) {
+        return {};
+    }
+
+    std::vector<double> risingZeroCrossings;
+    risingZeroCrossings.reserve(audio.frames / 32U);
+    auto monoAt = [&audio](std::uint32_t frame) {
+        double sum = 0.0;
+        for (std::uint32_t channel = 0; channel < audio.channels; ++channel) {
+            sum +=
+                audio
+                    .interleavedSamples[static_cast<std::size_t>(frame) * audio.channels + channel];
+        }
+        return sum / static_cast<double>(audio.channels);
+    };
+
+    auto previous = monoAt(0);
+    for (std::uint32_t frame = 1; frame < audio.frames; ++frame) {
+        const auto current = monoAt(frame);
+        if (previous <= 0.0 && current > 0.0) {
+            const auto denominator = current - previous;
+            const auto fractionalOffset =
+                denominator == 0.0 ? 0.0 : std::clamp(-previous / denominator, 0.0, 1.0);
+            risingZeroCrossings.push_back(static_cast<double>(frame - 1U) + fractionalOffset);
+        }
+        previous = current;
+    }
+    if (risingZeroCrossings.size() < 2) {
+        return {};
+    }
+
+    const auto periodSamples = (risingZeroCrossings.back() - risingZeroCrossings.front()) /
+                               static_cast<double>(risingZeroCrossings.size() - 1U);
+    if (periodSamples <= 0.0) {
+        return {};
+    }
+
+    const auto frequency = sampleRate / periodSamples;
+    if (frequency <= 0.0) {
+        return {};
+    }
+
+    static constexpr std::array<std::string_view, 12> pitchClasses{
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    const auto midiNote =
+        static_cast<int>(std::lround(69.0 + (12.0 * std::log2(frequency / 440.0))));
+    const auto pitchClass = ((midiNote % 12) + 12) % 12;
+    return std::string{pitchClasses[static_cast<std::size_t>(pitchClass)]} + " major";
 }
 
 std::filesystem::path uniqueCollectedRelativePath(const AssetCatalog& catalog,
@@ -332,6 +421,8 @@ MediaAnalysisResult analyzeAudioAsset(std::string assetId, const audio::Rendered
         analysis.rmsAmplitude <= std::numeric_limits<float>::epsilon()
             ? -std::numeric_limits<float>::infinity()
             : static_cast<float>(20.0 * std::log10(analysis.rmsAmplitude) - 0.691);
+    analysis.tempoBpm = estimateTempoBpm(analysis.transientSamples, sampleRate);
+    analysis.musicalKey = estimateMusicalKey(audio, sampleRate);
 
     for (std::int64_t bucketStart = 0; bucketStart < static_cast<std::int64_t>(audio.frames);
          bucketStart += samplesPerBucket) {
@@ -481,6 +572,61 @@ std::vector<RecentBrowserItem> recentBrowserItems(const AssetCatalog& catalog,
         }
     }
     return items;
+}
+
+std::vector<BrowserSection> buildBrowserSections(const AssetCatalog& catalog,
+                                                 std::size_t recentLimit) {
+    std::vector<BrowserSection> sections{
+        {.kind = BrowserSectionKind::ProjectMedia},  {.kind = BrowserSectionKind::UserFolders},
+        {.kind = BrowserSectionKind::PluginPresets}, {.kind = BrowserSectionKind::DrumKits},
+        {.kind = BrowserSectionKind::Templates},     {.kind = BrowserSectionKind::RecentFiles},
+    };
+
+    auto& projectMedia = sections[0].items;
+    auto& userFolders = sections[1].items;
+    auto& pluginPresets = sections[2].items;
+    auto& drumKits = sections[3].items;
+    auto& templates = sections[4].items;
+    auto& recentFiles = sections[5].items;
+
+    for (const auto& asset : catalog.assets) {
+        switch (asset.kind) {
+        case AssetKind::Audio:
+        case AssetKind::Midi:
+        case AssetKind::Other:
+            projectMedia.push_back(makeAssetBrowserItem(asset, catalog.projectRoot));
+            break;
+        case AssetKind::Preset:
+            pluginPresets.push_back(makeAssetBrowserItem(asset, catalog.projectRoot));
+            break;
+        case AssetKind::DrumKit:
+            drumKits.push_back(makeAssetBrowserItem(asset, catalog.projectRoot));
+            break;
+        case AssetKind::Template:
+            templates.push_back(makeAssetBrowserItem(asset, catalog.projectRoot));
+            break;
+        }
+    }
+
+    for (const auto& grant : catalog.userFolders) {
+        userFolders.push_back({.id = grant.id, .path = grant.absolutePath});
+    }
+
+    const auto recentCount = std::min(recentLimit, catalog.recentItems.size());
+    recentFiles.reserve(recentCount);
+    for (std::size_t index = 0; index < recentCount; ++index) {
+        const auto& recent = catalog.recentItems[index];
+        const auto* asset = findAsset(catalog, recent.id);
+        recentFiles.push_back({.id = recent.id,
+                               .path = recent.path,
+                               .assetKind = asset == nullptr
+                                                ? std::optional<AssetKind>{}
+                                                : std::optional<AssetKind>{asset->kind},
+                               .favorite = asset != nullptr && asset->favorite,
+                               .missing = asset != nullptr && asset->missing});
+    }
+
+    return sections;
 }
 
 BrowserDropPlan planBrowserDrop(const AssetCatalog& catalog, BrowserDropRequest request) {

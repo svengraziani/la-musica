@@ -143,6 +143,54 @@ WarpState retargetWarpTempo(const WarpState& warp, double newTargetTempoBpm) {
     return retargeted;
 }
 
+WarpState conformWarpToTempo(const WarpState& warp, std::span<const Transient> transients,
+                             std::int64_t sourceEndSample, double newTargetTempoBpm) {
+    validateWarpState(warp);
+    if (sourceEndSample <= 0) {
+        throw std::runtime_error("Warp conform source end must be positive");
+    }
+    if (newTargetTempoBpm <= 0.0) {
+        throw std::runtime_error("Warp target tempo must be positive");
+    }
+
+    auto conformed = retargetWarpTempo(warp, newTargetTempoBpm);
+    conformed.enabled = true;
+
+    const auto appendMarker = [&conformed](std::string id, std::int64_t sourceSample,
+                                           std::int64_t timelineSample) {
+        if (sourceSample < 0 || timelineSample < 0) {
+            return;
+        }
+        const auto existing =
+            std::ranges::find_if(conformed.markers, [sourceSample](const WarpMarker& marker) {
+                return marker.sourceSample == sourceSample;
+            });
+        if (existing == conformed.markers.end()) {
+            conformed.markers.push_back({.id = std::move(id),
+                                         .sourceSample = sourceSample,
+                                         .timelineSample = timelineSample});
+        }
+    };
+
+    appendMarker(conformed.clipId + "-warp-start", 0,
+                 conformSampleToTempo(0, conformed.sourceTempoBpm, conformed.targetTempoBpm));
+    for (const auto& transient : transients) {
+        if (transient.sourceSample <= 0 || transient.sourceSample >= sourceEndSample) {
+            continue;
+        }
+        appendMarker(conformed.clipId + "-warp-" + std::to_string(transient.sourceSample),
+                     transient.sourceSample,
+                     conformSampleToTempo(transient.sourceSample, conformed.sourceTempoBpm,
+                                          conformed.targetTempoBpm));
+    }
+    appendMarker(
+        conformed.clipId + "-warp-end", sourceEndSample,
+        conformSampleToTempo(sourceEndSample, conformed.sourceTempoBpm, conformed.targetTempoBpm));
+
+    std::ranges::sort(conformed.markers, {}, &WarpMarker::sourceSample);
+    return conformed;
+}
+
 std::vector<Transient> detectTransients(std::span<const float> monoSamples, float threshold) {
     std::vector<Transient> transients;
     if (monoSamples.size() < 2) {
@@ -216,6 +264,32 @@ void quantizeWarpMarkers(WarpState& warp, std::int64_t gridSamples, float streng
     validateWarpState(warp);
     for (auto& marker : warp.markers) {
         marker.timelineSample = quantizeSampleToGrid(marker.timelineSample, gridSamples, strength);
+    }
+}
+
+void applyGrooveToWarpMarkers(WarpState& warp, const GrooveTemplate& groove, float strength) {
+    validateWarpState(warp);
+    if (groove.id.empty()) {
+        throw std::runtime_error("Groove id must not be empty");
+    }
+    if (groove.points.empty()) {
+        throw std::runtime_error("Groove must contain at least one point");
+    }
+    if (strength < 0.0F || strength > 1.0F) {
+        throw std::runtime_error("Groove strength must be in the range 0..1");
+    }
+
+    for (auto& marker : warp.markers) {
+        const auto nearest =
+            std::ranges::min_element(groove.points, {}, [&marker](const GroovePoint& point) {
+                return std::llabs(point.gridSample - marker.timelineSample);
+            });
+        if (nearest == groove.points.end()) {
+            continue;
+        }
+        const auto target = nearest->gridSample + nearest->offsetSamples;
+        marker.timelineSample += static_cast<std::int64_t>(
+            std::llround(static_cast<double>(target - marker.timelineSample) * strength));
     }
 }
 

@@ -1,5 +1,6 @@
 #include "lamusica/audio/AudioEngine.hpp"
 #include "lamusica/audio/WavFile.hpp"
+#include "lamusica/session/Performance.hpp"
 #include "lamusica/session/Project.hpp"
 #include "lamusica/session/ProjectDocument.hpp"
 
@@ -17,6 +18,7 @@ void printUsage() {
     std::cout << "usage: lamusica_cli create-project <Project.lamusica> <name>\n"
               << "       lamusica_cli validate <Project.lamusica>\n"
               << "       lamusica_cli verify-examples <examples-dir>\n"
+              << "       lamusica_cli benchmark-smoke\n"
               << "       lamusica_cli inspect-project <Project.lamusica>\n"
               << "       lamusica_cli render-test-tone <output.wav>\n"
               << "       lamusica_cli inspect-wav <input.wav>\n";
@@ -113,6 +115,56 @@ int main(int argc, char** argv) {
         } catch (const std::exception& error) {
             std::cerr << "example verification failed: " << error.what() << '\n';
             return 7;
+        }
+    }
+
+    if (argc == 2 && std::string_view{argv[1]} == "benchmark-smoke") {
+        try {
+            const auto report = lamusica::session::runStressBenchmark(
+                {.stressSpec = {.tracks = 3,
+                                .clipsPerTrack = 8,
+                                .markers = 4,
+                                .pluginsPerTrack = 1,
+                                .automationLanesPerTrack = 1,
+                                .automationPointsPerLane = 4,
+                                .midiNotesPerMidiClip = 4,
+                                .assets = 8,
+                                .mcpAuditEntries = 4},
+                 .thresholds = {.maxStartupMilliseconds = 5000.0,
+                                .maxPluginScanMilliseconds = 5000.0,
+                                .maxCpuWorkMilliseconds = 5000.0,
+                                .maxSaveLoadMilliseconds = 5000.0,
+                                .maxQueryMilliseconds = 5000.0,
+                                .maxRenderRealtimeFactor = 1000.0,
+                                .maxEstimatedMemoryBytes = 512U * 1024U * 1024U,
+                                .maxEstimatedDiskBytes = 128U * 1024U * 1024U},
+                 .renderFrames = 64});
+            std::cout << "benchmark smoke passed=" << (report.passed ? "true" : "false")
+                      << " startupMs=" << report.result.startupMilliseconds
+                      << " pluginScanMs=" << report.result.pluginScanMilliseconds
+                      << " cpuWorkMs=" << report.result.cpuWorkMilliseconds
+                      << " saveLoadMs=" << report.result.saveLoadMilliseconds
+                      << " queryMs=" << report.result.queryMilliseconds
+                      << " renderRealtimeFactor=" << report.result.renderRealtimeFactor
+                      << " memoryBytes=" << report.result.estimatedMemoryBytes
+                      << " diskBytes=" << report.result.estimatedDiskBytes << " cpu=\""
+                      << report.machine.cpuModel << "\""
+                      << " cores=" << report.machine.logicalCores
+                      << " memoryMb=" << report.machine.memoryMegabytes << " os=\""
+                      << report.machine.operatingSystem << "\""
+                      << " compiler=\"" << report.machine.compiler << "\"\n";
+            if (!report.passed) {
+                std::cerr << "benchmark regressions:";
+                for (const auto& regression : report.regressions) {
+                    std::cerr << ' ' << regression;
+                }
+                std::cerr << '\n';
+                return 8;
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "benchmark smoke failed: " << error.what() << '\n';
+            return 8;
         }
     }
 

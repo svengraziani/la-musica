@@ -49,6 +49,13 @@ struct RoutingEdge {
     std::string destinationChannelId;
 };
 
+struct SidechainRoute {
+    std::string id;
+    std::string sourceChannelId;
+    std::string destinationChannelId;
+    std::string targetInsertId;
+};
+
 struct FaderGroup {
     std::string id;
     std::string name;
@@ -60,6 +67,7 @@ struct FaderGroup {
 struct MixerState {
     std::vector<ChannelStrip> channels;
     std::vector<RoutingEdge> routing;
+    std::vector<SidechainRoute> sidechains;
     std::vector<FaderGroup> faderGroups;
 };
 
@@ -75,8 +83,19 @@ struct MeterState {
     MeterReading reading;
 };
 
+struct RoutingMatrixCell {
+    std::string sourceChannelId;
+    std::string destinationChannelId;
+    bool existingRoute{false};
+    bool routeAllowed{false};
+    bool sendAllowed{false};
+    bool sidechainAllowed{false};
+    bool wouldCreateFeedback{false};
+};
+
 [[nodiscard]] bool hasRoutingCycle(const MixerState& mixer);
 [[nodiscard]] bool validateRouting(const MixerState& mixer, std::string* errorMessage = nullptr);
+[[nodiscard]] std::vector<RoutingMatrixCell> buildRoutingMatrix(const MixerState& mixer);
 [[nodiscard]] MeterReading measureInterleaved(std::span<const float> samples,
                                               std::uint32_t channels);
 void updateMeter(MeterState& state, std::span<const float> samples, std::uint32_t channels);
@@ -85,6 +104,7 @@ void resetMeter(MeterState& state) noexcept;
 [[nodiscard]] const ChannelStrip* findChannel(const MixerState& mixer, std::string_view channelId);
 void addChannel(MixerState& mixer, ChannelStrip channel);
 void addRoute(MixerState& mixer, RoutingEdge route);
+void addSidechainRoute(MixerState& mixer, SidechainRoute route);
 void addSend(MixerState& mixer, std::string_view sourceChannelId, Send send);
 void addFaderGroup(MixerState& mixer, FaderGroup group);
 void applyFaderGroupVolumeDelta(MixerState& mixer, std::string_view groupId, float deltaDb);

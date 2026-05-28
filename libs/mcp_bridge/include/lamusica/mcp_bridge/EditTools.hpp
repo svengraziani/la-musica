@@ -28,7 +28,12 @@ struct EditApplyOptions {
 
 using MidiEditCommand =
     std::variant<commands::AddMidiNoteCommand, commands::QuantizeMidiClipCommand,
-                 commands::TransposeMidiClipCommand, commands::EditMidiNoteCommand>;
+                 commands::TransposeMidiClipCommand, commands::TransformMidiVelocityCommand,
+                 commands::HumanizeMidiClipCommand, commands::SetMidiNoteLengthsCommand,
+                 commands::LegatoMidiClipCommand, commands::EditMidiNoteCommand,
+                 commands::SplitMidiNoteCommand, commands::AddMidiControlChangeCommand,
+                 commands::AddMidiPitchBendCommand, commands::AddMidiAftertouchCommand,
+                 commands::AddMidiProgramChangeCommand>;
 using AutomationEditCommand =
     std::variant<commands::AddAutomationPointCommand, commands::CaptureAutomationWriteCommand>;
 using MixerEditCommand = std::variant<commands::SetChannelMixCommand>;
@@ -151,7 +156,8 @@ class PluginEditHistory {
 [[nodiscard]] EditToolResult applyPluginCommand(const DaemonSession& session,
                                                 commands::PluginInsertChainStore& store,
                                                 PluginEditHistory& history,
-                                                PluginEditCommand command);
+                                                PluginEditCommand command,
+                                                EditApplyOptions options = {});
 [[nodiscard]] EditToolResult undoLastPluginCommand(const DaemonSession& session,
                                                    commands::PluginInsertChainStore& store,
                                                    PluginEditHistory& history);

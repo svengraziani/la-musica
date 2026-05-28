@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -69,9 +70,23 @@ struct DrumRouteRender {
     audio::RenderedAudio audio;
 };
 
+struct DrumPresetAssetReference {
+    std::string assetId;
+    std::vector<std::string> padIds;
+};
+
+struct DrumPresetAssetMapping {
+    std::string sourceAssetId;
+    std::string collectedAssetId;
+};
+
 [[nodiscard]] const DrumPad* findPadForMidiNote(const DrumMachinePreset& preset,
                                                 std::uint8_t midiNote);
+[[nodiscard]] DrumPad* findPadById(DrumMachinePreset& preset, std::string_view padId) noexcept;
+[[nodiscard]] const DrumPad* findPadById(const DrumMachinePreset& preset,
+                                         std::string_view padId) noexcept;
 [[nodiscard]] std::string selectLayerAsset(const DrumPad& pad, std::uint8_t velocity);
+void assignAssetToPad(DrumMachinePreset& preset, std::string_view padId, VelocityLayer layer);
 [[nodiscard]] std::vector<DrumTrigger>
 renderDrumTriggers(const DrumMachinePreset& preset,
                    const std::vector<std::pair<std::int64_t, std::uint8_t>>& events);
@@ -83,6 +98,11 @@ renderDrumPadSample(const DrumPad& pad, const audio::RenderedAudio& source, std:
 renderDrumMachineRoutes(const DrumMachinePreset& preset, const std::vector<DrumPadEvent>& events,
                         const std::vector<DrumSampleAsset>& samples, std::uint32_t frames,
                         std::uint32_t channels);
+[[nodiscard]] std::vector<DrumPresetAssetReference>
+collectDrumPresetAssetReferences(const DrumMachinePreset& preset);
+[[nodiscard]] DrumMachinePreset
+makePortableDrumMachinePreset(const DrumMachinePreset& preset,
+                              std::span<const DrumPresetAssetMapping> mappings);
 [[nodiscard]] std::string serializeDrumMachinePreset(const DrumMachinePreset& preset);
 [[nodiscard]] DrumMachinePreset parseDrumMachinePreset(std::string_view json);
 [[nodiscard]] bool hasClearDrumPresetRedistributionRights(const DrumMachinePreset& preset);

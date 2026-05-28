@@ -19,6 +19,18 @@ void considerCandidate(std::int64_t candidate, std::int64_t sample, std::int64_t
     }
 }
 
+double sampleToX(std::int64_t sample, TimelineRange visibleRange,
+                 const TimelineLayoutOptions& options) {
+    const auto visibleLength = std::max<std::int64_t>(1, visibleRange.length());
+    const auto timelineWidth = std::max(1.0, options.viewportWidth - options.headerWidth);
+    const auto offset = static_cast<double>(sample - visibleRange.startSample);
+    return options.headerWidth + (offset / static_cast<double>(visibleLength)) * timelineWidth;
+}
+
+bool intersects(TimelineRange left, TimelineRange right) noexcept {
+    return left.startSample < right.endSample && left.endSample > right.startSample;
+}
+
 } // namespace
 
 std::int64_t TimelineRange::length() const noexcept {
@@ -105,6 +117,116 @@ void zoomTimelineAroundSample(TimelineViewState& viewState, double zoomFactor,
     newStart = std::max<std::int64_t>(0, newStart);
     viewState.visibleRange = {.startSample = newStart, .endSample = newStart + newLength};
     viewState.pixelsPerSecond = std::max(1.0, viewState.pixelsPerSecond * zoomFactor);
+}
+
+TimelineLayout buildTimelineLayout(const ProjectManifest& manifest,
+                                   const TimelineViewState& viewState,
+                                   TimelineLayoutOptions options) {
+    if (options.viewportWidth <= options.headerWidth || options.headerWidth < 0.0 ||
+        options.rulerHeight < 0.0 || options.trackHeight <= 0.0) {
+        throw std::runtime_error("Timeline layout dimensions are invalid");
+    }
+    if (viewState.visibleRange.startSample < 0 ||
+        viewState.visibleRange.endSample <= viewState.visibleRange.startSample) {
+        throw std::runtime_error("Timeline visible range must be non-empty and non-negative");
+    }
+
+    TimelineLayout layout;
+    const auto timelineWidth = options.viewportWidth - options.headerWidth;
+    layout.rulerBounds = {
+        .x = options.headerWidth, .y = 0.0, .width = timelineWidth, .height = options.rulerHeight};
+    layout.playheadX = sampleToX(viewState.playheadSample, viewState.visibleRange, options);
+
+    double laneY = options.rulerHeight;
+    const auto tracks = orderedTimelineTracks(manifest);
+    for (const auto& track : tracks) {
+        layout.trackHeaders.push_back({.trackId = track.id,
+                                       .name = track.name,
+                                       .bounds = {.x = 0.0,
+                                                  .y = laneY,
+                                                  .width = options.headerWidth,
+                                                  .height = options.trackHeight}});
+        layout.lanes.push_back({.trackId = track.id,
+                                .trackType = track.type,
+                                .bounds = {.x = options.headerWidth,
+                                           .y = laneY,
+                                           .width = timelineWidth,
+                                           .height = options.trackHeight}});
+        laneY += options.trackHeight;
+    }
+    layout.contentHeight = laneY;
+
+    for (const auto& clip : manifest.clips) {
+        const auto lane =
+            std::ranges::find_if(layout.lanes, [&clip](const TimelineLaneLayout& candidate) {
+                return candidate.trackId == clip.trackId;
+            });
+        if (lane == layout.lanes.end()) {
+            continue;
+        }
+        const TimelineRange clipRange{clip.startSample, clip.startSample + clip.lengthSamples};
+        if (!intersects(clipRange, viewState.visibleRange)) {
+            continue;
+        }
+        const auto visibleStart =
+            std::max(clipRange.startSample, viewState.visibleRange.startSample);
+        const auto visibleEnd = std::min(clipRange.endSample, viewState.visibleRange.endSample);
+        const auto left = sampleToX(visibleStart, viewState.visibleRange, options);
+        const auto right = sampleToX(visibleEnd, viewState.visibleRange, options);
+        const auto selected = std::ranges::any_of(
+            viewState.selection.clipIds, [&clip](const auto& id) { return id == clip.id; });
+        layout.clips.push_back({.clipId = clip.id,
+                                .trackId = clip.trackId,
+                                .clipType = clip.type,
+                                .bounds = {.x = left,
+                                           .y = lane->bounds.y,
+                                           .width = std::max(1.0, right - left),
+                                           .height = lane->bounds.height},
+                                .selected = selected});
+    }
+
+    for (const auto& marker : manifest.markers) {
+        if (!viewState.visibleRange.contains(marker.samplePosition)) {
+            continue;
+        }
+        layout.markers.push_back(
+            {.markerId = marker.id,
+             .name = marker.name,
+             .x = sampleToX(marker.samplePosition, viewState.visibleRange, options)});
+    }
+
+    const auto tickGrid = viewState.snap.beatGridSamples > 0 ? viewState.snap.beatGridSamples
+                                                             : viewState.snap.sampleGrid;
+    if (tickGrid > 0) {
+        auto tickSample = (viewState.visibleRange.startSample / tickGrid) * tickGrid;
+        if (tickSample < viewState.visibleRange.startSample) {
+            tickSample += tickGrid;
+        }
+        for (; tickSample < viewState.visibleRange.endSample; tickSample += tickGrid) {
+            const auto tickIndex = tickSample / tickGrid;
+            layout.rulerTicks.push_back(
+                {.samplePosition = tickSample,
+                 .x = sampleToX(tickSample, viewState.visibleRange, options),
+                 .major = tickIndex % 4 == 0});
+        }
+    }
+
+    if (viewState.loopRegion.has_value() &&
+        intersects(*viewState.loopRegion, viewState.visibleRange)) {
+        const auto visibleStart =
+            std::max(viewState.loopRegion->startSample, viewState.visibleRange.startSample);
+        const auto visibleEnd =
+            std::min(viewState.loopRegion->endSample, viewState.visibleRange.endSample);
+        const auto left = sampleToX(visibleStart, viewState.visibleRange, options);
+        const auto right = sampleToX(visibleEnd, viewState.visibleRange, options);
+        layout.loopRegion =
+            TimelineRect{.x = left,
+                         .y = options.rulerHeight,
+                         .width = std::max(1.0, right - left),
+                         .height = std::max(0.0, layout.contentHeight - options.rulerHeight)};
+    }
+
+    return layout;
 }
 
 std::int64_t snapSample(std::int64_t sample, const SnapSettings& settings,

@@ -11,6 +11,7 @@ struct AudioGraph;
 
 enum class ExportBitDepth {
     Pcm16,
+    Pcm24,
 };
 
 enum class DitherMode {

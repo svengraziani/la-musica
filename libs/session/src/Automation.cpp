@@ -93,6 +93,28 @@ std::vector<float> evaluateAutomationBlock(const AutomationLaneData& lane, std::
     return values;
 }
 
+std::vector<AutomationPoint> automationPointsInRange(const AutomationLaneData& lane,
+                                                     std::int64_t startSample,
+                                                     std::int64_t endSample) {
+    if (startSample < 0 || endSample < startSample) {
+        throw std::invalid_argument("Automation point range is invalid");
+    }
+
+    std::vector<AutomationPoint> points;
+    for (const auto& region : lane.regions) {
+        if (region.endSample < startSample || region.startSample >= endSample) {
+            continue;
+        }
+        for (const auto& point : region.points) {
+            if (point.samplePosition >= startSample && point.samplePosition < endSample) {
+                points.push_back(point);
+            }
+        }
+    }
+    std::ranges::sort(points, {}, &AutomationPoint::samplePosition);
+    return points;
+}
+
 float effectiveAutomationValue(const AutomationLaneData& lane, std::int64_t samplePosition,
                                float currentValue) {
     if (lane.mode == AutomationMode::Off) {
@@ -121,6 +143,133 @@ const AutomationLaneData* selectAutomationLane(std::span<const AutomationLaneDat
         return nullptr;
     }
     return &*lane;
+}
+
+std::vector<AutomationParameterBinding> automationBindingsForMixer(const MixerState& mixer) {
+    std::vector<AutomationParameterBinding> bindings;
+    bindings.reserve(mixer.channels.size() * 7U);
+    for (const auto& channel : mixer.channels) {
+        bindings.push_back({.targetKind = AutomationTargetKind::Mixer,
+                            .targetId = channel.id,
+                            .parameterId = "volumeDb",
+                            .displayName = channel.name + " Volume",
+                            .defaultValue = channel.volumeDb,
+                            .minimumValue = -120.0F,
+                            .maximumValue = 24.0F});
+        bindings.push_back({.targetKind = AutomationTargetKind::Mixer,
+                            .targetId = channel.id,
+                            .parameterId = "pan",
+                            .displayName = channel.name + " Pan",
+                            .defaultValue = channel.pan,
+                            .minimumValue = -1.0F,
+                            .maximumValue = 1.0F});
+        bindings.push_back({.targetKind = AutomationTargetKind::Mixer,
+                            .targetId = channel.id,
+                            .parameterId = "mute",
+                            .displayName = channel.name + " Mute",
+                            .defaultValue = channel.muted ? 1.0F : 0.0F,
+                            .stepped = true});
+        bindings.push_back({.targetKind = AutomationTargetKind::Mixer,
+                            .targetId = channel.id,
+                            .parameterId = "solo",
+                            .displayName = channel.name + " Solo",
+                            .defaultValue = channel.solo ? 1.0F : 0.0F,
+                            .stepped = true});
+        bindings.push_back({.targetKind = AutomationTargetKind::Mixer,
+                            .targetId = channel.id,
+                            .parameterId = "recordArmed",
+                            .displayName = channel.name + " Record Arm",
+                            .defaultValue = channel.recordArmed ? 1.0F : 0.0F,
+                            .stepped = true});
+        bindings.push_back({.targetKind = AutomationTargetKind::Mixer,
+                            .targetId = channel.id,
+                            .parameterId = "inputMonitoring",
+                            .displayName = channel.name + " Input Monitor",
+                            .defaultValue = channel.inputMonitoring ? 1.0F : 0.0F,
+                            .stepped = true});
+        bindings.push_back({.targetKind = AutomationTargetKind::Mixer,
+                            .targetId = channel.id,
+                            .parameterId = "phaseInverted",
+                            .displayName = channel.name + " Phase Invert",
+                            .defaultValue = channel.phaseInverted ? 1.0F : 0.0F,
+                            .stepped = true});
+    }
+    return bindings;
+}
+
+std::vector<AutomationParameterBinding>
+automationBindingsForPluginChain(const PluginInsertChain& chain, const PluginScanCache& cache,
+                                 AutomationTargetKind targetKind) {
+    if (targetKind != AutomationTargetKind::Plugin &&
+        targetKind != AutomationTargetKind::Instrument) {
+        throw std::invalid_argument(
+            "Plugin automation bindings require plugin or instrument target kind");
+    }
+
+    std::vector<AutomationParameterBinding> bindings;
+    for (const auto& insert : chain.inserts) {
+        const auto plugin = findPlugin(cache, insert.pluginIdentifier);
+        if (!plugin.has_value()) {
+            continue;
+        }
+        const auto parameters = discoverPluginParameters(*plugin);
+        for (const auto& parameter : parameters) {
+            bindings.push_back(
+                {.targetKind = targetKind,
+                 .targetId = insert.id,
+                 .parameterId = parameter.id,
+                 .displayName = plugin->name + " " + parameter.name,
+                 .defaultValue =
+                     findParameterValue(insert, parameter.id).value_or(parameter.defaultValue),
+                 .minimumValue = 0.0F,
+                 .maximumValue = 1.0F,
+                 .stepped = false});
+        }
+    }
+    return bindings;
+}
+
+std::vector<AutomationParameterBinding> automationBindingsForClip(const Clip& clip) {
+    return {{.targetKind = AutomationTargetKind::Clip,
+             .targetId = clip.id,
+             .parameterId = "gainDb",
+             .displayName = "Clip Gain",
+             .defaultValue = clip.gainDb,
+             .minimumValue = -120.0F,
+             .maximumValue = 24.0F},
+            {.targetKind = AutomationTargetKind::Clip,
+             .targetId = clip.id,
+             .parameterId = "mute",
+             .displayName = "Clip Mute",
+             .defaultValue = clip.muted ? 1.0F : 0.0F,
+             .stepped = true},
+            {.targetKind = AutomationTargetKind::Clip,
+             .targetId = clip.id,
+             .parameterId = "reversed",
+             .displayName = "Clip Reverse",
+             .defaultValue = clip.reversed ? 1.0F : 0.0F,
+             .stepped = true},
+            {.targetKind = AutomationTargetKind::Clip,
+             .targetId = clip.id,
+             .parameterId = "fadeInSamples",
+             .displayName = "Clip Fade In",
+             .defaultValue = static_cast<float>(clip.fadeInSamples),
+             .minimumValue = 0.0F,
+             .maximumValue = static_cast<float>(clip.lengthSamples)},
+            {.targetKind = AutomationTargetKind::Clip,
+             .targetId = clip.id,
+             .parameterId = "fadeOutSamples",
+             .displayName = "Clip Fade Out",
+             .defaultValue = static_cast<float>(clip.fadeOutSamples),
+             .minimumValue = 0.0F,
+             .maximumValue = static_cast<float>(clip.lengthSamples)},
+            {.targetKind = AutomationTargetKind::Clip,
+             .targetId = clip.id,
+             .parameterId = "sourceOffsetSamples",
+             .displayName = "Clip Source Offset",
+             .defaultValue = static_cast<float>(clip.sourceOffsetSamples),
+             .minimumValue = 0.0F,
+             .maximumValue = static_cast<float>(clip.sourceOffsetSamples + clip.lengthSamples)}};
 }
 
 void addAutomationPoint(AutomationLaneData& lane, std::int64_t samplePosition, float value,

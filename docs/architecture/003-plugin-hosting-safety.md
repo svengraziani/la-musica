@@ -6,14 +6,19 @@ Accepted for implementation foundation.
 
 ## Decision
 
-- Model plugin scan cache, blacklist, insert chains, and stable parameter addresses before loading real Audio Unit or VST3 binaries.
+- Model plugin scan cache, blacklist, insert chains, instrument slots, plugin editor windows, and
+  stable parameter addresses before loading real Audio Unit or VST3 binaries.
 - Keep plugin scanning isolated from normal app startup.
 - Treat blacklisted or invalid plugins as unavailable rather than fatal.
 - Treat scan crashes and timeouts as handled outcomes that are recorded, blacklisted by policy, and
   skipped on later launches.
+- Expose plugin formats through an explicit support policy: built-in devices are always available,
+  Audio Unit hosting requires macOS runtime availability, and VST3 hosting remains disabled until
+  the SDK is available and license acceptance is recorded.
 - Use stable parameter addresses in the form `pluginIdentifier::parameterId`.
-- Serialize insert-chain state and presets through deterministic project-local records so parameter
-  values can save, reload, and participate in undoable editing before real plugin binaries load.
+- Serialize insert-chain state, instrument slots, editor-window state, and presets through
+  deterministic project-local records so parameter values can save, reload, and participate in
+  undoable editing before real plugin binaries load.
 
 ## Consequences
 

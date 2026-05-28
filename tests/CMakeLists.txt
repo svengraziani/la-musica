@@ -20,6 +20,7 @@ add_test(NAME lamusica_cli_inspect_created_project
          COMMAND lamusica_cli inspect-project "${LAMUSICA_CLI_LIFECYCLE_PROJECT}")
 add_test(NAME lamusica_cli_verify_examples
          COMMAND lamusica_cli verify-examples "${PROJECT_SOURCE_DIR}/fixtures/examples")
+add_test(NAME lamusica_cli_benchmark_smoke COMMAND lamusica_cli benchmark-smoke)
 
 set_tests_properties(lamusica_cli_create_project
                      PROPERTIES DEPENDS lamusica_cli_lifecycle_clean
@@ -33,6 +34,8 @@ set_tests_properties(lamusica_cli_inspect_created_project
                                 "schemaVersion=1 tracks=0 clips=0")
 set_tests_properties(lamusica_cli_verify_examples
                      PROPERTIES PASS_REGULAR_EXPRESSION "verified example projects: 1")
+set_tests_properties(lamusica_cli_benchmark_smoke
+                     PROPERTIES PASS_REGULAR_EXPRESSION "benchmark smoke passed=true")
 
 set(LAMUSICA_MISSING_ASSET_EXAMPLE
     "${CMAKE_CURRENT_BINARY_DIR}/missing-assets/bad.Project.lamusica")

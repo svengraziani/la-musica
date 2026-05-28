@@ -53,26 +53,27 @@ float rms(const audio::RenderedAudio& rendered) noexcept {
         std::sqrt(sumSquares / static_cast<double>(rendered.interleavedSamples.size())));
 }
 
-std::string analysisManifestJson(const std::filesystem::path& path,
-                                 const audio::WavAudioData& wav) {
+std::string analysisManifestJson(const std::filesystem::path& path, const audio::WavAudioData& wav,
+                                 bool explicitExport = false) {
     const auto peak = audio::peakAbsoluteSample(wav.audio);
     const auto rmsValue = rms(wav.audio);
     const auto lufsEstimate = rmsValue <= 0.0F ? -90.0F : (20.0F * std::log10(rmsValue));
     std::ostringstream output;
-    output << "{\"schemaVersion\":1,\"type\":\"wav_analysis\",\"path\":\""
-           << escapeJson(path.string()) << "\",\"frames\":" << wav.audio.frames
-           << ",\"channels\":" << wav.audio.channels << ",\"sampleRate\":" << wav.sampleRate
-           << ",\"bitsPerSample\":" << wav.bitsPerSample << ",\"peak\":" << peak
-           << ",\"rms\":" << rmsValue << ",\"lufsEstimate\":" << lufsEstimate << "}";
+    output << "{\"schemaVersion\":1,\"type\":\"wav_analysis\",\"explicitExport\":"
+           << (explicitExport ? "true" : "false") << ",\"path\":\"" << escapeJson(path.string())
+           << "\",\"frames\":" << wav.audio.frames << ",\"channels\":" << wav.audio.channels
+           << ",\"sampleRate\":" << wav.sampleRate << ",\"bitsPerSample\":" << wav.bitsPerSample
+           << ",\"peak\":" << peak << ",\"rms\":" << rmsValue
+           << ",\"lufsEstimate\":" << lufsEstimate << "}";
     return output.str();
 }
 
 std::string bounceManifestJson(const audio::BounceResult& bounce) {
     std::ostringstream output;
-    output << "{\"schemaVersion\":1,\"type\":\"graph_bounce\",\"outputPath\":\""
-           << escapeJson(bounce.outputPath.string()) << "\",\"startSample\":" << bounce.startSample
-           << ",\"frames\":" << bounce.frames << ",\"channels\":" << bounce.channels
-           << ",\"sampleRate\":" << bounce.sampleRate
+    output << "{\"schemaVersion\":1,\"type\":\"graph_bounce\",\"explicitExport\":true,"
+           << "\"outputPath\":\"" << escapeJson(bounce.outputPath.string())
+           << "\",\"startSample\":" << bounce.startSample << ",\"frames\":" << bounce.frames
+           << ",\"channels\":" << bounce.channels << ",\"sampleRate\":" << bounce.sampleRate
            << ",\"peakBeforeNormalization\":" << bounce.peakBeforeNormalization
            << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization << "}";
     return output.str();
@@ -301,7 +302,7 @@ RenderJob RenderJobQueue::enqueueTestTone(const DaemonSession& session, std::str
         audio::writePcm16Wav(job.outputPath, rendered, engine.config().sampleRate);
         const audio::WavAudioData wav{
             .audio = rendered, .sampleRate = engine.config().sampleRate, .bitsPerSample = 16};
-        job.resultManifestJson = analysisManifestJson(job.outputPath, wav);
+        job.resultManifestJson = analysisManifestJson(job.outputPath, wav, true);
         job.status = RenderJobStatus::Completed;
         job.progress = 1.0F;
         job.message = "rendered";

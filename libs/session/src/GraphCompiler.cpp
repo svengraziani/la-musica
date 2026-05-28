@@ -69,6 +69,14 @@ bool hasSoloChannel(const MixerState& mixer) {
                                [](const ChannelStrip& channel) { return channel.solo; });
 }
 
+const ChannelStrip* findMixerChannel(const MixerState& mixer, std::string_view channelId) {
+    const auto found =
+        std::ranges::find_if(mixer.channels, [channelId](const ChannelStrip& channel) {
+            return channel.id == channelId;
+        });
+    return found == mixer.channels.end() ? nullptr : &*found;
+}
+
 float channelGain(const ChannelStrip& channel, bool soloMode) noexcept {
     const bool mutedBySolo = soloMode && !channel.solo && channel.type != ChannelType::Master &&
                              channel.type != ChannelType::HardwareOutput;
@@ -156,6 +164,11 @@ audio::AudioGraph compileProjectAudioGraph(const ProjectManifest& manifest, cons
             {.sourceNodeId = mixerNodeId(route.sourceChannelId, knownTrackIds),
              .destinationNodeId = mixerNodeId(route.destinationChannelId, knownTrackIds),
              .gain = 1.0F});
+        const auto* destination = findMixerChannel(mixer, route.destinationChannelId);
+        if (destination != nullptr && destination->type == ChannelType::HardwareOutput &&
+            mixerNodeId(route.sourceChannelId, knownTrackIds) == graph.outputNodeId) {
+            graph.outputNodeId = mixerNodeId(route.destinationChannelId, knownTrackIds);
+        }
     }
 
     for (const auto& channel : mixer.channels) {

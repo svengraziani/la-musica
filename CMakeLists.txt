@@ -23,6 +23,9 @@ option(LAMUSICA_ENABLE_PROFILING "Build targets with profiling-friendly debug sy
 set(LAMUSICA_JUCE_PATH
     ""
     CACHE PATH "Path to a checked-out JUCE 8 source tree")
+set(LAMUSICA_JUCE_REQUIRED_MAJOR
+    "8"
+    CACHE STRING "Required JUCE major version")
 
 include(cmake/CompilerWarnings.cmake)
 
@@ -32,6 +35,11 @@ if(LAMUSICA_ENABLE_JUCE)
   endif()
 
   add_subdirectory("${LAMUSICA_JUCE_PATH}" external/JUCE)
+
+  if(DEFINED JUCE_VERSION AND NOT JUCE_VERSION MATCHES "^${LAMUSICA_JUCE_REQUIRED_MAJOR}\\.")
+    message(FATAL_ERROR
+            "LaMusica requires JUCE ${LAMUSICA_JUCE_REQUIRED_MAJOR}.x, got ${JUCE_VERSION}")
+  endif()
 endif()
 
 add_subdirectory(libs/audio)
@@ -51,9 +59,12 @@ install(TARGETS lamusica_daw lamusica_mcpd lamusica_cli
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         BUNDLE DESTINATION .)
 install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(DIRECTORY fixtures/examples/ DESTINATION ${CMAKE_INSTALL_DATADIR}/lamusica/examples)
 install(DIRECTORY fixtures/empty.Project.lamusica
         DESTINATION ${CMAKE_INSTALL_DATADIR}/lamusica/examples)
+install(DIRECTORY fixtures/tutorials/ DESTINATION ${CMAKE_INSTALL_DATADIR}/lamusica/tutorials)
 
 set(CPACK_PACKAGE_NAME "LaMusica")
 set(CPACK_PACKAGE_VENDOR "LaMusica")

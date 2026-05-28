@@ -49,9 +49,19 @@ std::int16_t floatToPcm16(float sample) {
     return static_cast<std::int16_t>(std::lrint(clamped * 32767.0F));
 }
 
+std::int32_t floatToPcm24(float sample) {
+    const auto clamped = std::clamp(sample, -1.0F, 1.0F);
+    return static_cast<std::int32_t>(std::lrint(clamped * 8388607.0F));
+}
+
 float pcm16ToFloat(std::int16_t sample) noexcept {
     return sample < 0 ? static_cast<float>(sample) / 32768.0F
                       : static_cast<float>(sample) / 32767.0F;
+}
+
+float pcm24ToFloat(std::int32_t sample) noexcept {
+    return sample < 0 ? static_cast<float>(sample) / 8388608.0F
+                      : static_cast<float>(sample) / 8388607.0F;
 }
 
 std::string readChunkId(std::ifstream& input) {
@@ -70,10 +80,8 @@ void skipBytes(std::ifstream& input, std::uint32_t count) {
     }
 }
 
-} // namespace
-
-void writePcm16Wav(const std::filesystem::path& path, const RenderedAudio& audio,
-                   double sampleRate) {
+void validateWritableWav(const std::filesystem::path& path, const RenderedAudio& audio,
+                         double sampleRate) {
     if (audio.channels == 0) {
         throw std::runtime_error("Cannot write WAV with zero channels");
     }
@@ -88,13 +96,10 @@ void writePcm16Wav(const std::filesystem::path& path, const RenderedAudio& audio
     if (path.has_parent_path()) {
         std::filesystem::create_directories(path.parent_path());
     }
+}
 
-    std::ofstream output{path, std::ios::binary};
-    if (!output) {
-        throw std::runtime_error("Could not open WAV output file");
-    }
-
-    constexpr std::uint16_t bitsPerSample = 16;
+void writePcmWavHeader(std::ofstream& output, const RenderedAudio& audio, double sampleRate,
+                       std::uint16_t bitsPerSample) {
     const auto bytesPerSample = bitsPerSample / 8U;
     const auto dataSize =
         static_cast<std::uint32_t>(audio.interleavedSamples.size() * bytesPerSample);
@@ -116,9 +121,42 @@ void writePcm16Wav(const std::filesystem::path& path, const RenderedAudio& audio
     writeLittleEndian(output, bitsPerSample);
     writeBytes(output, "data");
     writeLittleEndian(output, dataSize);
+}
+
+} // namespace
+
+void writePcm16Wav(const std::filesystem::path& path, const RenderedAudio& audio,
+                   double sampleRate) {
+    validateWritableWav(path, audio, sampleRate);
+    std::ofstream output{path, std::ios::binary};
+    if (!output) {
+        throw std::runtime_error("Could not open WAV output file");
+    }
+
+    constexpr std::uint16_t bitsPerSample = 16;
+    writePcmWavHeader(output, audio, sampleRate, bitsPerSample);
 
     for (const auto sample : audio.interleavedSamples) {
         writeLittleEndian(output, floatToPcm16(sample));
+    }
+}
+
+void writePcm24Wav(const std::filesystem::path& path, const RenderedAudio& audio,
+                   double sampleRate) {
+    validateWritableWav(path, audio, sampleRate);
+    std::ofstream output{path, std::ios::binary};
+    if (!output) {
+        throw std::runtime_error("Could not open WAV output file");
+    }
+
+    constexpr std::uint16_t bitsPerSample = 24;
+    writePcmWavHeader(output, audio, sampleRate, bitsPerSample);
+
+    for (const auto sample : audio.interleavedSamples) {
+        const auto pcm = floatToPcm24(sample);
+        output.put(static_cast<char>(pcm & 0xFF));
+        output.put(static_cast<char>((pcm >> 8) & 0xFF));
+        output.put(static_cast<char>((pcm >> 16) & 0xFF));
     }
 }
 
@@ -179,10 +217,11 @@ WavAudioData readPcm16Wav(const std::filesystem::path& path) {
     if (!sawFormat || !sawData) {
         throw std::runtime_error("WAV file is missing required chunks");
     }
-    if (audioFormat != 1U || bitsPerSample != 16U) {
-        throw std::runtime_error("Only PCM16 WAV files are supported");
+    if (audioFormat != 1U || (bitsPerSample != 16U && bitsPerSample != 24U)) {
+        throw std::runtime_error("Only PCM16 and PCM24 WAV files are supported");
     }
-    if (channels == 0U || sampleRate == 0U || blockAlign != channels * 2U) {
+    const auto bytesPerSample = bitsPerSample / 8U;
+    if (channels == 0U || sampleRate == 0U || blockAlign != channels * bytesPerSample) {
         throw std::runtime_error("WAV file has invalid stream format");
     }
     if ((dataBytes.size() % blockAlign) != 0U) {
@@ -192,12 +231,27 @@ WavAudioData readPcm16Wav(const std::filesystem::path& path) {
     RenderedAudio audio;
     audio.channels = channels;
     audio.frames = static_cast<std::uint32_t>(dataBytes.size() / blockAlign);
-    audio.interleavedSamples.reserve(dataBytes.size() / 2U);
-    for (std::size_t index = 0; index < dataBytes.size(); index += 2U) {
-        const auto low = static_cast<std::uint16_t>(static_cast<unsigned char>(dataBytes[index]));
-        const auto high =
-            static_cast<std::uint16_t>(static_cast<unsigned char>(dataBytes[index + 1U])) << 8U;
-        audio.interleavedSamples.push_back(pcm16ToFloat(static_cast<std::int16_t>(low | high)));
+    audio.interleavedSamples.reserve(dataBytes.size() / bytesPerSample);
+    for (std::size_t index = 0; index < dataBytes.size(); index += bytesPerSample) {
+        if (bitsPerSample == 16U) {
+            const auto low =
+                static_cast<std::uint16_t>(static_cast<unsigned char>(dataBytes[index]));
+            const auto high =
+                static_cast<std::uint16_t>(static_cast<unsigned char>(dataBytes[index + 1U])) << 8U;
+            audio.interleavedSamples.push_back(pcm16ToFloat(static_cast<std::int16_t>(low | high)));
+        } else {
+            const auto low =
+                static_cast<std::int32_t>(static_cast<unsigned char>(dataBytes[index]));
+            const auto middle =
+                static_cast<std::int32_t>(static_cast<unsigned char>(dataBytes[index + 1U])) << 8U;
+            const auto high =
+                static_cast<std::int32_t>(static_cast<unsigned char>(dataBytes[index + 2U])) << 16U;
+            auto pcm = low | middle | high;
+            if ((pcm & 0x800000) != 0) {
+                pcm |= ~0xFFFFFF;
+            }
+            audio.interleavedSamples.push_back(pcm24ToFloat(pcm));
+        }
     }
 
     return {.audio = std::move(audio),

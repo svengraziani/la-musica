@@ -30,10 +30,14 @@ class DaemonSession {
   public:
     [[nodiscard]] HealthStatus health() const;
     [[nodiscard]] bool attached() const noexcept;
+    [[nodiscard]] bool connectionInterrupted() const noexcept;
+    [[nodiscard]] bool canRecoverConnection() const noexcept;
     [[nodiscard]] std::string_view projectPath() const noexcept;
 
     std::string attachProject(std::string projectPath, std::set<Capability> capabilities);
     void detachProject() noexcept;
+    void markConnectionLost() noexcept;
+    [[nodiscard]] bool recoverConnection();
 
     [[nodiscard]] bool hasCapability(Capability capability) const noexcept;
     [[nodiscard]] bool canMutateProject() const noexcept;
@@ -47,6 +51,9 @@ class DaemonSession {
     std::string projectPath_;
     std::string authToken_;
     std::set<Capability> capabilities_;
+    std::string recoveryProjectPath_;
+    std::set<Capability> recoveryCapabilities_;
+    bool connectionInterrupted_{false};
     std::vector<ReadAuditEntry> readAuditLog_;
     std::vector<DeniedProtocolEntry> deniedProtocolLog_;
 };
