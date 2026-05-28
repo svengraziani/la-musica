@@ -6,7 +6,8 @@ if(NOT EXISTS "${LAMUSICA_DEPENDENCY_DOC}")
 endif()
 
 file(READ "${LAMUSICA_DEPENDENCY_DOC}" LAMUSICA_DEPENDENCY_TEXT)
-foreach(required_text IN ITEMS "JUCE" "Major version 8" "CMake" "Cocoa/AppKit" "Policy")
+foreach(required_text IN ITEMS "JUCE" "8.0.13" "7c9d3783b127263d72bb65fe0a7e2dc8a02a7ac2"
+                               "LAMUSICA_JUCE_PATH" "CMake" "Policy")
   if(NOT LAMUSICA_DEPENDENCY_TEXT MATCHES "${required_text}")
     message(FATAL_ERROR "Dependency lock strategy is missing required text: ${required_text}")
   endif()

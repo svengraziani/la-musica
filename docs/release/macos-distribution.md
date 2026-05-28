@@ -5,7 +5,7 @@ LaMusica release artifacts are produced from the `release` preset.
 ## Package
 
 ```sh
-cmake --preset release
+cmake --preset release -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13
 cmake --build --preset release
 ctest --preset release
 ctest --preset release -R first_track
@@ -44,7 +44,6 @@ Before publishing, verify launch from a clean macOS user account:
 
 ```sh
 open /Applications/LaMusica.app
-/Applications/LaMusica.app/Contents/MacOS/LaMusica --smoke
 ```
 
 Verify redistributable examples before publishing a package:
@@ -62,7 +61,7 @@ Set the Developer ID identity explicitly in the release environment.
 ```sh
 codesign --force --options runtime --timestamp \
   --sign "Developer ID Application: <Team Name> (<TEAMID>)" \
-  build/unix-release/apps/daw/LaMusica.app
+  build/unix-release/apps/daw/lamusica_daw_artefacts/LaMusica.app
 
 codesign --force --options runtime --timestamp \
   --sign "Developer ID Application: <Team Name> (<TEAMID>)" \
@@ -76,8 +75,10 @@ codesign --force --options runtime --timestamp \
 Verify signatures before notarization:
 
 ```sh
-codesign --verify --strict --deep --verbose=2 build/unix-release/apps/daw/LaMusica.app
-spctl --assess --type execute --verbose build/unix-release/apps/daw/LaMusica.app
+codesign --verify --strict --deep --verbose=2 \
+  build/unix-release/apps/daw/lamusica_daw_artefacts/LaMusica.app
+spctl --assess --type execute --verbose \
+  build/unix-release/apps/daw/lamusica_daw_artefacts/LaMusica.app
 ```
 
 ## Notarize

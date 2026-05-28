@@ -16,19 +16,19 @@ The product target is a full DAW, not an MVP.
 
 Bootstrap implementation is complete through the packaging and release scaffolding. The active
 remaining task plan is tracked under [docs/tasks](docs/tasks/README.md), with the production JUCE
-app shell and full DAW UI called out as the next major gaps. Current user, developer, performance,
-MCP, and release documentation is installed into packages.
+DAW UI called out as the next major gap. Current user, developer, performance, MCP, and release
+documentation is installed into packages.
 
 ## Build Prerequisites
 
 - macOS with a modern Xcode toolchain.
 - C++23 for LaMusica-owned code, with JUCE/plugin boundary compatibility verified by CI.
 - CMake.
-- Optional JUCE 8 checkout when enabling JUCE-backed targets.
+- JUCE 8.0.13 checkout supplied through `LAMUSICA_JUCE_PATH`.
 
 Third-party dependency policy is documented in
 [docs/developer/dependencies.md](docs/developer/dependencies.md). The build does not download
-external source during configure; optional JUCE integration uses an explicit `LAMUSICA_JUCE_PATH`.
+external source during configure; JUCE is an explicit pinned checkout.
 
 ## License
 

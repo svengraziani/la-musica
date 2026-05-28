@@ -2,11 +2,11 @@
 
 ## Objective
 
-Replace the current text-panel bootstrap window with the real DAW application shell.
+Replace the initial JUCE status-panel shell with the real DAW application shell.
 
 ## Dependencies
 
-- 026 Pin JUCE And Production App Target.
+- Current baseline with pinned JUCE 8.0.13 product app target.
 
 ## Deliverables
 
@@ -17,11 +17,11 @@ Replace the current text-panel bootstrap window with the real DAW application sh
 - Document lifecycle for create, open, save, save as, close, recent projects, autosave/recovery, and
   dirty state.
 - Keyboard focus and shortcut routing across panels.
-- Removal or demotion of first-track bootstrap commands from the main product menu.
+- Removal or demotion of first-track bootstrap commands from the main product surface.
 
 ## Decisions To Make
 
-- Whether the bootstrap Cocoa shell remains buildable for smoke tests.
+- Whether the old Cocoa bootstrap source is deleted.
 - Minimum supported window sizes and panel docking behavior.
 - Initial visual system: colors, spacing, typography, icons, and component states.
 

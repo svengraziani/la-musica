@@ -8,14 +8,16 @@ Accepted for initial implementation.
 
 - Use CMake presets as the authoritative local and CI build entry point.
 - Use C++23 for LaMusica-owned targets.
-- Keep JUCE 8 integration optional until the dependency is pinned and fetched by a committed dependency workflow.
-- Build separate targets for the app placeholder, MCP daemon, CLI, core libraries, and tests.
+- Require a pinned JUCE 8.0.13 checkout for the product app.
+- Build separate targets for the JUCE app shell, smoke-test harness, MCP daemon, CLI, core
+  libraries, and tests.
 
 ## Dependency Lock Strategy
 
-The initial dependency lock strategy is source-pinned third-party dependencies:
+The dependency lock strategy is source-pinned third-party dependencies:
 
-- JUCE 8 will be referenced by a specific tag or commit.
+- JUCE is pinned to tag `8.0.13`, commit `7c9d3783b127263d72bb65fe0a7e2dc8a02a7ac2`,
+  and supplied through `LAMUSICA_JUCE_PATH`.
 - Plugin SDKs will be pinned separately and reviewed for redistribution constraints.
 - Generated IDE projects are not authoritative; CMake inputs are authoritative.
 
@@ -23,4 +25,6 @@ No third-party source is vendored until license compatibility and update policy 
 
 ## Compromises
 
-This allows a clean checkout to configure and build the current skeleton without downloading JUCE. The compromise is that JUCE-backed UI and audio integration remains gated behind `LAMUSICA_ENABLE_JUCE` until the pinned dependency is added.
+The build now requires a local JUCE checkout, so a clean checkout no longer configures until
+`LAMUSICA_JUCE_PATH` is set. The benefit is that `LaMusica.app` is the JUCE product shell instead
+of a Cocoa placeholder. The repository still avoids configure-time dependency downloads.

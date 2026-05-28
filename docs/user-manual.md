@@ -133,10 +133,10 @@ files mark the session as not media-ready and disable first-track record/package
 media is restored. A missing first-track WAV can be relinked from a valid PCM16 WAV source, which
 copies the replacement back into the project bundle and restores readiness when all referenced media
 is present again.
-The DAW executable also supports noninteractive first-track smoke workflows for release checks:
-`lamusica_daw --create-first-track MyFirstTrack.Project.lamusica "My First Track"` followed by
-`lamusica_daw --inspect-project MyFirstTrack.Project.lamusica` and
-`lamusica_daw --render-project MyFirstTrack.Project.lamusica first-track.wav`.
+The noninteractive first-track workflows used by release checks are available through
+`lamusica_daw_smoke --create-first-track MyFirstTrack.Project.lamusica "My First Track"` followed
+by `lamusica_daw_smoke --inspect-project MyFirstTrack.Project.lamusica` and
+`lamusica_daw_smoke --render-project MyFirstTrack.Project.lamusica first-track.wav`.
 
 ## Editing
 

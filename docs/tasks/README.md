@@ -12,10 +12,9 @@ For task-level choices and tradeoffs, use the
 
 - The repository, CMake presets, app bundle target, MCP daemon target, CLI target, libraries, tests,
   fixtures, packaging scaffolding, and developer docs exist.
-- `LaMusica.app` currently launches a minimal native Cocoa bootstrap shell with text panels and
-  command menus.
-- JUCE 8 is intended for the production app, but remains optional and disabled by default until it
-  is pinned and supplied through the documented dependency workflow.
+- `LaMusica.app` is now a JUCE 8.0.13 app shell supplied through `LAMUSICA_JUCE_PATH`.
+- The previous Cocoa bootstrap path has been demoted in favor of the JUCE product shell.
+- `lamusica_daw_smoke` keeps the noninteractive app-session smoke workflows out of the product app.
 - Session, command, audio render, project format, first-track, MCP bridge, and packaging work exists
   as scaffolding, but the production DAW UI and several professional workflows are still missing.
 
@@ -23,8 +22,7 @@ For task-level choices and tradeoffs, use the
 
 | Order | Task | Depends On |
 | --- | --- | --- |
-| 026 | [Pin JUCE And Production App Target](026-pin-juce-production-app.md) | Current baseline |
-| 027 | [Replace Bootstrap Cocoa Shell With DAW Shell](027-production-daw-shell.md) | 026 |
+| 027 | [Replace Bootstrap Cocoa Shell With DAW Shell](027-production-daw-shell.md) | Current baseline |
 | 028 | [Arrangement Timeline UI](028-arrangement-timeline-ui.md) | 027 |
 | 029 | [Audio Clip Editing UI And Waveforms](029-audio-clip-editing-ui-waveforms.md) | 028 |
 | 030 | [MIDI, Piano Roll, Drum Machine, And Patterns UI](030-midi-piano-roll-drums-patterns-ui.md) | 027, 028 |

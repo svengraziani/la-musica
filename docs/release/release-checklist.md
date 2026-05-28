@@ -2,7 +2,7 @@
 
 ## Build
 
-- Configure: `cmake --preset release`
+- Configure: `cmake --preset release -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13`
 - Build: `cmake --build --preset release`
 - Test debug: `ctest --preset debug`
 - Test release: `ctest --preset release`

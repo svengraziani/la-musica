@@ -5,11 +5,12 @@
 - macOS.
 - Xcode command line tools.
 - CMake.
+- JUCE 8.0.13 checkout supplied through `LAMUSICA_JUCE_PATH`.
 
 ## Commands
 
 ```sh
-cmake --preset debug
+cmake --preset debug -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13
 cmake --build --preset debug
 ctest --preset debug
 ```
@@ -54,7 +55,7 @@ build/unix-debug/tools/cli/lamusica_cli inspect-project /tmp/Demo.Project.lamusi
 Release builds use:
 
 ```sh
-cmake --preset release
+cmake --preset release -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13
 cmake --build --preset release
 ctest --preset release
 ```
@@ -74,7 +75,7 @@ ctest --preset release -R lamusica_daw_app_session_preferences_first_track_smoke
 AddressSanitizer builds use:
 
 ```sh
-cmake --preset asan
+cmake --preset asan -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13
 cmake --build --preset asan
 ctest --preset asan
 ```
@@ -82,15 +83,15 @@ ctest --preset asan
 Profiling builds use:
 
 ```sh
-cmake --preset profiling
+cmake --preset profiling -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13
 cmake --build --preset profiling
 ```
 
 ## App Smoke
 
 ```sh
-build/unix-debug/apps/daw/lamusica_daw --app-session-verify-first-track-project-smoke
-build/unix-debug/apps/daw/lamusica_daw --app-session-preferences-first-track-smoke
+build/unix-debug/apps/daw/lamusica_daw_smoke --app-session-verify-first-track-project-smoke
+build/unix-debug/apps/daw/lamusica_daw_smoke --app-session-preferences-first-track-smoke
 ```
 
 ## Formatting

@@ -4,7 +4,7 @@ project(
   LaMusica
   VERSION 0.1.0
   DESCRIPTION "Open-source macOS DAW with a local MCP daemon"
-  LANGUAGES CXX)
+  LANGUAGES C CXX)
 
 if(APPLE)
   enable_language(OBJCXX)
@@ -17,29 +17,51 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(LAMUSICA_ENABLE_TESTS "Build LaMusica tests" ON)
-option(LAMUSICA_ENABLE_JUCE "Enable JUCE-backed targets" OFF)
 option(LAMUSICA_ENABLE_ASAN "Build targets with AddressSanitizer instrumentation" OFF)
 option(LAMUSICA_ENABLE_PROFILING "Build targets with profiling-friendly debug symbols" OFF)
+set(LAMUSICA_JUCE_VERSION
+    "8.0.13"
+    CACHE STRING "Pinned JUCE version")
+set(LAMUSICA_JUCE_COMMIT
+    "7c9d3783b127263d72bb65fe0a7e2dc8a02a7ac2"
+    CACHE STRING "Pinned JUCE commit")
 set(LAMUSICA_JUCE_PATH
     ""
-    CACHE PATH "Path to a checked-out JUCE 8 source tree")
-set(LAMUSICA_JUCE_REQUIRED_MAJOR
-    "8"
-    CACHE STRING "Required JUCE major version")
+    CACHE PATH "Path to a checked-out JUCE ${LAMUSICA_JUCE_VERSION} source tree")
 
 include(cmake/CompilerWarnings.cmake)
 
-if(LAMUSICA_ENABLE_JUCE)
-  if(NOT LAMUSICA_JUCE_PATH)
-    message(FATAL_ERROR "LAMUSICA_ENABLE_JUCE requires LAMUSICA_JUCE_PATH")
-  endif()
+if(NOT LAMUSICA_JUCE_PATH)
+  message(FATAL_ERROR "LaMusica requires JUCE ${LAMUSICA_JUCE_VERSION}. Set "
+                      "LAMUSICA_JUCE_PATH to a checked-out JUCE source tree.")
+endif()
 
-  add_subdirectory("${LAMUSICA_JUCE_PATH}" external/JUCE)
+if(NOT EXISTS "${LAMUSICA_JUCE_PATH}/CMakeLists.txt")
+  message(FATAL_ERROR "LAMUSICA_JUCE_PATH does not point to a JUCE source tree: "
+                      "${LAMUSICA_JUCE_PATH}")
+endif()
 
-  if(DEFINED JUCE_VERSION AND NOT JUCE_VERSION MATCHES "^${LAMUSICA_JUCE_REQUIRED_MAJOR}\\.")
-    message(FATAL_ERROR
-            "LaMusica requires JUCE ${LAMUSICA_JUCE_REQUIRED_MAJOR}.x, got ${JUCE_VERSION}")
+add_subdirectory("${LAMUSICA_JUCE_PATH}" external/JUCE)
+
+if(DEFINED JUCE_VERSION AND NOT JUCE_VERSION VERSION_EQUAL LAMUSICA_JUCE_VERSION)
+  message(FATAL_ERROR "LaMusica requires JUCE ${LAMUSICA_JUCE_VERSION}, got ${JUCE_VERSION}")
+endif()
+
+find_package(Git QUIET)
+if(Git_FOUND AND EXISTS "${LAMUSICA_JUCE_PATH}/.git")
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${LAMUSICA_JUCE_PATH}" rev-parse HEAD
+    OUTPUT_VARIABLE LAMUSICA_JUCE_ACTUAL_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(NOT LAMUSICA_JUCE_ACTUAL_COMMIT STREQUAL LAMUSICA_JUCE_COMMIT)
+    message(FATAL_ERROR "LaMusica requires JUCE ${LAMUSICA_JUCE_VERSION} at "
+                        "${LAMUSICA_JUCE_COMMIT}, got ${LAMUSICA_JUCE_ACTUAL_COMMIT}")
   endif()
+endif()
+
+if(NOT TARGET juce::juce_gui_extra)
+  message(FATAL_ERROR "JUCE checkout at ${LAMUSICA_JUCE_PATH} did not provide juce::juce_gui_extra")
 endif()
 
 add_subdirectory(libs/audio)

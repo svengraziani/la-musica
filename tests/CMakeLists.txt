@@ -15,37 +15,37 @@ add_test(NAME lamusica_mcpd_fixture_client
                  "${PROJECT_SOURCE_DIR}/fixtures/empty.Project.lamusica")
 add_test(NAME lamusica_mcpd_health COMMAND lamusica_mcpd --health)
 add_test(NAME lamusica_daw_first_track_smoke
-         COMMAND lamusica_daw --first-track-smoke)
+         COMMAND lamusica_daw_smoke --first-track-smoke)
 add_test(NAME lamusica_daw_app_session_first_track_smoke
-         COMMAND lamusica_daw --app-session-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_verify_first_track_project_smoke
-         COMMAND lamusica_daw --app-session-verify-first-track-project-smoke)
+         COMMAND lamusica_daw_smoke --app-session-verify-first-track-project-smoke)
 add_test(NAME lamusica_daw_app_session_render_first_track_smoke
-         COMMAND lamusica_daw --app-session-render-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-render-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_preferences_first_track_smoke
-         COMMAND lamusica_daw --app-session-preferences-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-preferences-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_transpose_first_track_smoke
-         COMMAND lamusica_daw --app-session-transpose-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-transpose-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_mix_first_track_smoke
-         COMMAND lamusica_daw --app-session-mix-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-mix-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_loop_first_track_smoke
-         COMMAND lamusica_daw --app-session-loop-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-loop-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_transport_first_track_smoke
-         COMMAND lamusica_daw --app-session-transport-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-transport-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_arrange_first_track_smoke
-         COMMAND lamusica_daw --app-session-arrange-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-arrange-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_stem_first_track_smoke
-         COMMAND lamusica_daw --app-session-stem-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-stem-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_package_first_track_smoke
-         COMMAND lamusica_daw --app-session-package-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-package-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_record_first_track_smoke
-         COMMAND lamusica_daw --app-session-record-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-record-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_record_package_first_track_smoke
-         COMMAND lamusica_daw --app-session-record-package-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-record-package-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_import_package_first_track_smoke
-         COMMAND lamusica_daw --app-session-import-package-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-import-package-first-track-smoke)
 add_test(NAME lamusica_daw_app_session_import_edit_first_track_smoke
-         COMMAND lamusica_daw --app-session-import-edit-first-track-smoke)
+         COMMAND lamusica_daw_smoke --app-session-import-edit-first-track-smoke)
 
 set(LAMUSICA_DAW_FIRST_TRACK_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/daw-first-track.Project.lamusica")
@@ -55,12 +55,12 @@ add_test(NAME lamusica_daw_first_track_clean
          COMMAND ${CMAKE_COMMAND} -E rm -rf "${LAMUSICA_DAW_FIRST_TRACK_PROJECT}"
                  "${LAMUSICA_DAW_FIRST_TRACK_RENDER}")
 add_test(NAME lamusica_daw_create_first_track
-         COMMAND lamusica_daw --create-first-track "${LAMUSICA_DAW_FIRST_TRACK_PROJECT}"
+         COMMAND lamusica_daw_smoke --create-first-track "${LAMUSICA_DAW_FIRST_TRACK_PROJECT}"
                  "DAW First Track")
 add_test(NAME lamusica_daw_inspect_first_track_project
-         COMMAND lamusica_daw --inspect-project "${LAMUSICA_DAW_FIRST_TRACK_PROJECT}")
+         COMMAND lamusica_daw_smoke --inspect-project "${LAMUSICA_DAW_FIRST_TRACK_PROJECT}")
 add_test(NAME lamusica_daw_render_first_track
-         COMMAND lamusica_daw --render-project "${LAMUSICA_DAW_FIRST_TRACK_PROJECT}"
+         COMMAND lamusica_daw_smoke --render-project "${LAMUSICA_DAW_FIRST_TRACK_PROJECT}"
                  "${LAMUSICA_DAW_FIRST_TRACK_RENDER}")
 add_test(NAME lamusica_daw_inspect_first_track_render
          COMMAND lamusica_cli inspect-wav "${LAMUSICA_DAW_FIRST_TRACK_RENDER}")
@@ -236,7 +236,7 @@ add_test(NAME lamusica_cli_remove_edit_first_track_media
 add_test(NAME lamusica_cli_inspect_edit_first_track_missing_media
          COMMAND lamusica_cli inspect-project "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
 add_test(NAME lamusica_daw_inspect_edit_first_track_missing_media
-         COMMAND lamusica_daw --inspect-project "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
+         COMMAND lamusica_daw_smoke --inspect-project "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
 add_test(NAME lamusica_cli_relink_edit_first_track_media
          COMMAND lamusica_cli relink-first-track-audio
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" imported-audio-1
