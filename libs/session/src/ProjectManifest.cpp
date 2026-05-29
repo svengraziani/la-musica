@@ -306,6 +306,18 @@ class JsonParser {
 [[nodiscard]] const JsonValue& requireField(const JsonValue::Object& object, std::string_view key);
 
 void rejectUnknownTopLevelFields(const JsonValue::Object& object, std::uint32_t schemaVersion) {
+    static const std::set<std::string> v3Fields{
+        "schemaVersion",      "name",      "projectSampleRate", "loopEnabled",
+        "loopStartSample",    "loopEndSample", "tempoMap",      "timeSignatures",
+        "markers",           "assets",    "tracks",            "clips",
+        "midiClips",         "takeLanes", "comps",             "routing",
+        "trackMix",          "plugins",   "automation",        "mcpAuditLog"};
+    static const std::set<std::string> v2Fields{
+        "schemaVersion",      "name",     "projectSampleRate", "loopEnabled",
+        "loopStartSample",    "loopEndSample", "tempoMap",     "timeSignatures",
+        "markers",           "assets",   "tracks",            "clips",
+        "midiClips",         "routing",  "trackMix",          "plugins",
+        "automation",        "mcpAuditLog"};
     static const std::set<std::string> v1Fields{
         "schemaVersion", "name",           "loopEnabled", "loopStartSample", "loopEndSample",
         "tempoMap",      "timeSignatures", "markers",     "assets",          "tracks",
@@ -316,7 +328,10 @@ void rejectUnknownTopLevelFields(const JsonValue::Object& object, std::uint32_t 
         "loopEndSample", "tempoMap",    "timeSignatures", "markers",     "assets",
         "tracks",        "clips",       "midiClips",      "routing",     "trackMix",
         "plugins",       "automation",  "mcpAuditLog"};
-    const auto& allowed = schemaVersion == currentProjectSchemaVersion ? v1Fields : v0Fields;
+    const auto& allowed = schemaVersion == currentProjectSchemaVersion
+                              ? v3Fields
+                              : (schemaVersion == 2 ? v2Fields
+                                                    : (schemaVersion == 1 ? v1Fields : v0Fields));
     for (const auto& [key, value] : object) {
         (void)value;
         if (!allowed.contains(key)) {
@@ -592,6 +607,13 @@ void writeArray(std::ostringstream& output, std::string_view name, const Values&
     output << "]";
 }
 
+std::int64_t compBoundaryCrossfadeSamples(const ClipCompSegment& left,
+                                          const ClipCompSegment& right) noexcept {
+    constexpr std::int64_t defaultCrossfadeSamples = 64;
+    return std::max<std::int64_t>(
+        0, std::min({defaultCrossfadeSamples, left.lengthSamples, right.lengthSamples}));
+}
+
 } // namespace
 
 std::string_view toString(TrackType type) noexcept {
@@ -653,6 +675,7 @@ std::string serializeProjectManifest(const ProjectManifest& manifest) {
     output << "{\n";
     output << "  \"schemaVersion\": " << manifest.schemaVersion << ",\n";
     output << "  \"name\": \"" << escapeJson(manifest.name) << "\",\n";
+    output << "  \"projectSampleRate\": " << manifest.projectSampleRate << ",\n";
     output << "  \"loopEnabled\": " << (manifest.loopEnabled ? "true" : "false") << ",\n";
     output << "  \"loopStartSample\": " << manifest.loopStartSample << ",\n";
     output << "  \"loopEndSample\": " << manifest.loopEndSample << ",\n";
@@ -718,6 +741,57 @@ std::string serializeProjectManifest(const ProjectManifest& manifest) {
                               << "\", \"dataId\": \"" << escapeJson(reference.dataId)
                               << "\", \"transposeSemitones\": " << reference.transposeSemitones
                               << "}";
+               });
+    output << ",\n";
+
+    writeArray(output, "takeLanes", manifest.takeLanes,
+               [](std::ostringstream& itemOutput, const ClipTakeLane& takeLane) {
+                   itemOutput << "{\"clipId\": \"" << escapeJson(takeLane.clipId)
+                              << "\", \"takes\": [";
+                   if (!takeLane.takes.empty()) {
+                       itemOutput << '\n';
+                       for (std::size_t takeIndex = 0; takeIndex < takeLane.takes.size();
+                            ++takeIndex) {
+                           const auto& take = takeLane.takes[takeIndex];
+                           indent(itemOutput, 6);
+                           itemOutput << "{\"id\": \"" << escapeJson(take.id)
+                                      << "\", \"name\": \"" << escapeJson(take.name)
+                                      << "\", \"sourceOffsetSamples\": "
+                                      << take.sourceOffsetSamples
+                                      << ", \"lengthSamples\": " << take.lengthSamples
+                                      << ", \"muted\": " << (take.muted ? "true" : "false")
+                                      << ", \"assetId\": \"" << escapeJson(take.assetId)
+                                      << "\"}"
+                                      << (takeIndex + 1 == takeLane.takes.size() ? "\n" : ",\n");
+                       }
+                       indent(itemOutput, 4);
+                   }
+                   itemOutput << "]}";
+               });
+    output << ",\n";
+
+    writeArray(output, "comps", manifest.comps,
+               [](std::ostringstream& itemOutput, const ClipComp& comp) {
+                   itemOutput << "{\"clipId\": \"" << escapeJson(comp.clipId)
+                              << "\", \"segments\": [";
+                   if (!comp.segments.empty()) {
+                       itemOutput << '\n';
+                       for (std::size_t segmentIndex = 0; segmentIndex < comp.segments.size();
+                            ++segmentIndex) {
+                           const auto& segment = comp.segments[segmentIndex];
+                           indent(itemOutput, 6);
+                           itemOutput << "{\"takeId\": \"" << escapeJson(segment.takeId)
+                                      << "\", \"clipStartSample\": "
+                                      << segment.clipStartSample
+                                      << ", \"lengthSamples\": " << segment.lengthSamples
+                                      << ", \"takeSourceOffsetSamples\": "
+                                      << segment.takeSourceOffsetSamples << "}"
+                                      << (segmentIndex + 1 == comp.segments.size() ? "\n"
+                                                                                   : ",\n");
+                       }
+                       indent(itemOutput, 4);
+                   }
+                   itemOutput << "]}";
                });
     output << ",\n";
 
@@ -812,6 +886,9 @@ ProjectManifest parseProjectManifest(std::string_view json) {
     } else {
         manifest.name = requireString(root, "name");
     }
+    manifest.projectSampleRate =
+        manifest.schemaVersion >= 2 ? requireDouble(root, "projectSampleRate")
+                                    : optionalDouble(root, "projectSampleRate").value_or(48000.0);
     manifest.loopEnabled = optionalBool(root, "loopEnabled").value_or(false);
     manifest.loopStartSample = optionalInt64(root, "loopStartSample").value_or(0);
     manifest.loopEndSample = optionalInt64(root, "loopEndSample").value_or(0);
@@ -875,6 +952,37 @@ ProjectManifest parseProjectManifest(std::string_view json) {
              .dataId = requireString(reference, "dataId"),
              .transposeSemitones =
                  static_cast<int>(optionalInt64(reference, "transposeSemitones").value_or(0))});
+    }
+
+    for (const auto& item : manifestArray(root, manifest.schemaVersion, "takeLanes")) {
+        const auto& takeLaneObject = itemObject(item, "takeLanes");
+        ClipTakeLane takeLane{.clipId = requireString(takeLaneObject, "clipId")};
+        for (const auto& takeItem : optionalArray(takeLaneObject, "takes")) {
+            const auto& take = itemObject(takeItem, "take");
+            takeLane.takes.push_back(
+                {.id = requireString(take, "id"),
+                 .name = requireString(take, "name"),
+                 .sourceOffsetSamples = requireInt64(take, "sourceOffsetSamples"),
+                 .lengthSamples = requireInt64(take, "lengthSamples"),
+                 .muted = requireBool(take, "muted"),
+                 .assetId = optionalString(take, "assetId").value_or("")});
+        }
+        manifest.takeLanes.push_back(std::move(takeLane));
+    }
+
+    for (const auto& item : manifestArray(root, manifest.schemaVersion, "comps")) {
+        const auto& compObject = itemObject(item, "comps");
+        ClipComp comp{.clipId = requireString(compObject, "clipId")};
+        for (const auto& segmentItem : optionalArray(compObject, "segments")) {
+            const auto& segment = itemObject(segmentItem, "comp segment");
+            comp.segments.push_back({.takeId = requireString(segment, "takeId"),
+                                     .clipStartSample =
+                                         requireInt64(segment, "clipStartSample"),
+                                     .lengthSamples = requireInt64(segment, "lengthSamples"),
+                                     .takeSourceOffsetSamples =
+                                         requireInt64(segment, "takeSourceOffsetSamples")});
+        }
+        manifest.comps.push_back(std::move(comp));
     }
 
     for (const auto& item : manifestArray(root, manifest.schemaVersion, "routing")) {
@@ -951,13 +1059,20 @@ ProjectManifest migrateProjectManifest(ProjectManifest manifest) {
     }
 
     if (manifest.schemaVersion == 0) {
-        manifest.schemaVersion = currentProjectSchemaVersion;
+        manifest.schemaVersion = 1;
         if (manifest.tempoMap.empty()) {
             manifest.tempoMap.push_back({});
         }
         if (manifest.timeSignatures.empty()) {
             manifest.timeSignatures.push_back({});
         }
+    }
+    if (manifest.schemaVersion == 1) {
+        manifest.projectSampleRate = 48000.0;
+        manifest.schemaVersion = 2;
+    }
+    if (manifest.schemaVersion == 2) {
+        manifest.schemaVersion = currentProjectSchemaVersion;
     }
 
     return manifest;
@@ -971,6 +1086,9 @@ void validateProjectManifest(const ProjectManifest& manifest) {
 
     if (manifest.name.empty()) {
         throw std::runtime_error("Project name must not be empty");
+    }
+    if (!std::isfinite(manifest.projectSampleRate) || manifest.projectSampleRate <= 0.0) {
+        throw std::runtime_error("Project sample rate must be positive and finite");
     }
     if (manifest.loopStartSample < 0 || manifest.loopEndSample < 0) {
         throw std::runtime_error("Project loop samples must not be negative");
@@ -1114,6 +1232,104 @@ void validateProjectManifest(const ProjectManifest& manifest) {
         }
         if (reference.transposeSemitones < -24 || reference.transposeSemitones > 24) {
             throw std::runtime_error("MIDI clip transpose must be between -24 and 24 semitones");
+        }
+    }
+
+    std::set<std::string> takeLaneClipIds;
+    std::map<std::string, std::set<std::string>> takeIdsByClip;
+    std::map<std::string, std::map<std::string, ClipTake>> takesByClip;
+    for (const auto& takeLane : manifest.takeLanes) {
+        if (takeLane.clipId.empty()) {
+            throw std::runtime_error("Clip take lane clip id must not be empty");
+        }
+        const auto clipFound = std::ranges::find_if(
+            manifest.clips, [&](const Clip& clip) { return clip.id == takeLane.clipId; });
+        if (clipFound == manifest.clips.end()) {
+            throw std::runtime_error("Clip take lane points to missing clip id: " +
+                                     takeLane.clipId);
+        }
+        if (clipFound->type != ClipType::Audio) {
+            throw std::runtime_error("Clip take lane must reference an audio clip: " +
+                                     takeLane.clipId);
+        }
+        if (takeLane.takes.empty()) {
+            throw std::runtime_error("Clip take lane must contain at least one take: " +
+                                     takeLane.clipId);
+        }
+        if (!takeLaneClipIds.insert(takeLane.clipId).second) {
+            throw std::runtime_error("Duplicate clip take lane: " + takeLane.clipId);
+        }
+        auto& laneTakeIds = takeIdsByClip[takeLane.clipId];
+        auto& laneTakes = takesByClip[takeLane.clipId];
+        for (const auto& take : takeLane.takes) {
+            if (take.id.empty() || take.name.empty()) {
+                throw std::runtime_error("Clip take id and name must not be empty");
+            }
+            if (take.sourceOffsetSamples < 0 || take.lengthSamples <= 0) {
+                throw std::runtime_error("Clip take range is invalid: " + take.id);
+            }
+            if (!take.assetId.empty() && !assetIds.contains(take.assetId)) {
+                throw std::runtime_error("Clip take references missing asset id: " +
+                                         take.assetId);
+            }
+            if (!laneTakeIds.insert(take.id).second) {
+                throw std::runtime_error("Duplicate clip take id: " + take.id);
+            }
+            laneTakes.emplace(take.id, take);
+        }
+    }
+
+    std::set<std::string> compClipIds;
+    for (const auto& comp : manifest.comps) {
+        if (comp.clipId.empty()) {
+            throw std::runtime_error("Clip comp clip id must not be empty");
+        }
+        const auto clipFound = std::ranges::find_if(
+            manifest.clips, [&](const Clip& clip) { return clip.id == comp.clipId; });
+        if (clipFound == manifest.clips.end()) {
+            throw std::runtime_error("Clip comp points to missing clip id: " + comp.clipId);
+        }
+        if (clipFound->type != ClipType::Audio) {
+            throw std::runtime_error("Clip comp must reference an audio clip: " + comp.clipId);
+        }
+        if (!takeLaneClipIds.contains(comp.clipId)) {
+            throw std::runtime_error("Clip comp has no take lane: " + comp.clipId);
+        }
+        if (!compClipIds.insert(comp.clipId).second) {
+            throw std::runtime_error("Duplicate clip comp: " + comp.clipId);
+        }
+        const ClipCompSegment* previousSegment = nullptr;
+        std::int64_t previousSegmentEnd = 0;
+        for (const auto& segment : comp.segments) {
+            const auto takeFound = takesByClip[comp.clipId].find(segment.takeId);
+            if (takeFound == takesByClip[comp.clipId].end()) {
+                throw std::runtime_error("Clip comp references missing take id: " +
+                                         segment.takeId);
+            }
+            if (segment.clipStartSample < 0 || segment.lengthSamples <= 0 ||
+                segment.takeSourceOffsetSamples < 0) {
+                throw std::runtime_error("Clip comp segment range is invalid");
+            }
+            const auto& take = takeFound->second;
+            const auto takeEnd = take.sourceOffsetSamples + take.lengthSamples;
+            if (segment.takeSourceOffsetSamples < take.sourceOffsetSamples ||
+                segment.lengthSamples > takeEnd - segment.takeSourceOffsetSamples) {
+                throw std::runtime_error("Clip comp segment extends beyond take length");
+            }
+            if (segment.clipStartSample < previousSegmentEnd) {
+                if (previousSegment == nullptr ||
+                    previousSegmentEnd - segment.clipStartSample >
+                        compBoundaryCrossfadeSamples(*previousSegment, segment)) {
+                    throw std::runtime_error(
+                        "Clip comp segments must be sorted and overlap only within the crossfade");
+                }
+            }
+            const auto segmentEnd = segment.clipStartSample + segment.lengthSamples;
+            if (segmentEnd > clipFound->lengthSamples) {
+                throw std::runtime_error("Clip comp segment extends beyond clip length");
+            }
+            previousSegment = &segment;
+            previousSegmentEnd = std::max(previousSegmentEnd, segmentEnd);
         }
     }
 

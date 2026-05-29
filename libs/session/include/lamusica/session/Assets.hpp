@@ -24,6 +24,8 @@ struct AssetRecord {
     std::string id;
     std::filesystem::path relativePath;
     AssetKind kind{AssetKind::Other};
+    double sourceSampleRate{0.0};
+    bool resampledToProjectRate{false};
     std::vector<std::string> tags;
     bool favorite{false};
     bool missing{false};
@@ -50,6 +52,7 @@ struct WaveformBucket {
 
 struct WaveformOverview {
     std::string assetId;
+    double sampleRate{0.0};
     std::int64_t samplesPerBucket{0};
     std::vector<WaveformBucket> buckets;
     bool valid{true};
@@ -165,11 +168,18 @@ struct AssetImportPlan {
     bool copyIntoProject{true};
 };
 
+enum class AudioAssetImportPolicy {
+    StoreSourceRate,
+    ResampleToProjectRate,
+};
+
 struct AudioAssetImportOptions {
     std::filesystem::path sourcePath;
     std::string assetId;
     std::vector<std::string> tags;
     bool copyIntoProject{true};
+    double projectSampleRate{48000.0};
+    AudioAssetImportPolicy importPolicy{AudioAssetImportPolicy::StoreSourceRate};
     std::int64_t samplesPerWaveformBucket{512};
 };
 
@@ -206,6 +216,9 @@ void relinkAsset(AssetCatalog& catalog, std::string_view assetId,
 void upsertAnalysis(AssetCatalog& catalog, AssetAnalysis analysis);
 void upsertWaveform(AssetCatalog& catalog, WaveformOverview waveform);
 void invalidateAssetAnalysis(AssetCatalog& catalog, std::string_view assetId);
+[[nodiscard]] bool waveformOverviewMatchesSampleRate(const WaveformOverview& waveform,
+                                                     double sampleRate) noexcept;
+void invalidateAnalysisCachesForSampleRate(AssetCatalog& catalog, double sampleRate);
 [[nodiscard]] MediaAnalysisResult analyzeAudioAsset(std::string assetId,
                                                     const audio::RenderedAudio& audio,
                                                     double sampleRate,

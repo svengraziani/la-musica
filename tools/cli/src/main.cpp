@@ -1,4 +1,5 @@
 #include "lamusica/audio/AudioEngine.hpp"
+#include "lamusica/version.hpp"
 #include "lamusica/audio/WavFile.hpp"
 #include "lamusica/session/ApplicationSession.hpp"
 #include "lamusica/session/Export.hpp"
@@ -12,16 +13,26 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
 
 void printUsage() {
     std::cout
+        << "usage: lamusica_cli --help\n"
+        << "       lamusica_cli query <Project.lamusica> [--json]\n"
+        << "       lamusica_cli edit <Project.lamusica> set-clip-gain <clip-id> <gain-db> "
+           "[--dry-run] [--confirm <token>]\n"
+        << "       lamusica_cli render <Project.lamusica> <output.wav|stems-dir> "
+           "[--format wav] [--bit-depth 16|24] [--range start:end] [--stems]\n"
+        << "       lamusica_cli schema [--json]\n"
+        << "       lamusica_cli migrate <Project.lamusica> [--json]\n"
         << "usage: lamusica_cli create-project <Project.lamusica> <name>\n"
         << "       lamusica_cli create-first-track <Project.lamusica> <name>\n"
         << "       lamusica_cli validate <Project.lamusica>\n"
@@ -145,6 +156,116 @@ bool parseBool(std::string_view value, std::string_view label) {
     throw std::runtime_error("invalid " + std::string{label} + ": " + std::string{value});
 }
 
+std::string escapeJson(std::string_view value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char character : value) {
+        switch (character) {
+        case '"':
+        case '\\':
+            escaped.push_back('\\');
+            escaped.push_back(character);
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            escaped.push_back(character);
+            break;
+        }
+    }
+    return escaped;
+}
+
+bool hasFlag(int argc, char** argv, std::string_view flag) {
+    for (int index = 1; index < argc; ++index) {
+        if (std::string_view{argv[index]} == flag) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<std::string_view> optionValue(int argc, char** argv, std::string_view option) {
+    for (int index = 1; index + 1 < argc; ++index) {
+        if (std::string_view{argv[index]} == option) {
+            return std::string_view{argv[index + 1]};
+        }
+    }
+    return std::nullopt;
+}
+
+lamusica::session::Clip* findClip(lamusica::session::ProjectManifest& manifest,
+                                  std::string_view clipId) {
+    const auto found =
+        std::ranges::find_if(manifest.clips, [clipId](const lamusica::session::Clip& clip) {
+            return clip.id == clipId;
+        });
+    return found == manifest.clips.end() ? nullptr : &*found;
+}
+
+std::string confirmationToken(std::string_view commandId, std::string_view auditId) {
+    return std::string{commandId} + ":" + std::string{auditId} + ":confirm";
+}
+
+std::pair<std::int64_t, std::uint32_t> parseRange(std::string_view value) {
+    const auto separator = value.find(':');
+    if (separator == std::string_view::npos) {
+        throw std::runtime_error("range must be start:end samples");
+    }
+    const auto start = parseInt64(value.substr(0, separator), "range start");
+    const auto end = parseInt64(value.substr(separator + 1), "range end");
+    if (start < 0 || end <= start) {
+        throw std::runtime_error("range must be non-negative and non-empty");
+    }
+    if (end - start > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("range is too large");
+    }
+    return {start, static_cast<std::uint32_t>(end - start)};
+}
+
+std::vector<std::string> audioTrackIds(const lamusica::session::ProjectManifest& manifest) {
+    std::vector<std::string> ids;
+    for (const auto& track : manifest.tracks) {
+        if (track.type != lamusica::session::TrackType::Master) {
+            ids.push_back(track.id);
+        }
+    }
+    return ids;
+}
+
+lamusica::audio::ExportBitDepth parseExportBitDepth(std::string_view value) {
+    if (value == "16") {
+        return lamusica::audio::ExportBitDepth::Pcm16;
+    }
+    if (value == "24") {
+        return lamusica::audio::ExportBitDepth::Pcm24;
+    }
+    throw std::runtime_error("unsupported bit depth: " + std::string{value});
+}
+
+int bitDepthValue(lamusica::audio::ExportBitDepth bitDepth) noexcept {
+    switch (bitDepth) {
+    case lamusica::audio::ExportBitDepth::Pcm16:
+        return 16;
+    case lamusica::audio::ExportBitDepth::Pcm24:
+        return 24;
+    }
+    return 16;
+}
+
+void validateRenderFormat(std::string_view value) {
+    if (value != "wav") {
+        throw std::runtime_error("unsupported render format: " + std::string{value});
+    }
+}
+
 lamusica::session::FirstTrackRecordingOptions parseRecordingOptions(int argc, char** argv) {
     lamusica::session::FirstTrackRecordingOptions options;
     options.frames = parseUint32(argv[3], "frames");
@@ -167,8 +288,214 @@ lamusica::session::FirstTrackRecordingOptions parseRecordingOptions(int argc, ch
 
 int main(int argc, char** argv) {
     if (argc > 1 && std::string_view{argv[1]} == "--version") {
-        std::cout << "lamusica-cli 0.1.0\n";
+        std::cout << "lamusica-cli " << lamusica::build::version
+                  << " commit=" << lamusica::build::gitCommit
+                  << " dirty=" << (lamusica::build::gitDirty ? "true" : "false")
+                  << " buildDate=" << lamusica::build::buildDate << '\n';
         return 0;
+    }
+
+    if (argc > 1 &&
+        (std::string_view{argv[1]} == "--help" || std::string_view{argv[1]} == "help")) {
+        printUsage();
+        return 0;
+    }
+
+    if ((argc == 2 || argc == 3) && std::string_view{argv[1]} == "schema") {
+        const bool json = hasFlag(argc, argv, "--json");
+        if (json) {
+            std::cout << "{\"schemaVersion\":1,\"projectSchemaVersion\":"
+                      << lamusica::session::currentProjectSchemaVersion
+                      << ",\"cliSchemaVersion\":1}\n";
+        } else {
+            std::cout << "schema projectVersion=" << lamusica::session::currentProjectSchemaVersion
+                      << " cliSchemaVersion=1\n";
+        }
+        return 0;
+    }
+
+    if ((argc == 3 || argc == 4) && std::string_view{argv[1]} == "query") {
+        try {
+            const bool json = hasFlag(argc, argv, "--json");
+            const auto document = lamusica::session::ProjectDocument::open(argv[2]);
+            const auto& manifest = document.manifest();
+            if (json) {
+                std::cout << "{\"schemaVersion\":1,\"project\":{\"name\":\""
+                          << escapeJson(document.project().name())
+                          << "\",\"schemaVersion\":" << manifest.schemaVersion
+                          << ",\"tracks\":" << manifest.tracks.size()
+                          << ",\"clips\":" << manifest.clips.size()
+                          << ",\"plugins\":" << manifest.plugins.size()
+                          << ",\"automation\":" << manifest.automation.size() << "}}\n";
+            } else {
+                std::cout << "query project=\"" << document.project().name()
+                          << "\" schemaVersion=" << manifest.schemaVersion
+                          << " tracks=" << manifest.tracks.size()
+                          << " clips=" << manifest.clips.size()
+                          << " plugins=" << manifest.plugins.size()
+                          << " automation=" << manifest.automation.size() << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "query failed: " << error.what() << '\n';
+            return 33;
+        }
+    }
+
+    if ((argc == 3 || argc == 4) && std::string_view{argv[1]} == "migrate") {
+        try {
+            const bool json = hasFlag(argc, argv, "--json");
+            auto document = lamusica::session::ProjectDocument::open(argv[2]);
+            const auto before = document.manifest().schemaVersion;
+            document.mutableManifest() =
+                lamusica::session::migrateProjectManifest(document.manifest());
+            lamusica::session::validateProjectManifest(document.manifest());
+            document.save();
+            if (json) {
+                std::cout << "{\"schemaVersion\":1,\"migrated\":true,\"from\":" << before
+                          << ",\"to\":" << document.manifest().schemaVersion << "}\n";
+            } else {
+                std::cout << "migrated project: from=" << before
+                          << " to=" << document.manifest().schemaVersion << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "migrate failed: " << error.what() << '\n';
+            return 34;
+        }
+    }
+
+    if (argc >= 6 && std::string_view{argv[1]} == "edit" &&
+        std::string_view{argv[3]} == "set-clip-gain") {
+        try {
+            const bool json = hasFlag(argc, argv, "--json");
+            const bool dryRun = hasFlag(argc, argv, "--dry-run");
+            const auto confirm = optionValue(argc, argv, "--confirm");
+            const std::string commandId = "set-clip-gain";
+            const std::string auditId = std::string{"clip-"} + argv[4];
+            const auto expectedToken = confirmationToken(commandId, auditId);
+            auto document = lamusica::session::ProjectDocument::open(argv[2]);
+            auto* clip = findClip(document.mutableManifest(), argv[4]);
+            if (clip == nullptr) {
+                throw std::runtime_error("clip was not found: " + std::string{argv[4]});
+            }
+            const auto newGain = parseFloat(argv[5], "clip gain dB");
+            if (dryRun || !confirm.has_value()) {
+                if (json) {
+                    std::cout << "{\"schemaVersion\":1,\"preview\":true,\"mutated\":false,"
+                              << "\"command\":\"" << commandId << "\",\"project\":\""
+                              << escapeJson(document.project().name()) << "\",\"clipId\":\""
+                              << escapeJson(argv[4]) << "\",\"fromGainDb\":" << clip->gainDb
+                              << ",\"toGainDb\":" << newGain << ",\"confirmationToken\":\""
+                              << escapeJson(expectedToken) << "\"}\n";
+                } else {
+                    std::cout << "preview command=set-clip-gain project=\""
+                              << document.project().name() << "\" clip=\"" << argv[4]
+                              << "\" fromGainDb=" << clip->gainDb << " toGainDb=" << newGain
+                              << " confirmationToken=" << expectedToken << '\n';
+                }
+                return 0;
+            }
+            if (*confirm != std::string_view{expectedToken}) {
+                throw std::runtime_error("confirmation token did not match preview");
+            }
+            clip->gainDb = newGain;
+            document.save();
+            if (json) {
+                std::cout << "{\"schemaVersion\":1,\"preview\":false,\"mutated\":true,"
+                          << "\"command\":\"" << commandId << "\",\"project\":\""
+                          << escapeJson(document.project().name()) << "\",\"clipId\":\""
+                          << escapeJson(argv[4]) << "\",\"gainDb\":" << newGain << "}\n";
+            } else {
+                std::cout << "edited project=\"" << document.project().name()
+                          << "\" command=" << commandId << " clip=\"" << argv[4]
+                          << "\" gainDb=" << newGain << '\n';
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "edit failed: " << error.what() << '\n';
+            return 35;
+        }
+    }
+
+    if (argc >= 4 && std::string_view{argv[1]} == "render") {
+        try {
+            const auto document = lamusica::session::ProjectDocument::open(argv[2]);
+            const bool json = hasFlag(argc, argv, "--json");
+            const bool stems = hasFlag(argc, argv, "--stems");
+            if (const auto format = optionValue(argc, argv, "--format")) {
+                validateRenderFormat(*format);
+            }
+            const auto bitDepthText = optionValue(argc, argv, "--bit-depth").value_or("16");
+            const auto bitDepth = parseExportBitDepth(bitDepthText);
+            std::int64_t startSample = 0;
+            auto frames = lamusica::session::renderableArrangementFrames(document.manifest());
+            if (const auto range = optionValue(argc, argv, "--range")) {
+                const auto parsed = parseRange(*range);
+                startSample = parsed.first;
+                frames = parsed.second;
+            }
+            if (stems) {
+                const auto results = lamusica::session::exportProjectStemsToWav(
+                    document.manifest(), {},
+                    {.outputDirectory = argv[3],
+                     .trackIds = audioTrackIds(document.manifest()),
+                     .startSample = startSample,
+                     .frames = frames,
+                     .channels = 2,
+                     .projectRoot = document.path(),
+                     .bitDepth = bitDepth,
+                     .ditherMode = lamusica::audio::DitherMode::Triangular,
+                     .normalizePeak = true,
+                     .normalizeTargetPeak = 0.98F});
+                float peak = 0.0F;
+                for (const auto& result : results) {
+                    peak = std::max(peak, result.bounce.peakAfterDither);
+                }
+                if (json) {
+                    std::cout << "{\"schemaVersion\":1,\"render\":{\"project\":\""
+                              << escapeJson(document.project().name()) << "\",\"output\":\""
+                              << escapeJson(argv[3]) << "\",\"format\":\"wav\",\"bitDepth\":"
+                              << bitDepthValue(bitDepth) << ",\"startSample\":" << startSample
+                              << ",\"frames\":" << frames << ",\"stems\":true,\"stemCount\":"
+                              << results.size() << ",\"postDitherPeak\":" << peak << "}}\n";
+                } else {
+                    std::cout << "rendered stems: project=\"" << document.project().name()
+                              << "\" directory=" << argv[3] << " stems=" << results.size()
+                              << " frames=" << frames << " postDitherPeak=" << peak << '\n';
+                }
+            } else {
+                const auto result = lamusica::session::exportProjectMixToWav(
+                    document.manifest(), {},
+                    {.outputPath = argv[3],
+                     .startSample = startSample,
+                     .frames = frames,
+                     .channels = 2,
+                     .projectRoot = document.path(),
+                     .bitDepth = bitDepth,
+                     .ditherMode = lamusica::audio::DitherMode::Triangular,
+                     .normalizePeak = true,
+                     .normalizeTargetPeak = 0.98F});
+                if (json) {
+                    std::cout << "{\"schemaVersion\":1,\"render\":{\"project\":\""
+                              << escapeJson(document.project().name()) << "\",\"output\":\""
+                              << escapeJson(result.outputPath.string())
+                              << "\",\"format\":\"wav\",\"bitDepth\":" << bitDepthValue(bitDepth)
+                              << ",\"startSample\":" << startSample
+                              << ",\"frames\":" << result.frames
+                              << ",\"stems\":false,\"postDitherPeak\":"
+                              << result.peakAfterDither << "}}\n";
+                } else {
+                    std::cout << "rendered project: " << document.project().name()
+                              << " path=" << result.outputPath << " frames=" << result.frames
+                              << " postDitherPeak=" << result.peakAfterDither << '\n';
+                }
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << "render failed: " << error.what() << '\n';
+            return 36;
+        }
     }
 
     if (argc == 4 && std::string_view{argv[1]} == "create-project") {
@@ -784,7 +1111,6 @@ int main(int argc, char** argv) {
                 {.outputPath = argv[3],
                  .startSample = 0,
                  .frames = frames,
-                 .sampleRate = 48000.0,
                  .channels = 2,
                  .projectRoot = document.path(),
                  .bitDepth = lamusica::audio::ExportBitDepth::Pcm16,

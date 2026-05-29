@@ -8,7 +8,7 @@ asset paths.
 
 Required file:
 
-- `project.json`: UTF-8 JSON manifest using schema version `1`.
+- `project.json`: UTF-8 JSON manifest using schema version `3`.
 
 Recommended directories:
 
@@ -23,10 +23,12 @@ fixtures.
 
 ## Manifest Contract
 
-The authoritative v1 schema is `docs/schemas/project-v1.schema.json`. A v1 manifest includes:
+The authoritative v3 schema is `docs/schemas/project-v1.schema.json` until the schema file is
+renamed in a compatibility-breaking cleanup. A v3 manifest includes:
 
 - `schemaVersion`
 - `name`
+- `projectSampleRate`
 - `tempoMap`
 - `timeSignatures`
 - `markers`
@@ -34,22 +36,33 @@ The authoritative v1 schema is `docs/schemas/project-v1.schema.json`. A v1 manif
 - `tracks`
 - `clips`
 - `midiClips`
+- `takeLanes`
+- `comps`
 - `routing`
 - `trackMix` (optional on load for compatibility with early schema-1 manifests)
 - `plugins`
 - `automation`
 - `mcpAuditLog`
 
-Missing required arrays are validation errors. Loaders must not silently synthesize absent v1
+`projectSampleRate` is persisted in Hz and defaults to `48000.0` for migrated legacy projects.
+Missing required arrays are validation errors. Loaders must not silently synthesize absent v3
 fields except through an explicit migration path.
 `trackMix` entries are keyed by `trackId` and persist track-level volume, pan, mute, and solo state
 for graph compilation.
+`takeLanes` persist nondestructive take metadata by clip, and `comps` persist the selected take
+segments rendered by the graph compiler. Take media is referenced through project `assets`; editing
+a comp must not rewrite the source take asset bytes.
 
 ## Assets
 
 Asset paths must be relative to the project bundle, must not be empty for real imported media, and
 must not contain parent-directory traversal. Example and tutorial fixtures may use generated clips
 with an empty `assetId` when no external media is required.
+
+Audio asset catalog records keep the native `sourceSampleRate` and waveform caches record the rate
+they were analyzed at. The current import policy preserves source media and converts mismatched-rate
+audio during render through the sample-node resampler; offline resample-on-import is reserved for a
+future cache-backed conversion path.
 
 Only redistributable assets may be committed to fixtures or shipped in packages. Placeholder drum
 kits must record that bundled sample assets are not included.
@@ -58,9 +71,11 @@ kits must record that bundled sample assets are not included.
 
 `migrateProjectManifest` is the only place that should upgrade older manifests. Current behavior:
 
-- schema `0` bootstrap manifests are upgraded to schema `1`;
+- schema `0` bootstrap manifests are first normalized to schema `1`;
 - `projectName` or `name` is preserved as the v1 project name;
-- default tempo and time-signature metadata is added only during that migration.
+- default tempo and time-signature metadata is added only during that migration;
+- schema `1` manifests are upgraded to schema `2` with `projectSampleRate = 48000.0`;
+- schema `2` manifests are upgraded to schema `3` with empty `takeLanes` and `comps`.
 
 Future schema changes must add deterministic migration code, unit coverage, schema documentation,
 and release notes.

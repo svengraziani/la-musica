@@ -1,0 +1,5 @@
+add_library(lamusica_crash_report STATIC src/CrashReporter.cpp)
+add_library(lamusica::crash_report ALIAS lamusica_crash_report)
+
+target_include_directories(lamusica_crash_report PUBLIC include)
+lamusica_configure_target(lamusica_crash_report)

@@ -8,7 +8,8 @@
       "binaryDir": "${sourceDir}/build/unix-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "LAMUSICA_ENABLE_TESTS": "ON"
+        "LAMUSICA_ENABLE_TESTS": "ON",
+        "LAMUSICA_JUCE_PATH": "$env{LAMUSICA_JUCE_PATH}"
       }
     },
     {
@@ -18,7 +19,8 @@
       "binaryDir": "${sourceDir}/build/unix-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "LAMUSICA_ENABLE_TESTS": "ON"
+        "LAMUSICA_ENABLE_TESTS": "ON",
+        "LAMUSICA_JUCE_PATH": "$env{LAMUSICA_JUCE_PATH}"
       }
     },
     {
@@ -31,12 +33,31 @@
       }
     },
     {
+      "name": "tsan",
+      "displayName": "Thread Sanitizer",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/unix-tsan",
+      "cacheVariables": {
+        "LAMUSICA_ENABLE_TSAN": "ON"
+      }
+    },
+    {
       "name": "profiling",
       "displayName": "Profiling",
       "inherits": "release",
       "binaryDir": "${sourceDir}/build/unix-profiling",
       "cacheVariables": {
         "LAMUSICA_ENABLE_PROFILING": "ON"
+      }
+    },
+    {
+      "name": "release-universal",
+      "displayName": "Release Universal macOS",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/macos-release-universal",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64",
+        "LAMUSICA_ENABLE_DSYM": "ON"
       }
     }
   ],
@@ -54,8 +75,16 @@
       "configurePreset": "asan"
     },
     {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    },
+    {
       "name": "profiling",
       "configurePreset": "profiling"
+    },
+    {
+      "name": "release-universal",
+      "configurePreset": "release-universal"
     }
   ],
   "testPresets": [
@@ -85,6 +114,27 @@
       "execution": {
         "noTestsAction": "error",
         "timeout": 120
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "execution": {
+        "noTestsAction": "error",
+        "timeout": 180
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-universal",
+      "configurePreset": "release-universal",
+      "execution": {
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true

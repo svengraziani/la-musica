@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -31,6 +32,10 @@ std::string mixerNodeId(std::string_view channelId, const std::set<std::string>&
 
 std::string clipNodeId(std::string_view clipId) {
     return "clip:" + std::string{clipId};
+}
+
+std::string compSegmentNodeId(std::string_view clipId, std::size_t segmentIndex) {
+    return clipNodeId(clipId) + "#seg" + std::to_string(segmentIndex);
 }
 
 bool hasNode(const audio::AudioGraph& graph, std::string_view nodeId) {
@@ -172,6 +177,41 @@ const Asset* findAsset(const ProjectManifest& manifest, std::string_view assetId
     return found == manifest.assets.end() ? nullptr : &*found;
 }
 
+const ClipTakeLane* findTakeLane(const ProjectManifest& manifest, std::string_view clipId) {
+    const auto found = std::ranges::find_if(
+        manifest.takeLanes,
+        [clipId](const ClipTakeLane& takeLane) { return takeLane.clipId == clipId; });
+    return found == manifest.takeLanes.end() ? nullptr : &*found;
+}
+
+const ClipComp* findComp(const ProjectManifest& manifest, std::string_view clipId) {
+    const auto found = std::ranges::find_if(
+        manifest.comps, [clipId](const ClipComp& comp) { return comp.clipId == clipId; });
+    return found == manifest.comps.end() || found->segments.empty() ? nullptr : &*found;
+}
+
+const ClipTake* findTake(const ClipTakeLane& takeLane, std::string_view takeId) {
+    const auto found = std::ranges::find_if(
+        takeLane.takes, [takeId](const ClipTake& take) { return take.id == takeId; });
+    return found == takeLane.takes.end() ? nullptr : &*found;
+}
+
+const WarpState* findWarpState(const GraphCompileOptions& options, std::string_view clipId) {
+    const auto found = std::ranges::find_if(
+        options.warpStates, [clipId](const WarpState& warp) { return warp.clipId == clipId; });
+    return found == options.warpStates.end() ? nullptr : &*found;
+}
+
+audio::WavAudioData readClipAssetWav(const ProjectManifest& manifest,
+                                     const GraphCompileOptions& options,
+                                     std::string_view assetId) {
+    const auto* asset = findAsset(manifest, assetId);
+    if (asset == nullptr) {
+        throw std::runtime_error("Audio clip references missing asset: " + std::string{assetId});
+    }
+    return audio::readPcm16Wav(options.projectRoot / asset->relativePath);
+}
+
 audio::GraphNode makeClipNode(const ProjectManifest& manifest, const Clip& clip,
                               const GraphCompileOptions& options) {
     audio::GraphNode node;
@@ -199,16 +239,95 @@ audio::GraphNode makeClipNode(const ProjectManifest& manifest, const Clip& clip,
                                  clip.assetId);
     }
 
-    const auto* asset = findAsset(manifest, clip.assetId);
-    if (asset == nullptr) {
-        throw std::runtime_error("Audio clip references missing asset: " + clip.assetId);
-    }
-    const auto wav = audio::readPcm16Wav(options.projectRoot / asset->relativePath);
+    const auto wav = readClipAssetWav(manifest, options, clip.assetId);
     node.kind = audio::GraphNodeKind::Sample;
     node.sampleChannels = wav.audio.channels;
     node.sampleFrames = wav.audio.frames;
+    node.sampleRate = wav.sampleRate;
     node.samples = wav.audio.interleavedSamples;
+
+    const auto* warp = findWarpState(options, clip.id);
+    if (warp != nullptr && warp->enabled) {
+        const auto sourceStart = std::max<std::int64_t>(0, clip.sourceOffsetSamples);
+        const auto sourceEnd =
+            std::min<std::int64_t>(static_cast<std::int64_t>(wav.audio.frames),
+                                   sourceStart + clip.lengthSamples);
+        const auto plan = makeWarpRenderPlan(*warp, options.warpRenderCache, sourceStart,
+                                             sourceEnd, "Cache/" + clip.id + "-warp.wav");
+        const auto rendered = renderWarpedAudio(wav.audio, plan);
+        node.sourceOffsetSamples = 0;
+        node.lengthSamples = rendered.frames;
+        node.sampleChannels = rendered.channels;
+        node.sampleFrames = rendered.frames;
+        node.sampleRate = manifest.projectSampleRate;
+        node.samples = std::move(rendered.interleavedSamples);
+    }
     return node;
+}
+
+std::optional<std::vector<audio::GraphNode>>
+makeCompSegmentNodes(const ProjectManifest& manifest, const Clip& clip,
+                     const GraphCompileOptions& options) {
+    if (clip.type != ClipType::Audio) {
+        return std::nullopt;
+    }
+    const auto* takeLane = findTakeLane(manifest, clip.id);
+    const auto* comp = findComp(manifest, clip.id);
+    if (takeLane == nullptr || comp == nullptr) {
+        return std::nullopt;
+    }
+    if (comp->segments.size() < 2U) {
+        return std::nullopt;
+    }
+    if (options.projectRoot.empty()) {
+        if (options.synthesizeAssetBackedClipsWithoutProjectRoot) {
+            return std::nullopt;
+        }
+        throw std::runtime_error("Comped audio clip requires a project root to resolve assets: " +
+                                 clip.id);
+    }
+
+    constexpr std::int64_t internalCrossfadeSamples = 64;
+    std::vector<audio::GraphNode> nodes;
+    nodes.reserve(comp->segments.size());
+    for (std::size_t index = 0; index < comp->segments.size(); ++index) {
+        const auto& segment = comp->segments[index];
+        const auto* take = findTake(*takeLane, segment.takeId);
+        if (take == nullptr) {
+            throw std::runtime_error("Clip comp references missing take id: " + segment.takeId);
+        }
+        const auto assetId = take->assetId.empty() ? clip.assetId : take->assetId;
+        if (assetId.empty()) {
+            throw std::runtime_error("Comp take has no source asset: " + take->id);
+        }
+        const auto wav = readClipAssetWav(manifest, options, assetId);
+        if (segment.takeSourceOffsetSamples + segment.lengthSamples > wav.audio.frames) {
+            throw std::runtime_error("Comp segment exceeds take source asset: " + take->id);
+        }
+
+        audio::GraphNode node;
+        node.id = compSegmentNodeId(clip.id, index);
+        node.kind = take->muted ? audio::GraphNodeKind::Silence : audio::GraphNodeKind::Sample;
+        node.gain = dbToLinearGain(clip.gainDb);
+        node.startSample = clip.startSample + segment.clipStartSample;
+        node.lengthSamples = segment.lengthSamples;
+        node.sourceOffsetSamples = segment.takeSourceOffsetSamples;
+        const bool firstSegment = index == 0U;
+        const bool lastSegment = index + 1U == comp->segments.size();
+        node.fadeInSamples =
+            firstSegment ? clip.fadeInSamples
+                         : std::min(internalCrossfadeSamples, segment.lengthSamples);
+        node.fadeOutSamples =
+            lastSegment ? clip.fadeOutSamples
+                        : std::min(internalCrossfadeSamples, segment.lengthSamples);
+        node.reversed = clip.reversed;
+        node.sampleChannels = wav.audio.channels;
+        node.sampleFrames = wav.audio.frames;
+        node.sampleRate = wav.sampleRate;
+        node.samples = take->muted ? std::vector<float>{} : wav.audio.interleavedSamples;
+        nodes.push_back(std::move(node));
+    }
+    return nodes;
 }
 
 } // namespace
@@ -273,11 +392,22 @@ audio::AudioGraph compileProjectAudioGraph(const ProjectManifest& manifest, cons
         if (!knownTrackIds.contains(clip.trackId)) {
             throw std::runtime_error("Clip references unknown track: " + clip.trackId);
         }
-        const auto clipNode = clipNodeId(clip.id);
-        graph.nodes.push_back(makeClipNode(manifest, clip, options));
-        graph.connections.push_back({.sourceNodeId = clipNode,
-                                     .destinationNodeId = trackNodeId(clip.trackId),
-                                     .gain = 1.0F});
+        if (auto compNodes = makeCompSegmentNodes(manifest, clip, options);
+            compNodes.has_value()) {
+            for (auto& node : *compNodes) {
+                const auto nodeId = node.id;
+                graph.nodes.push_back(std::move(node));
+                graph.connections.push_back({.sourceNodeId = nodeId,
+                                             .destinationNodeId = trackNodeId(clip.trackId),
+                                             .gain = 1.0F});
+            }
+        } else {
+            const auto clipNode = clipNodeId(clip.id);
+            graph.nodes.push_back(makeClipNode(manifest, clip, options));
+            graph.connections.push_back({.sourceNodeId = clipNode,
+                                         .destinationNodeId = trackNodeId(clip.trackId),
+                                         .gain = 1.0F});
+        }
     }
 
     for (const auto& route : manifest.routing) {

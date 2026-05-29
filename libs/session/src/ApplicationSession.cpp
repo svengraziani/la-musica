@@ -1,6 +1,7 @@
 #include "lamusica/session/ApplicationSession.hpp"
 
 #include "lamusica/audio/WavFile.hpp"
+#include "lamusica/session/DiagnosticsScrubber.hpp"
 #include "lamusica/session/Assets.hpp"
 #include "lamusica/session/StarterProject.hpp"
 
@@ -27,6 +28,18 @@ constexpr std::string_view importedAudioTrackId{"imported-audio"};
 constexpr std::string_view importedAudioTrackName{"Imported Audio"};
 constexpr std::string_view masterTrackId{"master"};
 constexpr std::size_t maxApplicationUndoSnapshots{32};
+
+std::uint32_t integralSampleRate(double sampleRate) {
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0 ||
+        sampleRate > static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
+        throw std::runtime_error("Project sample rate must be positive, finite, and writable");
+    }
+    const auto rounded = std::llround(sampleRate);
+    if (std::abs(sampleRate - static_cast<double>(rounded)) > 0.000001) {
+        throw std::runtime_error("Project sample rate must be an integer WAV rate");
+    }
+    return static_cast<std::uint32_t>(rounded);
+}
 
 struct PackageAudioEntry {
     std::string label;
@@ -511,7 +524,7 @@ std::filesystem::path writeFirstTrackPackageManifest(
         output << '\n';
     }
     output << "  ],\n";
-    output << "  \"sampleRate\": 48000,\n";
+    output << "  \"sampleRate\": " << integralSampleRate(manifest.projectSampleRate) << ",\n";
     output << "  \"renderFrames\": " << renderableArrangementFrames(manifest) << ",\n";
     output << "  \"loopStartSample\": " << manifest.loopStartSample << ",\n";
     output << "  \"loopEndSample\": " << manifest.loopEndSample << ",\n";
@@ -620,6 +633,117 @@ void ApplicationSession::saveProject() {
     if (document_.has_value()) {
         document_->save();
     }
+    updateStatus();
+}
+
+void ApplicationSession::addTrack(Track track) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot add track without an open project");
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.tracks.push_back(std::move(track));
+    validateProjectManifest(manifest);
+    updateStatus();
+}
+
+void ApplicationSession::addRoutingConnection(RoutingConnection route) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot add routing without an open project");
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.routing.push_back(std::move(route));
+    validateProjectManifest(manifest);
+    updateStatus();
+}
+
+void ApplicationSession::addMarker(Marker marker) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot add marker without an open project");
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.markers.push_back(std::move(marker));
+    validateProjectManifest(manifest);
+    updateStatus();
+}
+
+void ApplicationSession::setTempo(double bpm) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot set tempo without an open project");
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.tempoMap = {{.samplePosition = 0, .bpm = bpm}};
+    validateProjectManifest(manifest);
+    updateStatus();
+}
+
+void ApplicationSession::setTimeSignature(std::uint32_t numerator,
+                                          std::uint32_t denominator) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot set time signature without an open project");
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.timeSignatures = {
+        {.samplePosition = 0, .numerator = numerator, .denominator = denominator}};
+    validateProjectManifest(manifest);
+    updateStatus();
+}
+
+void ApplicationSession::createAudioClip(Clip clip) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot create audio clip without an open project");
+    }
+    if (clip.type != ClipType::Audio) {
+        throw std::runtime_error("createAudioClip requires an audio clip");
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.clips.push_back(std::move(clip));
+    validateProjectManifest(manifest);
+    updateStatus();
+}
+
+void ApplicationSession::createMidiClip(Clip clip, MidiClipReference reference) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot create MIDI clip without an open project");
+    }
+    if (clip.type != ClipType::Midi) {
+        throw std::runtime_error("createMidiClip requires a MIDI clip");
+    }
+    if (reference.clipId.empty()) {
+        reference.clipId = clip.id;
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.clips.push_back(std::move(clip));
+    manifest.midiClips.push_back(std::move(reference));
+    validateProjectManifest(manifest);
+    updateStatus();
+}
+
+void ApplicationSession::addPlugin(PluginReference plugin) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot add plugin without an open project");
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.plugins.push_back(std::move(plugin));
+    validateProjectManifest(manifest);
+    updateStatus();
+}
+
+void ApplicationSession::addAutomationLane(AutomationLane lane) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot add automation without an open project");
+    }
+    rememberUndoSnapshot();
+    auto& manifest = document_->mutableManifest();
+    manifest.automation.push_back(std::move(lane));
+    validateProjectManifest(manifest);
     updateStatus();
 }
 
@@ -1060,13 +1184,16 @@ audio::RenderedAudio ApplicationSession::auditionCurrentMixBlock(std::uint32_t f
 }
 
 audio::BounceResult ApplicationSession::exportCurrentMix(std::filesystem::path outputPath) {
+    if (!document_.has_value() || !document_->isOpen()) {
+        throw std::runtime_error("Cannot export without an open project");
+    }
     return exportCurrentMix(
         {.outputPath = std::move(outputPath),
          .startSample = 0,
          .frames = status_.renderFrames,
-         .sampleRate = 48000.0,
+         .sampleRate = document_->manifest().projectSampleRate,
          .channels = 2,
-         .projectRoot = document_.has_value() ? document_->path() : std::filesystem::path{},
+         .projectRoot = document_->path(),
          .bitDepth = audio::ExportBitDepth::Pcm16,
          .ditherMode = audio::DitherMode::Triangular,
          .normalizePeak = true,
@@ -1118,7 +1245,7 @@ audio::BounceResult ApplicationSession::exportCurrentLoop(std::filesystem::path 
         {.outputPath = std::move(outputPath),
          .startSample = manifest.loopStartSample,
          .frames = static_cast<std::uint32_t>(manifest.loopEndSample - manifest.loopStartSample),
-         .sampleRate = 48000.0,
+         .sampleRate = manifest.projectSampleRate,
          .channels = 2,
          .projectRoot = document_->path(),
          .bitDepth = audio::ExportBitDepth::Pcm16,
@@ -1158,7 +1285,8 @@ ApplicationSession::exportCurrentStems(std::filesystem::path outputDirectory) {
                                                   .trackIds = std::move(trackIds),
                                                   .startSample = 0,
                                                   .frames = status_.renderFrames,
-                                                  .sampleRate = 48000.0,
+                                                  .sampleRate =
+                                                      document_->manifest().projectSampleRate,
                                                   .channels = 2,
                                                   .projectRoot = document_->path(),
                                                   .bitDepth = audio::ExportBitDepth::Pcm16,
@@ -1195,7 +1323,7 @@ ApplicationSession::exportFirstTrackPackage(std::filesystem::path outputDirector
                                      {.outputPath = mixPath,
                                       .startSample = 0,
                                       .frames = status_.renderFrames,
-                                      .sampleRate = 48000.0,
+                                      .sampleRate = manifest.projectSampleRate,
                                       .channels = 2,
                                       .projectRoot = document_->path(),
                                       .bitDepth = audio::ExportBitDepth::Pcm16,
@@ -1207,7 +1335,7 @@ ApplicationSession::exportFirstTrackPackage(std::filesystem::path outputDirector
         {.outputPath = loopPath,
          .startSample = manifest.loopStartSample,
          .frames = static_cast<std::uint32_t>(manifest.loopEndSample - manifest.loopStartSample),
-         .sampleRate = 48000.0,
+         .sampleRate = manifest.projectSampleRate,
          .channels = 2,
          .projectRoot = document_->path(),
          .bitDepth = audio::ExportBitDepth::Pcm16,
@@ -1226,7 +1354,7 @@ ApplicationSession::exportFirstTrackPackage(std::filesystem::path outputDirector
                                           .trackIds = std::move(trackIds),
                                           .startSample = 0,
                                           .frames = status_.renderFrames,
-                                          .sampleRate = 48000.0,
+                                          .sampleRate = manifest.projectSampleRate,
                                           .channels = 2,
                                           .projectRoot = document_->path(),
                                           .bitDepth = audio::ExportBitDepth::Pcm16,
@@ -1318,7 +1446,6 @@ ApplicationSession::verifyFirstTrackPackage(std::filesystem::path packageDirecto
     const auto projectSnapshotPath = resolvePackageAudioPath(
         packageDirectory, requireJsonString(manifestJson, "projectSnapshotPath"));
 
-    requirePackageManifestCondition(sampleRate == 48000, "sampleRate must be 48000");
     requirePackageManifestCondition(renderFrames > 0, "renderFrames must be positive");
     requirePackageManifestCondition(loopEndSample > loopStartSample,
                                     "loop range must have positive length");
@@ -1349,6 +1476,8 @@ ApplicationSession::verifyFirstTrackPackage(std::filesystem::path packageDirecto
     const auto projectName = requireJsonString(manifestJson, "projectName");
     const auto projectSnapshot = parseProjectManifest(readTextFile(projectSnapshotPath));
     validateProjectManifest(projectSnapshot);
+    requirePackageManifestCondition(sampleRate == integralSampleRate(projectSnapshot.projectSampleRate),
+                                    "sampleRate must match project snapshot sample rate");
     requirePackageManifestCondition(projectSnapshot.name == projectName,
                                     "project snapshot name must match package projectName");
     requirePackageManifestCondition(projectSnapshot.tracks.size() == trackCount,
@@ -1397,6 +1526,7 @@ ApplicationSession::verifyFirstTrackPackage(std::filesystem::path packageDirecto
         .packageDirectory = packageDirectory,
         .manifestPath = manifestPath,
         .projectName = projectName,
+        .sampleRate = sampleRate,
         .renderFrames = renderFrames,
         .loopFrames = loop.frames,
         .stemCount = stems.size(),
@@ -2188,8 +2318,16 @@ void ApplicationSession::updateStatus() {
         .importedAudioClipCount = importedAudioClipCount(document_->manifest())};
 }
 
-void ApplicationSession::syncTransportFromProject() noexcept {
+void ApplicationSession::syncTransportFromProject() {
     if (document_.has_value()) {
+        const auto projectSampleRate = document_->manifest().projectSampleRate;
+        if (std::abs(engine_.config().sampleRate - projectSampleRate) > 0.000001) {
+            const auto selectedDevice = engine_.device();
+            engine_ = audio::AudioEngine{{.sampleRate = projectSampleRate,
+                                          .maxBlockSize = engine_.config().maxBlockSize,
+                                          .outputChannels = engine_.config().outputChannels}};
+            engine_.selectDevice(selectedDevice);
+        }
         const auto endSample = arrangementEndSample(document_->manifest());
         const auto frames =
             endSample > 0 && endSample <= static_cast<std::int64_t>(
@@ -2228,6 +2366,13 @@ void ApplicationSession::rememberRecentProject(const std::filesystem::path& path
 void ApplicationSession::validatePreferences(const ApplicationPreferences& preferences) const {
     if (preferences.allowMcpProjectMutation && !preferences.mcpEnabled) {
         throw std::runtime_error("MCP project mutation requires MCP to be enabled");
+    }
+    if ((preferences.shareDiagnostics || preferences.telemetryEnabled) &&
+        preferences.diagnosticsConsent != DiagnosticsConsent::Granted) {
+        throw std::runtime_error("Diagnostics and telemetry require explicit granted consent");
+    }
+    if (!diagnosticsEndpointAllowed(preferences.diagnosticsEndpoint)) {
+        throw std::runtime_error("Diagnostics endpoint must be empty, HTTPS, or an environment override");
     }
 
     for (const auto& midiInputId : preferences.enabledMidiInputIds) {

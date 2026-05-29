@@ -6,15 +6,45 @@ on:
 
 jobs:
   macos:
-    runs-on: macos-latest
+    runs-on: macos-14
+    env:
+      LAMUSICA_JUCE_PATH: ${{ github.workspace }}/external/JUCE
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 7c9d3783b127263d72bb65fe0a7e2dc8a02a7ac2
+          path: external/JUCE
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '15.4'
       - name: Configure
         run: cmake --preset debug
       - name: Build
         run: cmake --build --preset debug
       - name: Test
         run: ctest --preset debug
+      - name: Determinism gate
+        run: ctest --test-dir build/unix-debug -L determinism --output-on-failure
+      - name: Plugin hosting gate
+        run: ctest --test-dir build/unix-debug -L plugin-hosting --output-on-failure
+      - name: Audio correctness gate
+        run: ctest --test-dir build/unix-debug -L audio-correctness --output-on-failure
+      - name: Behavior artifact gate
+        run: ctest --test-dir build/unix-debug -L behavior --output-on-failure
+      - name: Realtime deadline gate
+        run: ctest --test-dir build/unix-debug -L perf --output-on-failure
+      - name: Headless GUI binding gate
+        run: ctest --test-dir build/unix-debug -L gui --output-on-failure
+      - name: Upload perf history
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-history-debug
+          path: build/unix-debug/tests/perf/rt-history.jsonl
+          if-no-files-found: error
       - name: Benchmark smoke
         run: build/unix-debug/tools/cli/lamusica_cli benchmark-smoke
       - name: Formatting check
@@ -30,6 +60,12 @@ jobs:
         run: cmake --build --preset asan
       - name: Test ASan
         run: ctest --preset asan
+      - name: Configure TSan
+        run: cmake --preset tsan
+      - name: Build TSan
+        run: cmake --build --preset tsan
+      - name: Plugin hosting TSan gate
+        run: ctest --test-dir build/unix-tsan -L plugin-hosting --output-on-failure
       - name: Configure release
         run: cmake --preset release
       - name: Build release
@@ -42,6 +78,14 @@ jobs:
           build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/tutorials
       - name: Package release
         run: cpack -G TGZ --config build/unix-release/CPackConfig.cmake
+      - name: Build SBOM and checksums
+        run: scripts/sbom.sh --artifact "$(ls LaMusica-*-Darwin.tar.gz)" --output build/release-metadata
+      - name: Vulnerability scan
+        uses: anchore/scan-action@v4
+        with:
+          path: build/release-metadata/LaMusica.spdx.json
+          fail-build: true
+          severity-cutoff: critical
       - name: Verify package contents
         run: cmake -DPACKAGE="$(ls LaMusica-*-Darwin.tar.gz)" -P cmake/VerifyPackage.cmake
       - name: Upload package

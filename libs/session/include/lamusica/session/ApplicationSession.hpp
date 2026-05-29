@@ -98,6 +98,7 @@ struct FirstTrackPackageVerificationResult {
     std::filesystem::path packageDirectory;
     std::filesystem::path manifestPath;
     std::string projectName;
+    std::uint32_t sampleRate{0};
     std::uint32_t renderFrames{0};
     std::uint32_t loopFrames{0};
     std::size_t stemCount{0};
@@ -259,6 +260,12 @@ struct KeyboardShortcutPreference {
     std::string keyEquivalent;
 };
 
+enum class DiagnosticsConsent {
+    Undecided,
+    Declined,
+    Granted,
+};
+
 struct ApplicationPreferences {
     std::string audioDeviceId;
     std::vector<std::string> enabledMidiInputIds;
@@ -268,6 +275,10 @@ struct ApplicationPreferences {
     std::vector<KeyboardShortcutPreference> keyboardShortcuts;
     bool allowUserFolderScanning{false};
     bool shareDiagnostics{false};
+    DiagnosticsConsent diagnosticsConsent{DiagnosticsConsent::Undecided};
+    std::string diagnosticsEndpoint;
+    bool telemetryEnabled{false};
+    bool guidedTourSeen{false};
 };
 
 class ApplicationSession {
@@ -282,6 +293,15 @@ class ApplicationSession {
     void createFirstTrackProject(std::filesystem::path path, std::string name);
     void openProject(std::filesystem::path path);
     void saveProject();
+    void addTrack(Track track);
+    void addRoutingConnection(RoutingConnection route);
+    void addMarker(Marker marker);
+    void setTempo(double bpm);
+    void setTimeSignature(std::uint32_t numerator, std::uint32_t denominator);
+    void createAudioClip(Clip clip);
+    void createMidiClip(Clip clip, MidiClipReference reference);
+    void addPlugin(PluginReference plugin);
+    void addAutomationLane(AutomationLane lane);
     void setClipGain(std::string_view clipId, float gainDb);
     void setClipFades(std::string_view clipId, std::int64_t fadeInSamples,
                       std::int64_t fadeOutSamples);
@@ -337,7 +357,7 @@ class ApplicationSession {
 
   private:
     void updateStatus();
-    void syncTransportFromProject() noexcept;
+    void syncTransportFromProject();
     void rememberRecentProject(const std::filesystem::path& path);
     void validatePreferences(const ApplicationPreferences& preferences) const;
     void rememberUndoSnapshot();

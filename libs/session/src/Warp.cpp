@@ -1,5 +1,7 @@
 #include "lamusica/session/Warp.hpp"
 
+#include "lamusica/session/WarpDsp.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -19,51 +21,6 @@ void validateSourceAudio(const audio::RenderedAudio& source) {
         static_cast<std::size_t>(source.channels) * source.frames) {
         throw std::runtime_error("Warp render source audio size does not match channel layout");
     }
-}
-
-float sampleFrameChannel(const audio::RenderedAudio& source, std::int64_t frame,
-                         std::uint32_t channel) {
-    const auto clampedFrame =
-        std::clamp<std::int64_t>(frame, 0, static_cast<std::int64_t>(source.frames) - 1);
-    return source
-        .interleavedSamples[static_cast<std::size_t>(clampedFrame) * source.channels + channel];
-}
-
-float cubicInterpolate(float previous, float current, float next, float following,
-                       double position) noexcept {
-    const auto a = (-0.5F * previous) + (1.5F * current) - (1.5F * next) + (0.5F * following);
-    const auto b = previous - (2.5F * current) + (2.0F * next) - (0.5F * following);
-    const auto c = (-0.5F * previous) + (0.5F * next);
-    const auto d = current;
-    return static_cast<float>(((a * position + b) * position + c) * position + d);
-}
-
-float interpolatedSample(const audio::RenderedAudio& source, double sourcePosition,
-                         std::uint32_t channel, StretchQuality quality) {
-    switch (quality) {
-    case StretchQuality::Preview:
-        return sampleFrameChannel(source, static_cast<std::int64_t>(std::llround(sourcePosition)),
-                                  channel);
-    case StretchQuality::Balanced: {
-        const auto left = static_cast<std::int64_t>(std::floor(sourcePosition));
-        const auto right = left + 1;
-        const auto position = sourcePosition - static_cast<double>(left);
-        return sampleFrameChannel(source, left, channel) +
-               static_cast<float>((sampleFrameChannel(source, right, channel) -
-                                   sampleFrameChannel(source, left, channel)) *
-                                  position);
-    }
-    case StretchQuality::High: {
-        const auto current = static_cast<std::int64_t>(std::floor(sourcePosition));
-        const auto position = sourcePosition - static_cast<double>(current);
-        return cubicInterpolate(sampleFrameChannel(source, current - 1, channel),
-                                sampleFrameChannel(source, current, channel),
-                                sampleFrameChannel(source, current + 1, channel),
-                                sampleFrameChannel(source, current + 2, channel), position);
-    }
-    }
-    return sampleFrameChannel(source, static_cast<std::int64_t>(std::llround(sourcePosition)),
-                              channel);
 }
 
 } // namespace
@@ -318,6 +275,57 @@ const RenderCacheEntry* findValidRenderCacheEntry(std::span<const RenderCacheEnt
     return found == cache.end() ? nullptr : &*found;
 }
 
+std::vector<WarpRenderSegment> renderSegmentsForRange(const WarpState& warp,
+                                                      std::int64_t sourceStartSample,
+                                                      std::int64_t sourceEndSample) {
+    std::vector<WarpRenderSegment> segments;
+    if (!warp.enabled || warp.markers.size() < 2U) {
+        segments.push_back({.sourceStartSample = sourceStartSample,
+                            .sourceEndSample = sourceEndSample,
+                            .timelineStartSample =
+                                conformSampleToTempo(sourceStartSample, warp.sourceTempoBpm,
+                                                     warp.targetTempoBpm),
+                            .timelineEndSample =
+                                conformSampleToTempo(sourceEndSample, warp.sourceTempoBpm,
+                                                     warp.targetTempoBpm)});
+        return segments;
+    }
+
+    std::vector<std::int64_t> boundaries{sourceStartSample, sourceEndSample};
+    for (const auto& marker : warp.markers) {
+        if (marker.sourceSample > sourceStartSample && marker.sourceSample < sourceEndSample) {
+            boundaries.push_back(marker.sourceSample);
+        }
+    }
+    std::ranges::sort(boundaries);
+    boundaries.erase(std::ranges::unique(boundaries).begin(), boundaries.end());
+
+    segments.reserve(boundaries.size() > 0U ? boundaries.size() - 1U : 0U);
+    for (std::size_t index = 1; index < boundaries.size(); ++index) {
+        const auto segmentStart = boundaries[index - 1U];
+        const auto segmentEnd = boundaries[index];
+        if (segmentEnd <= segmentStart) {
+            continue;
+        }
+        const auto timelineStart = mapSourceToTimeline(warp, segmentStart);
+        const auto timelineEnd = mapSourceToTimeline(warp, segmentEnd);
+        if (timelineEnd <= timelineStart) {
+            continue;
+        }
+        segments.push_back({.sourceStartSample = segmentStart,
+                            .sourceEndSample = segmentEnd,
+                            .timelineStartSample = timelineStart,
+                            .timelineEndSample = timelineEnd});
+    }
+    if (segments.empty()) {
+        segments.push_back({.sourceStartSample = sourceStartSample,
+                            .sourceEndSample = sourceEndSample,
+                            .timelineStartSample = mapSourceToTimeline(warp, sourceStartSample),
+                            .timelineEndSample = mapSourceToTimeline(warp, sourceEndSample)});
+    }
+    return segments;
+}
+
 WarpRenderPlan makeWarpRenderPlan(const WarpState& warp, std::span<const RenderCacheEntry> cache,
                                   std::int64_t sourceStartSample, std::int64_t sourceEndSample,
                                   std::string relativePath) {
@@ -332,6 +340,7 @@ WarpRenderPlan makeWarpRenderPlan(const WarpState& warp, std::span<const RenderC
     const auto timelineEnd = mapSourceToTimeline(warp, sourceEndSample);
     const auto sourceDuration = sourceEndSample - sourceStartSample;
     const auto timelineDuration = std::max<std::int64_t>(1, timelineEnd - timelineStart);
+    auto segments = renderSegmentsForRange(warp, sourceStartSample, sourceEndSample);
 
     return {
         .clipId = warp.clipId,
@@ -344,6 +353,7 @@ WarpRenderPlan makeWarpRenderPlan(const WarpState& warp, std::span<const RenderC
         .stretchRatio = static_cast<double>(timelineDuration) / static_cast<double>(sourceDuration),
         .pitchRatio = pitchShiftRatio(warp.pitchShiftSemitones),
         .quality = warp.quality,
+        .segments = std::move(segments),
         .cacheHit = cacheEntry != nullptr};
 }
 
@@ -364,26 +374,74 @@ audio::RenderedAudio renderWarpedAudio(const audio::RenderedAudio& source,
         throw std::runtime_error("Warp render output is too large");
     }
 
-    audio::RenderedAudio rendered{.channels = source.channels,
-                                  .frames = static_cast<std::uint32_t>(outputFrames64),
-                                  .interleavedSamples = std::vector<float>(
-                                      static_cast<std::size_t>(outputFrames64) * source.channels)};
+    const auto outputFrames = static_cast<std::uint32_t>(outputFrames64);
+    audio::RenderedAudio output{.channels = source.channels,
+                                .frames = outputFrames,
+                                .interleavedSamples = std::vector<float>(
+                                    static_cast<std::size_t>(outputFrames) * source.channels)};
 
-    for (std::uint32_t frame = 0; frame < rendered.frames; ++frame) {
-        const auto sourceOffset =
-            (static_cast<double>(frame) / plan.stretchRatio) * plan.pitchRatio;
-        const auto sourcePosition =
-            std::clamp(static_cast<double>(plan.sourceStartSample) + sourceOffset,
-                       static_cast<double>(plan.sourceStartSample),
-                       static_cast<double>(plan.sourceEndSample - 1));
-        for (std::uint32_t channel = 0; channel < source.channels; ++channel) {
-            rendered
-                .interleavedSamples[static_cast<std::size_t>(frame) * source.channels + channel] =
-                interpolatedSample(source, sourcePosition, channel, plan.quality);
+    const auto renderSegment = [&](const WarpRenderSegment& segment) {
+        const auto segmentSourceFrames64 = segment.sourceEndSample - segment.sourceStartSample;
+        const auto segmentOutputFrames64 = segment.timelineEndSample - segment.timelineStartSample;
+        if (segmentSourceFrames64 <= 0 || segmentOutputFrames64 <= 0 ||
+            segment.sourceStartSample < plan.sourceStartSample ||
+            segment.sourceEndSample > plan.sourceEndSample ||
+            segment.timelineStartSample < plan.timelineStartSample ||
+            segment.timelineEndSample > plan.timelineEndSample ||
+            segmentSourceFrames64 > std::numeric_limits<std::uint32_t>::max() ||
+            segmentOutputFrames64 > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error("Warp render segment is outside render plan bounds");
+        }
+        audio::RenderedAudio sourceSlice{
+            .channels = source.channels,
+            .frames = static_cast<std::uint32_t>(segmentSourceFrames64),
+            .interleavedSamples =
+                std::vector<float>(static_cast<std::size_t>(segmentSourceFrames64) *
+                                   source.channels)};
+        for (std::uint32_t frame = 0; frame < sourceSlice.frames; ++frame) {
+            const auto sourceFrame = segment.sourceStartSample + static_cast<std::int64_t>(frame);
+            for (std::uint32_t channel = 0; channel < source.channels; ++channel) {
+                sourceSlice.interleavedSamples[static_cast<std::size_t>(frame) * source.channels +
+                                               channel] =
+                    source.interleavedSamples[static_cast<std::size_t>(sourceFrame) *
+                                                  source.channels +
+                                              channel];
+            }
+        }
+        const auto segmentStretchRatio =
+            static_cast<double>(segmentOutputFrames64) / static_cast<double>(segmentSourceFrames64);
+        const auto rendered =
+            renderWarpDsp(sourceSlice, static_cast<std::uint32_t>(segmentOutputFrames64),
+                          {.stretchRatio = segmentStretchRatio,
+                           .pitchRatio = plan.pitchRatio,
+                           .quality = plan.quality});
+        const auto outputOffset = static_cast<std::size_t>(segment.timelineStartSample -
+                                                          plan.timelineStartSample);
+        for (std::uint32_t frame = 0; frame < rendered.frames; ++frame) {
+            const auto outputFrame = outputOffset + frame;
+            if (outputFrame >= output.frames) {
+                break;
+            }
+            for (std::uint32_t channel = 0; channel < output.channels; ++channel) {
+                output.interleavedSamples[outputFrame * output.channels + channel] =
+                    rendered.interleavedSamples[static_cast<std::size_t>(frame) *
+                                                    rendered.channels +
+                                                channel];
+            }
+        }
+    };
+
+    if (plan.segments.empty()) {
+        renderSegment({.sourceStartSample = plan.sourceStartSample,
+                       .sourceEndSample = plan.sourceEndSample,
+                       .timelineStartSample = plan.timelineStartSample,
+                       .timelineEndSample = plan.timelineEndSample});
+    } else {
+        for (const auto& segment : plan.segments) {
+            renderSegment(segment);
         }
     }
-
-    return rendered;
+    return output;
 }
 
 audio::RenderedAudio renderWarpPreview(const audio::RenderedAudio& source,
@@ -404,12 +462,26 @@ bool warpRenderPlansAgree(const WarpRenderPlan& offlinePlan, const WarpRenderPla
     const auto withinTolerance = [sampleTolerance](std::int64_t left, std::int64_t right) {
         return std::llabs(left - right) <= sampleTolerance;
     };
-    return withinTolerance(offlinePlan.sourceStartSample, previewPlan.sourceStartSample) &&
-           withinTolerance(offlinePlan.sourceEndSample, previewPlan.sourceEndSample) &&
-           withinTolerance(offlinePlan.timelineStartSample, previewPlan.timelineStartSample) &&
-           withinTolerance(offlinePlan.timelineEndSample, previewPlan.timelineEndSample) &&
-           std::abs(offlinePlan.stretchRatio - previewPlan.stretchRatio) <= 0.000001 &&
-           std::abs(offlinePlan.pitchRatio - previewPlan.pitchRatio) <= 0.000001;
+    if (!withinTolerance(offlinePlan.sourceStartSample, previewPlan.sourceStartSample) ||
+        !withinTolerance(offlinePlan.sourceEndSample, previewPlan.sourceEndSample) ||
+        !withinTolerance(offlinePlan.timelineStartSample, previewPlan.timelineStartSample) ||
+        !withinTolerance(offlinePlan.timelineEndSample, previewPlan.timelineEndSample) ||
+        offlinePlan.segments.size() != previewPlan.segments.size() ||
+        std::abs(offlinePlan.stretchRatio - previewPlan.stretchRatio) > 0.000001 ||
+        std::abs(offlinePlan.pitchRatio - previewPlan.pitchRatio) > 0.000001) {
+        return false;
+    }
+    for (std::size_t index = 0; index < offlinePlan.segments.size(); ++index) {
+        const auto& left = offlinePlan.segments[index];
+        const auto& right = previewPlan.segments[index];
+        if (!withinTolerance(left.sourceStartSample, right.sourceStartSample) ||
+            !withinTolerance(left.sourceEndSample, right.sourceEndSample) ||
+            !withinTolerance(left.timelineStartSample, right.timelineStartSample) ||
+            !withinTolerance(left.timelineEndSample, right.timelineEndSample)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void validateWarpState(const WarpState& warp) {

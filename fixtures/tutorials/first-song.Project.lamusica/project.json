@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "name": "First Song Tutorial",
+  "projectSampleRate": 48000.0,
   "loopEnabled": true,
   "loopStartSample": 0,
   "loopEndSample": 96000,
@@ -53,10 +54,13 @@
   "midiClips": [
     {"clipId": "bass-pattern", "dataId": "starter-bass-midi"}
   ],
+  "takeLanes": [],
+  "comps": [],
   "routing": [
     {"sourceTrackId": "drums", "destinationTrackId": "master"},
     {"sourceTrackId": "bass", "destinationTrackId": "master"}
   ],
+  "trackMix": [],
   "plugins": [
     {
       "id": "drum-starter-sampler",

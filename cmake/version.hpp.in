@@ -1,0 +1,10 @@
+#pragma once
+
+namespace lamusica::build {
+
+inline constexpr const char* version = "@PROJECT_VERSION@";
+inline constexpr const char* gitCommit = "@LAMUSICA_GIT_COMMIT@";
+inline constexpr bool gitDirty = @LAMUSICA_GIT_DIRTY_BOOL@;
+inline constexpr const char* buildDate = "@LAMUSICA_BUILD_DATE@";
+
+} // namespace lamusica::build

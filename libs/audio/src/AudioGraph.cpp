@@ -65,30 +65,44 @@ float clipEnvelopeGain(const GraphNode& node, std::int64_t relativeSample) noexc
 }
 
 float sampleNodeValue(const GraphNode& node, std::int64_t absoluteSample,
-                      std::uint32_t channel) noexcept {
+                      std::uint32_t channel, double outputSampleRate) noexcept {
     if (node.sampleChannels == 0 || node.sampleFrames == 0 || node.samples.empty() ||
         !nodeActiveAtSample(node, absoluteSample)) {
         return 0.0F;
     }
 
     const auto relativeSample = absoluteSample - node.startSample;
-    auto sourceFrame = node.sourceOffsetSamples + relativeSample;
+    const auto rateRatio =
+        node.sampleRate > 0.0 && outputSampleRate > 0.0 ? node.sampleRate / outputSampleRate : 1.0;
+    auto sourcePosition =
+        static_cast<double>(node.sourceOffsetSamples) + static_cast<double>(relativeSample) * rateRatio;
     if (node.reversed) {
-        sourceFrame = node.sourceOffsetSamples + (node.lengthSamples - 1 - relativeSample);
+        sourcePosition = static_cast<double>(node.sourceOffsetSamples) +
+                         static_cast<double>(node.lengthSamples - 1 - relativeSample) * rateRatio;
     }
-    if (sourceFrame < 0 || sourceFrame >= static_cast<std::int64_t>(node.sampleFrames)) {
+    if (sourcePosition < 0.0 || sourcePosition >= static_cast<double>(node.sampleFrames)) {
         return 0.0F;
     }
 
     const auto sourceChannel =
         std::min<std::uint32_t>(channel, node.sampleChannels == 1 ? 0 : node.sampleChannels - 1);
-    const auto index =
-        static_cast<std::size_t>(sourceFrame) * static_cast<std::size_t>(node.sampleChannels) +
+    const auto left = static_cast<std::int64_t>(std::floor(sourcePosition));
+    const auto fraction = sourcePosition - static_cast<double>(left);
+    const auto leftIndex =
+        static_cast<std::size_t>(left) * static_cast<std::size_t>(node.sampleChannels) +
         static_cast<std::size_t>(sourceChannel);
-    if (index >= node.samples.size()) {
+    if (leftIndex >= node.samples.size()) {
         return 0.0F;
     }
-    return node.samples[index] * clipEnvelopeGain(node, relativeSample) * node.gain;
+    const auto rightIndex =
+        static_cast<std::size_t>(std::min<std::int64_t>(
+            left + 1, static_cast<std::int64_t>(node.sampleFrames) - 1)) *
+            static_cast<std::size_t>(node.sampleChannels) +
+        static_cast<std::size_t>(sourceChannel);
+    const auto value =
+        node.samples[leftIndex] +
+        static_cast<float>((node.samples[rightIndex] - node.samples[leftIndex]) * fraction);
+    return value * clipEnvelopeGain(node, relativeSample) * node.gain;
 }
 
 bool visitCycle(std::string_view node, const std::map<std::string, std::vector<std::string>>& graph,
@@ -260,7 +274,7 @@ void renderGraph(const AudioGraph& graph, const EngineConfig& config, std::int64
                 const auto absoluteSample = startSample + static_cast<std::int64_t>(frame);
                 for (std::uint32_t channel = 0; channel < config.outputChannels; ++channel) {
                     buffer[sampleCount(frame, config.outputChannels) + channel] +=
-                        sampleNodeValue(*node, absoluteSample, channel);
+                        sampleNodeValue(*node, absoluteSample, channel, config.sampleRate);
                 }
             }
         }

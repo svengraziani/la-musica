@@ -16,6 +16,11 @@ Install signed public releases from the LaMusica disk image by dragging `LaMusic
 `/Applications`. The app should launch from Finder without Xcode, CMake, or other developer tools.
 Unsigned nightly archives are contributor artifacts and may require local security approval.
 
+On first launch, LaMusica opens a welcome surface instead of creating a hidden temporary starter
+project. The welcome surface offers Empty, Basic Multitrack, Drum + Synth, and Podcast / Voice
+templates plus recent-project reopening. Help includes the bundled user manual, keyboard shortcut
+reference, welcome-window command, and a restartable guided tour.
+
 Packaged command-line tools live beside the app distribution and can validate projects, verify
 first-track readiness, or check MCP daemon health. Example and tutorial projects shipped with the
 package use generated or empty media references so they can open without external sample packs.
@@ -36,9 +41,11 @@ guess.
 
 The native shell keeps preferences for the selected audio device, enabled MIDI inputs, plugin
 search paths, MCP availability and mutation scope, keyboard shortcuts, user-folder scanning privacy,
-and diagnostics sharing. The Preferences window reflects the current session preference state across
-Audio, MIDI, Plugins, MCP, Shortcuts, and Privacy tabs. MCP project mutation cannot be enabled
-unless MCP itself is enabled.
+and diagnostics sharing. Diagnostics sharing is default-off and requires explicit granted consent;
+see [Privacy And Diagnostics](release/privacy-and-diagnostics.md) for collected fields, endpoint
+override, retention, and opt-out details. The Preferences window reflects the current session
+preference state across Audio, MIDI, Plugins, MCP, Shortcuts, and Privacy tabs. MCP project mutation
+cannot be enabled unless MCP itself is enabled.
 Menu commands route through the focused primary panel: Browser, Timeline, Inspector, Mixer, or
 Transport. View commands move focus to their target panel, project commands require an open project,
 transport commands focus the transport area before toggling playback state, and first-track export,

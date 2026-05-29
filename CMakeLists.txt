@@ -18,7 +18,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(LAMUSICA_ENABLE_TESTS "Build LaMusica tests" ON)
 option(LAMUSICA_ENABLE_ASAN "Build targets with AddressSanitizer instrumentation" OFF)
+option(LAMUSICA_ENABLE_TSAN "Build targets with ThreadSanitizer instrumentation" OFF)
 option(LAMUSICA_ENABLE_PROFILING "Build targets with profiling-friendly debug symbols" OFF)
+option(LAMUSICA_ENABLE_DSYM "Generate dSYM bundles for release-symbol archival on macOS" OFF)
 set(LAMUSICA_JUCE_VERSION
     "8.0.13"
     CACHE STRING "Pinned JUCE version")
@@ -30,6 +32,14 @@ set(LAMUSICA_JUCE_PATH
     CACHE PATH "Path to a checked-out JUCE ${LAMUSICA_JUCE_VERSION} source tree")
 
 include(cmake/CompilerWarnings.cmake)
+
+if(LAMUSICA_ENABLE_ASAN AND LAMUSICA_ENABLE_TSAN)
+  message(FATAL_ERROR "LAMUSICA_ENABLE_ASAN and LAMUSICA_ENABLE_TSAN cannot be enabled together")
+endif()
+
+if(APPLE AND LAMUSICA_ENABLE_DSYM)
+  set(CMAKE_XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT "dwarf-with-dsym")
+endif()
 
 if(NOT LAMUSICA_JUCE_PATH)
   message(FATAL_ERROR "LaMusica requires JUCE ${LAMUSICA_JUCE_VERSION}. Set "
@@ -48,6 +58,28 @@ if(DEFINED JUCE_VERSION AND NOT JUCE_VERSION VERSION_EQUAL LAMUSICA_JUCE_VERSION
 endif()
 
 find_package(Git QUIET)
+set(LAMUSICA_GIT_COMMIT "unknown")
+set(LAMUSICA_GIT_DIRTY_BOOL false)
+if(Git_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short=12 HEAD
+    OUTPUT_VARIABLE LAMUSICA_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_CURRENT_SOURCE_DIR}" diff-index --quiet HEAD --
+    RESULT_VARIABLE LAMUSICA_GIT_DIRTY_RESULT
+    ERROR_QUIET)
+  if(NOT LAMUSICA_GIT_DIRTY_RESULT EQUAL 0)
+    set(LAMUSICA_GIT_DIRTY_BOOL true)
+  endif()
+endif()
+string(TIMESTAMP LAMUSICA_BUILD_DATE "%Y-%m-%dT%H:%M:%SZ" UTC)
+configure_file(cmake/version.hpp.in generated/include/lamusica/version.hpp @ONLY)
+add_library(lamusica_build_info INTERFACE)
+add_library(lamusica::build_info ALIAS lamusica_build_info)
+target_include_directories(lamusica_build_info INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
+
 if(Git_FOUND AND EXISTS "${LAMUSICA_JUCE_PATH}/.git")
   execute_process(
     COMMAND "${GIT_EXECUTABLE}" -C "${LAMUSICA_JUCE_PATH}" rev-parse HEAD
@@ -67,9 +99,12 @@ endif()
 add_subdirectory(libs/audio)
 add_subdirectory(libs/session)
 add_subdirectory(libs/commands)
+add_subdirectory(libs/plugin_host)
 add_subdirectory(libs/mcp_bridge)
+add_subdirectory(libs/crash_report)
 add_subdirectory(apps/daw)
 add_subdirectory(apps/mcpd)
+add_subdirectory(apps/plugin_scan_worker)
 add_subdirectory(tools/cli)
 
 if(LAMUSICA_ENABLE_TESTS)
@@ -77,20 +112,22 @@ if(LAMUSICA_ENABLE_TESTS)
   add_subdirectory(tests)
 endif()
 
-install(TARGETS lamusica_daw lamusica_mcpd lamusica_cli
+install(TARGETS lamusica_daw lamusica_mcpd lamusica_plugin_scan_worker lamusica_cli
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         BUNDLE DESTINATION .)
-install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR})
-install(FILES README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md
+install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR} PATTERN "planning" EXCLUDE)
+install(FILES README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md NOTICE THIRD_PARTY-NOTICES.md
+              docs/release/privacy-and-diagnostics.md
         DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(DIRECTORY fixtures/examples/ DESTINATION ${CMAKE_INSTALL_DATADIR}/lamusica/examples)
 install(DIRECTORY fixtures/empty.Project.lamusica
         DESTINATION ${CMAKE_INSTALL_DATADIR}/lamusica/examples)
 install(DIRECTORY fixtures/tutorials/ DESTINATION ${CMAKE_INSTALL_DATADIR}/lamusica/tutorials)
+install(DIRECTORY apps/daw/resources/i18n DESTINATION ${CMAKE_INSTALL_DATADIR}/lamusica)
 
 set(CPACK_PACKAGE_NAME "LaMusica")
 set(CPACK_PACKAGE_VENDOR "LaMusica")
-set(CPACK_PACKAGE_CONTACT "security@lamusica.invalid")
+set(CPACK_PACKAGE_CONTACT "security@lamusica.dev")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")

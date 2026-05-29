@@ -122,6 +122,7 @@ and tutorial projects.
 
 - Architecture: `docs/architecture/architecture-baseline.md`
 - Dependencies: `docs/developer/dependencies.md`
+- Localization: `docs/developer/localization.md`
 - Project format: `docs/developer/project-format.md`
 - Project schema: `docs/schemas/project-v1.schema.json`
 - Command API: `docs/developer/command-api.md`

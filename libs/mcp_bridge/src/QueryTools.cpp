@@ -420,7 +420,10 @@ std::string assetCatalogJson(const session::AssetCatalog& catalog, QueryPage pag
             item << "{\"id\":\"" << escapeJson(asset.id) << "\",\"relativePath\":\""
                  << escapeJson(pathString(asset.relativePath)) << "\",\"kind\":\""
                  << toString(asset.kind)
-                 << "\",\"favorite\":" << (asset.favorite ? "true" : "false")
+                 << "\",\"sourceSampleRate\":" << asset.sourceSampleRate
+                 << ",\"resampledToProjectRate\":"
+                 << (asset.resampledToProjectRate ? "true" : "false")
+                 << ",\"favorite\":" << (asset.favorite ? "true" : "false")
                  << ",\"missing\":" << (asset.missing ? "true" : "false");
             if (analysis != nullptr) {
                 item << ",\"analysis\":{\"durationSamples\":" << analysis->durationSamples
@@ -437,6 +440,7 @@ std::string assetCatalogJson(const session::AssetCatalog& catalog, QueryPage pag
             }
             if (waveform != nullptr) {
                 item << ",\"waveform\":{\"valid\":" << (waveform->valid ? "true" : "false")
+                     << ",\"sampleRate\":" << waveform->sampleRate
                      << ",\"samplesPerBucket\":" << waveform->samplesPerBucket
                      << ",\"buckets\":" << waveform->buckets.size() << "}";
             } else {

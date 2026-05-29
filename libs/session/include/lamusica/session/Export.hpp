@@ -14,7 +14,7 @@ struct ProjectExportOptions {
     std::filesystem::path outputPath;
     std::int64_t startSample{0};
     std::uint32_t frames{0};
-    double sampleRate{48000.0};
+    double sampleRate{0.0};
     std::uint32_t channels{2};
     std::filesystem::path projectRoot;
     audio::ExportBitDepth bitDepth{audio::ExportBitDepth::Pcm16};
@@ -28,7 +28,7 @@ struct StemExportOptions {
     std::vector<std::string> trackIds;
     std::int64_t startSample{0};
     std::uint32_t frames{0};
-    double sampleRate{48000.0};
+    double sampleRate{0.0};
     std::uint32_t channels{2};
     std::filesystem::path projectRoot;
     audio::ExportBitDepth bitDepth{audio::ExportBitDepth::Pcm16};

@@ -119,6 +119,8 @@ class AudioEngine {
     void renderMetronome(std::span<float> interleavedOutput, std::uint32_t frames) noexcept;
     void renderGraphBlock(const AudioGraph& graph, std::span<float> interleavedOutput,
                           std::uint32_t frames);
+    void renderGraphDeviceBlock(const AudioGraph& graph, std::span<float> interleavedOutput,
+                                std::uint32_t deviceFrames);
 
     [[nodiscard]] RenderedAudio renderSilenceOffline(std::uint32_t frames);
     [[nodiscard]] RenderedAudio renderSineOffline(std::uint32_t frames, double frequencyHz,
@@ -130,14 +132,15 @@ class AudioEngine {
     void applyRealtimeCommand(RealtimeCommand command) noexcept;
     void advanceTransport(std::uint32_t frames) noexcept;
 
-    static constexpr std::size_t maxRealtimeGraphNodes = 32;
-    static constexpr std::size_t maxRealtimeGraphConnections = 128;
+    static constexpr std::size_t maxRealtimeGraphNodes = 512;
+    static constexpr std::size_t maxRealtimeGraphConnections = 4096;
 
     EngineConfig config_;
     AudioDeviceInfo device_{};
     TransportState transport_{};
     RealtimeCommandQueue commandQueue_;
     std::vector<float> realtimeGraphBuffers_;
+    std::vector<float> deviceRenderBuffer_;
 };
 
 } // namespace lamusica::audio

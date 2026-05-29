@@ -2,8 +2,8 @@
 
 ## Build
 
-- Configure: `cmake --preset release -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13`
-- Build: `cmake --build --preset release`
+- Configure: `cmake --preset release-universal -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13`
+- Build: `cmake --build --preset release-universal`
 - Test debug: `ctest --preset debug`
 - Test release: `ctest --preset release`
 - Formatting: `find apps libs tools tests \( -name '*.cpp' -o -name '*.hpp' -o -name '*.mm' \) -exec xcrun clang-format --dry-run --Werror {} +`
@@ -28,12 +28,33 @@
   release, changelog, security, examples, and tutorials.
 - Sign app bundle with the maintainer Developer ID.
 - Sign daemon and CLI binaries with the same Developer ID.
+- Sign the plugin scan worker before the app bundle.
+- Scripted signing: `scripts/sign-macos.sh --identity "Developer ID Application: <Team Name> (<TEAMID>)"`.
 - Notarize app bundle or disk image.
 - Staple notarization ticket.
+- Scripted notarization: `scripts/notarize-macos.sh --artifact LaMusica-<version>.dmg --keychain-profile lamusica-notary`.
 - Verify signatures: `codesign --verify --strict --deep --verbose=2`.
 - Verify Gatekeeper assessment: `spctl --assess --type execute --verbose`.
+- Verify stapling/signature gate: `scripts/verify-signature.sh --app LaMusica.app --artifact LaMusica-<version>.dmg`.
+- Generate SBOM and checksums: `scripts/sbom.sh --artifact LaMusica-<version>.dmg --output build/release-metadata`.
 - Verify launch on a clean macOS user account.
 - Follow [macOS Distribution](macos-distribution.md).
+
+## Accessibility
+
+- Run the automated accessibility gate:
+  `ctest --preset release -R lamusica_daw_accessibility_audit --output-on-failure`.
+- Enable VoiceOver and complete a manual pass for the primary DAW surfaces:
+  transport controls, a mixer strip, a timeline clip, a piano-roll note, and a plugin control.
+- Confirm VoiceOver announces each checked control with the expected role, name, value text, and
+  action; no interactive control should be announced as an unlabeled generic group.
+- Complete the release workflows without a mouse while VoiceOver is on: start/stop transport,
+  select and edit a clip, change a fader value, insert or inspect a plugin control, and open the
+  export path.
+- Enable macOS Reduce Motion and confirm playhead/meter animation uses the reduced cadence while
+  value text still updates.
+- Enable macOS Increase Contrast and confirm the high-contrast palette is active and focus rings are
+  visible.
 
 ## Assets And Examples
 

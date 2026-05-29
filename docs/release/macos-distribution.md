@@ -1,16 +1,16 @@
 # macOS Distribution
 
-LaMusica release artifacts are produced from the `release` preset.
+LaMusica release artifacts are produced from the `release-universal` preset on macOS.
 
 ## Package
 
 ```sh
-cmake --preset release -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13
-cmake --build --preset release
-ctest --preset release
+cmake --preset release-universal -DLAMUSICA_JUCE_PATH=/path/to/JUCE-8.0.13
+cmake --build --preset release-universal
+ctest --preset release-universal
 ctest --preset release -R first_track
 ctest --preset release -R lamusica_daw_app_session_preferences_first_track_smoke
-cpack --config build/unix-release/CPackConfig.cmake
+cpack -G DragNDrop --config build/macos-release-universal/CPackConfig.cmake
 ```
 
 The package must include:
@@ -60,16 +60,23 @@ Set the Developer ID identity explicitly in the release environment.
 
 ```sh
 codesign --force --options runtime --timestamp \
+  --entitlements apps/daw/lamusica.entitlements \
   --sign "Developer ID Application: <Team Name> (<TEAMID>)" \
-  build/unix-release/apps/daw/lamusica_daw_artefacts/LaMusica.app
+  build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app
 
 codesign --force --options runtime --timestamp \
   --sign "Developer ID Application: <Team Name> (<TEAMID>)" \
-  build/unix-release/apps/mcpd/lamusica_mcpd
+  build/macos-release-universal/apps/mcpd/lamusica_mcpd
 
 codesign --force --options runtime --timestamp \
   --sign "Developer ID Application: <Team Name> (<TEAMID>)" \
-  build/unix-release/tools/cli/lamusica_cli
+  build/macos-release-universal/tools/cli/lamusica_cli
+```
+
+The release workflow calls the scripted version:
+
+```sh
+scripts/sign-macos.sh --identity "Developer ID Application: <Team Name> (<TEAMID>)"
 ```
 
 Verify signatures before notarization:
@@ -92,6 +99,26 @@ xcrun notarytool submit LaMusica-<version>.dmg \
 xcrun stapler staple LaMusica-<version>.dmg
 xcrun stapler validate LaMusica-<version>.dmg
 ```
+
+The release workflow calls:
+
+```sh
+scripts/notarize-macos.sh --artifact LaMusica-<version>.dmg --keychain-profile lamusica-notary
+scripts/verify-signature.sh \
+  --app build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app \
+  --artifact LaMusica-<version>.dmg
+```
+
+## Provenance And Symbols
+
+Every binary prints `version`, `commit`, `dirty`, and `buildDate` through `--version`. Release builds
+archive dSYM bundles, emit an SPDX SBOM plus `SHA256SUMS`, and sign the checksum file. Crash reports
+are captured locally into the user's temporary `LaMusica Crash Reports` directory. Network upload is
+disabled unless diagnostics consent is granted and diagnostics sharing is enabled.
+
+Diagnostics upload endpoints are user-overridable for self-hosted deployments. Use an HTTPS
+`ApplicationPreferences::diagnosticsEndpoint` value, or set `LAMUSICA_DIAGNOSTICS_ENDPOINT` in the
+release environment. Non-HTTPS endpoints are rejected by preference validation.
 
 Unsigned nightly archives must be labeled as contributor artifacts. Beta and stable artifacts must
 pass `codesign`, `spctl`, `notarytool`, and `stapler` checks before publication.

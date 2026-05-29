@@ -1,6 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "name": "Generated Tone Example",
+  "projectSampleRate": 48000.0,
+  "loopEnabled": false,
+  "loopStartSample": 0,
+  "loopEndSample": 0,
   "tempoMap": [
     {"samplePosition": 0, "bpm": 120}
   ],
@@ -32,9 +36,12 @@
     }
   ],
   "midiClips": [],
+  "takeLanes": [],
+  "comps": [],
   "routing": [
     {"sourceTrackId": "tone-track", "destinationTrackId": "master"}
   ],
+  "trackMix": [],
   "plugins": [],
   "automation": [],
   "mcpAuditLog": []

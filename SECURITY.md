@@ -6,8 +6,11 @@ LaMusica has no released supported version yet. Security-sensitive design work s
 
 ## Reporting A Vulnerability
 
-Report vulnerabilities privately to `security@lamusica.invalid` until the project publishes a
-production security contact. Replace this placeholder before the first public stable release.
+Report vulnerabilities privately to `security@lamusica.dev`.
+
+Maintainers should acknowledge credible reports within 3 business days, keep exploit details private
+until a fix and release plan are available, and publish advisory notes for fixed releases. Add a PGP
+key here before the first public stable release if encrypted intake is required.
 
 Do not publish exploit details for vulnerabilities involving:
 

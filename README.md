@@ -9,6 +9,8 @@ scaffolding. Agents should start with:
 2. [Architecture Baseline](docs/architecture/architecture-baseline.md)
 3. [Agent Execution Rules](docs/process/agent-execution-rules.md)
 4. [Task Index](docs/tasks/README.md)
+5. [Localization Guide](docs/developer/localization.md)
+6. [Privacy And Diagnostics](docs/release/privacy-and-diagnostics.md)
 
 The product target is a full DAW, not an MVP.
 

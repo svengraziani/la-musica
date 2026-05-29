@@ -5,6 +5,7 @@ add_library(
   src/AudioClipEditing.cpp
   src/Assets.cpp
   src/Automation.cpp
+  src/ClipLauncher.cpp
   src/ProjectDocument.cpp
   src/ProjectManifest.cpp
   src/Midi.cpp
@@ -13,12 +14,14 @@ add_library(
   src/Performance.cpp
   src/Plugin.cpp
   src/DrumMachine.cpp
+  src/DiagnosticsScrubber.cpp
   src/Export.cpp
   src/GraphCompiler.cpp
   src/PianoRoll.cpp
   src/StarterProject.cpp
   src/Timeline.cpp
-  src/Warp.cpp)
+  src/Warp.cpp
+  src/WarpDsp.cpp)
 add_library(lamusica::session ALIAS lamusica_session)
 
 target_include_directories(lamusica_session PUBLIC include)

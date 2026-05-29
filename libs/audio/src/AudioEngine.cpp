@@ -85,30 +85,44 @@ float engineClipEnvelopeGain(const GraphNode& node, std::int64_t relativeSample)
 }
 
 float engineSampleNodeValue(const GraphNode& node, std::int64_t absoluteSample,
-                            std::uint32_t channel) noexcept {
+                            std::uint32_t channel, double outputSampleRate) noexcept {
     if (node.sampleChannels == 0 || node.sampleFrames == 0 || node.samples.empty() ||
         !engineNodeActiveAtSample(node, absoluteSample)) {
         return 0.0F;
     }
 
     const auto relativeSample = absoluteSample - node.startSample;
-    auto sourceFrame = node.sourceOffsetSamples + relativeSample;
+    const auto rateRatio =
+        node.sampleRate > 0.0 && outputSampleRate > 0.0 ? node.sampleRate / outputSampleRate : 1.0;
+    auto sourcePosition =
+        static_cast<double>(node.sourceOffsetSamples) + static_cast<double>(relativeSample) * rateRatio;
     if (node.reversed) {
-        sourceFrame = node.sourceOffsetSamples + (node.lengthSamples - 1 - relativeSample);
+        sourcePosition = static_cast<double>(node.sourceOffsetSamples) +
+                         static_cast<double>(node.lengthSamples - 1 - relativeSample) * rateRatio;
     }
-    if (sourceFrame < 0 || sourceFrame >= static_cast<std::int64_t>(node.sampleFrames)) {
+    if (sourcePosition < 0.0 || sourcePosition >= static_cast<double>(node.sampleFrames)) {
         return 0.0F;
     }
 
     const auto sourceChannel =
         std::min<std::uint32_t>(channel, node.sampleChannels == 1 ? 0 : node.sampleChannels - 1);
-    const auto index =
-        static_cast<std::size_t>(sourceFrame) * static_cast<std::size_t>(node.sampleChannels) +
+    const auto left = static_cast<std::int64_t>(std::floor(sourcePosition));
+    const auto fraction = sourcePosition - static_cast<double>(left);
+    const auto leftIndex =
+        static_cast<std::size_t>(left) * static_cast<std::size_t>(node.sampleChannels) +
         static_cast<std::size_t>(sourceChannel);
-    if (index >= node.samples.size()) {
+    if (leftIndex >= node.samples.size()) {
         return 0.0F;
     }
-    return node.samples[index] * engineClipEnvelopeGain(node, relativeSample) * node.gain;
+    const auto rightIndex =
+        static_cast<std::size_t>(std::min<std::int64_t>(
+            left + 1, static_cast<std::int64_t>(node.sampleFrames) - 1)) *
+            static_cast<std::size_t>(node.sampleChannels) +
+        static_cast<std::size_t>(sourceChannel);
+    const auto value =
+        node.samples[leftIndex] +
+        static_cast<float>((node.samples[rightIndex] - node.samples[leftIndex]) * fraction);
+    return value * engineClipEnvelopeGain(node, relativeSample) * node.gain;
 }
 
 std::size_t graphNodeIndex(const AudioGraph& graph, std::string_view nodeId) noexcept {
@@ -120,6 +134,16 @@ std::size_t graphNodeIndex(const AudioGraph& graph, std::string_view nodeId) noe
     return invalidNodeIndex;
 }
 
+std::uint32_t projectFramesForDeviceBlock(std::uint32_t deviceFrames, double projectSampleRate,
+                                          double deviceSampleRate) noexcept {
+    if (deviceFrames == 0U || projectSampleRate <= 0.0 || deviceSampleRate <= 0.0) {
+        return deviceFrames;
+    }
+    const auto frames =
+        std::ceil(static_cast<double>(deviceFrames) * (projectSampleRate / deviceSampleRate)) + 1.0;
+    return static_cast<std::uint32_t>(std::max<double>(1.0, frames));
+}
+
 } // namespace
 
 AudioEngine::AudioEngine(EngineConfig config) : config_(config) {
@@ -129,6 +153,7 @@ AudioEngine::AudioEngine(EngineConfig config) : config_(config) {
     device_.outputChannels = config_.outputChannels;
     realtimeGraphBuffers_.resize(maxRealtimeGraphNodes *
                                  sampleCount(config_.maxBlockSize, config_.outputChannels));
+    deviceRenderBuffer_.resize(sampleCount(config_.maxBlockSize + 1U, config_.outputChannels));
 }
 
 const EngineConfig& AudioEngine::config() const noexcept {
@@ -189,11 +214,15 @@ void AudioEngine::selectDevice(AudioDeviceInfo device) {
     }
 
     device_ = std::move(device);
-    config_.sampleRate = device_.sampleRate;
-    config_.maxBlockSize = device_.bufferSize;
+    config_.maxBlockSize =
+        std::max(device_.bufferSize, projectFramesForDeviceBlock(device_.bufferSize,
+                                                                 config_.sampleRate,
+                                                                 device_.sampleRate));
     config_.outputChannels = device_.outputChannels;
     realtimeGraphBuffers_.assign(
         maxRealtimeGraphNodes * sampleCount(config_.maxBlockSize, config_.outputChannels), 0.0F);
+    deviceRenderBuffer_.assign(sampleCount(config_.maxBlockSize + 1U, config_.outputChannels),
+                               0.0F);
 }
 
 bool AudioEngine::enqueueCommand(RealtimeCommand command) noexcept {
@@ -504,7 +533,7 @@ void AudioEngine::renderGraphBlock(const AudioGraph& graph, std::span<float> int
                     transport_.samplePosition + static_cast<std::int64_t>(frame);
                 for (std::uint32_t channel = 0; channel < config_.outputChannels; ++channel) {
                     buffer[sampleCount(frame, config_.outputChannels) + channel] +=
-                        engineSampleNodeValue(node, absoluteSample, channel);
+                        engineSampleNodeValue(node, absoluteSample, channel, config_.sampleRate);
                 }
             }
         }
@@ -545,6 +574,53 @@ void AudioEngine::renderGraphBlock(const AudioGraph& graph, std::span<float> int
     }
 
     advanceTransport(frames);
+}
+
+void AudioEngine::renderGraphDeviceBlock(const AudioGraph& graph, std::span<float> interleavedOutput,
+                                         std::uint32_t deviceFrames) {
+    if (deviceFrames > device_.bufferSize) {
+        throw std::runtime_error("Device graph block exceeds selected hardware buffer size");
+    }
+    const auto deviceSamples = sampleCount(deviceFrames, config_.outputChannels);
+    if (interleavedOutput.size() < deviceSamples) {
+        throw std::runtime_error("Output buffer is too small for device graph render");
+    }
+
+    if (std::abs(device_.sampleRate - config_.sampleRate) < 0.000001) {
+        renderGraphBlock(graph, interleavedOutput, deviceFrames);
+        return;
+    }
+
+    const auto startSample = transport_.samplePosition;
+    const auto projectFrames =
+        projectFramesForDeviceBlock(deviceFrames, config_.sampleRate, device_.sampleRate);
+    const auto projectSamples = sampleCount(projectFrames, config_.outputChannels);
+    if (projectFrames > config_.maxBlockSize || deviceRenderBuffer_.size() < projectSamples) {
+        throw std::runtime_error("Device resample buffer is too small for graph render");
+    }
+
+    auto projectBuffer = std::span<float>{deviceRenderBuffer_}.first(projectSamples);
+    renderGraphBlock(graph, projectBuffer, projectFrames);
+
+    const auto rateRatio = config_.sampleRate / device_.sampleRate;
+    for (std::uint32_t frame = 0; frame < deviceFrames; ++frame) {
+        const auto sourcePosition = static_cast<double>(frame) * rateRatio;
+        const auto left = static_cast<std::uint32_t>(std::floor(sourcePosition));
+        const auto right = std::min<std::uint32_t>(left + 1U, projectFrames - 1U);
+        const auto fraction = static_cast<float>(sourcePosition - static_cast<double>(left));
+        for (std::uint32_t channel = 0; channel < config_.outputChannels; ++channel) {
+            const auto leftSample =
+                projectBuffer[sampleCount(left, config_.outputChannels) + channel];
+            const auto rightSample =
+                projectBuffer[sampleCount(right, config_.outputChannels) + channel];
+            interleavedOutput[sampleCount(frame, config_.outputChannels) + channel] =
+                leftSample + (rightSample - leftSample) * fraction;
+        }
+    }
+
+    transport_.samplePosition = startSample;
+    advanceTransport(static_cast<std::uint32_t>(
+        std::llround(static_cast<double>(deviceFrames) * rateRatio)));
 }
 
 RenderedAudio AudioEngine::renderSilenceOffline(std::uint32_t frames) {

@@ -31,6 +31,11 @@ bool assetExists(const AssetCatalog& catalog, std::string_view assetId) {
                                [assetId](const AssetRecord& asset) { return asset.id == assetId; });
 }
 
+bool sampleRatesMatch(double lhs, double rhs) noexcept {
+    return std::isfinite(lhs) && std::isfinite(rhs) && lhs > 0.0 && rhs > 0.0 &&
+           std::abs(lhs - rhs) < 0.000001;
+}
+
 bool assetRelativePathExists(const AssetCatalog& catalog,
                              const std::filesystem::path& relativePath) {
     const auto normalizedRelativePath = relativePath.lexically_normal();
@@ -78,6 +83,47 @@ BrowserSectionItem makeAssetBrowserItem(const AssetRecord& asset,
             .assetKind = asset.kind,
             .favorite = asset.favorite,
             .missing = asset.missing};
+}
+
+audio::RenderedAudio resampleLinear(const audio::RenderedAudio& source, double sourceSampleRate,
+                                    double targetSampleRate) {
+    if (sourceSampleRate <= 0.0 || targetSampleRate <= 0.0) {
+        throw std::runtime_error("Audio resampling requires positive sample rates");
+    }
+    if (source.channels == 0U || source.frames == 0U) {
+        throw std::runtime_error("Audio resampling requires non-empty audio");
+    }
+
+    const auto targetFramesDouble =
+        static_cast<double>(source.frames) * (targetSampleRate / sourceSampleRate);
+    const auto targetFrames = static_cast<std::uint32_t>(
+        std::max<double>(1.0, std::llround(targetFramesDouble)));
+    audio::RenderedAudio rendered{.channels = source.channels,
+                                  .frames = targetFrames,
+                                  .interleavedSamples =
+                                      std::vector<float>(
+                                          static_cast<std::size_t>(targetFrames) *
+                                          static_cast<std::size_t>(source.channels))};
+
+    for (std::uint32_t frame = 0; frame < targetFrames; ++frame) {
+        const auto sourcePosition =
+            static_cast<double>(frame) * (sourceSampleRate / targetSampleRate);
+        const auto left = static_cast<std::uint32_t>(std::floor(sourcePosition));
+        const auto right = std::min<std::uint32_t>(left + 1U, source.frames - 1U);
+        const auto fraction = static_cast<float>(sourcePosition - static_cast<double>(left));
+        for (std::uint32_t channel = 0; channel < source.channels; ++channel) {
+            const auto leftSample =
+                source.interleavedSamples[static_cast<std::size_t>(left) * source.channels +
+                                          channel];
+            const auto rightSample =
+                source.interleavedSamples[static_cast<std::size_t>(right) * source.channels +
+                                          channel];
+            rendered.interleavedSamples[static_cast<std::size_t>(frame) * source.channels +
+                                        channel] =
+                leftSample + (rightSample - leftSample) * fraction;
+        }
+    }
+    return rendered;
 }
 
 double estimateTempoBpm(std::span<const std::int64_t> transientSamples, double sampleRate) {
@@ -263,11 +309,30 @@ ImportedAudioAsset importAudioAsset(AssetCatalog& catalog, AudioAssetImportOptio
     if (options.samplesPerWaveformBucket <= 0) {
         throw std::runtime_error("Audio import waveform bucket size must be positive");
     }
+    if (!std::isfinite(options.projectSampleRate) || options.projectSampleRate <= 0.0) {
+        throw std::runtime_error("Audio import project sample rate must be positive and finite");
+    }
 
     auto plan = planAssetImport(catalog, options.sourcePath, std::move(options.assetId),
                                 AssetKind::Audio, std::move(options.tags), options.copyIntoProject);
     const auto wav = audio::readPcm16Wav(plan.sourcePath);
-    auto analysis = analyzeAudioAsset(plan.record.id, wav.audio, wav.sampleRate,
+    plan.record.sourceSampleRate = wav.sampleRate;
+    const bool sampleRateMatchesProject =
+        std::abs(wav.sampleRate - options.projectSampleRate) < 0.000001;
+    const bool resampleToProject =
+        options.importPolicy == AudioAssetImportPolicy::ResampleToProjectRate;
+    if (resampleToProject && !sampleRateMatchesProject && !plan.copyIntoProject) {
+        throw std::runtime_error("Resample-on-import requires copying the converted asset into the "
+                                 "project");
+    }
+    const auto importedAudio =
+        resampleToProject && !sampleRateMatchesProject
+            ? resampleLinear(wav.audio, wav.sampleRate, options.projectSampleRate)
+            : wav.audio;
+    const auto importedSampleRate =
+        resampleToProject && !sampleRateMatchesProject ? options.projectSampleRate : wav.sampleRate;
+    plan.record.resampledToProjectRate = resampleToProject || sampleRateMatchesProject;
+    auto analysis = analyzeAudioAsset(plan.record.id, importedAudio, importedSampleRate,
                                       options.samplesPerWaveformBucket);
 
     if (plan.copyIntoProject) {
@@ -278,7 +343,9 @@ ImportedAudioAsset importAudioAsset(AssetCatalog& catalog, AudioAssetImportOptio
         const auto sourceIsDestination =
             destinationAlreadyExists &&
             std::filesystem::equivalent(plan.sourcePath, plan.destinationPath);
-        if (!sourceIsDestination) {
+        if (resampleToProject && !sampleRateMatchesProject) {
+            audio::writePcm16Wav(plan.destinationPath, importedAudio, importedSampleRate);
+        } else if (!sourceIsDestination) {
             std::filesystem::copy_file(plan.sourcePath, plan.destinationPath,
                                        std::filesystem::copy_options::none);
         }
@@ -338,6 +405,9 @@ void upsertWaveform(AssetCatalog& catalog, WaveformOverview waveform) {
     if (waveform.samplesPerBucket <= 0) {
         throw std::runtime_error("Waveform overview samples per bucket must be positive");
     }
+    if (!std::isfinite(waveform.sampleRate) || waveform.sampleRate <= 0.0) {
+        throw std::runtime_error("Waveform overview sample rate must be positive and finite");
+    }
 
     const auto found =
         std::ranges::find_if(catalog.waveforms, [&waveform](const WaveformOverview& existing) {
@@ -358,6 +428,27 @@ void invalidateAssetAnalysis(AssetCatalog& catalog, std::string_view assetId) {
     }
     std::erase_if(catalog.analyses,
                   [assetId](const AssetAnalysis& analysis) { return analysis.assetId == assetId; });
+}
+
+bool waveformOverviewMatchesSampleRate(const WaveformOverview& waveform,
+                                       double sampleRate) noexcept {
+    return waveform.valid && sampleRatesMatch(waveform.sampleRate, sampleRate);
+}
+
+void invalidateAnalysisCachesForSampleRate(AssetCatalog& catalog, double sampleRate) {
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0) {
+        throw std::runtime_error("Cache sample rate must be positive and finite");
+    }
+
+    for (auto& waveform : catalog.waveforms) {
+        if (!sampleRatesMatch(waveform.sampleRate, sampleRate)) {
+            waveform.valid = false;
+        }
+    }
+
+    std::erase_if(catalog.analyses, [sampleRate](const AssetAnalysis& analysis) {
+        return !sampleRatesMatch(analysis.sampleRate, sampleRate);
+    });
 }
 
 MediaAnalysisResult analyzeAudioAsset(std::string assetId, const audio::RenderedAudio& audio,
@@ -386,8 +477,10 @@ MediaAnalysisResult analyzeAudioAsset(std::string assetId, const audio::Rendered
                                   .durationSamples = static_cast<std::int64_t>(audio.frames),
                                   .channels = audio.channels,
                                   .sampleRate = sampleRate};
-    auto waveform =
-        WaveformOverview{.assetId = assetId, .samplesPerBucket = samplesPerBucket, .valid = true};
+    auto waveform = WaveformOverview{.assetId = assetId,
+                                     .sampleRate = sampleRate,
+                                     .samplesPerBucket = samplesPerBucket,
+                                     .valid = true};
 
     double squaredTotal = 0.0;
     std::int64_t totalSamples = 0;

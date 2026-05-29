@@ -1,4 +1,6 @@
 #include "lamusica/mcp_bridge/Capability.hpp"
+#include "lamusica/version.hpp"
+#include "lamusica/crash_report/CrashReporter.hpp"
 #include "lamusica/mcp_bridge/DaemonSession.hpp"
 #include "lamusica/mcp_bridge/Protocol.hpp"
 #include "lamusica/session/ProjectDocument.hpp"
@@ -9,7 +11,16 @@
 #include <string>
 
 int main(int argc, char** argv) {
+    lamusica::crash_report::installCrashReporter(
+        {.applicationName = "lamusica-mcpd", .directory = {}});
     lamusica::mcp_bridge::DaemonSession session;
+    if (argc > 1 && std::string{argv[1]} == "--version") {
+        std::cout << "lamusica-mcpd " << lamusica::build::version
+                  << " commit=" << lamusica::build::gitCommit
+                  << " dirty=" << (lamusica::build::gitDirty ? "true" : "false")
+                  << " buildDate=" << lamusica::build::buildDate << '\n';
+        return 0;
+    }
     if (argc > 1 && std::string{argv[1]} == "--install") {
         const auto label = argc > 2 ? std::string{argv[2]} : std::string{"com.lamusica.mcpd"};
         session.install(label);

@@ -10,7 +10,7 @@
 
 namespace lamusica::session {
 
-inline constexpr std::uint32_t currentProjectSchemaVersion{1};
+inline constexpr std::uint32_t currentProjectSchemaVersion{3};
 
 struct TempoEvent {
     std::int64_t samplePosition{0};
@@ -83,6 +83,32 @@ struct MidiClipReference {
     int transposeSemitones{0};
 };
 
+struct ClipTake {
+    std::string id;
+    std::string name;
+    std::int64_t sourceOffsetSamples{0};
+    std::int64_t lengthSamples{0};
+    bool muted{false};
+    std::string assetId;
+};
+
+struct ClipTakeLane {
+    std::string clipId;
+    std::vector<ClipTake> takes;
+};
+
+struct ClipCompSegment {
+    std::string takeId;
+    std::int64_t clipStartSample{0};
+    std::int64_t lengthSamples{0};
+    std::int64_t takeSourceOffsetSamples{0};
+};
+
+struct ClipComp {
+    std::string clipId;
+    std::vector<ClipCompSegment> segments;
+};
+
 struct RoutingConnection {
     std::string sourceTrackId;
     std::string destinationTrackId;
@@ -120,8 +146,9 @@ struct McpAuditEntry {
 };
 
 struct ProjectManifest {
-    std::uint32_t schemaVersion{1};
+    std::uint32_t schemaVersion{currentProjectSchemaVersion};
     std::string name{"Untitled"};
+    double projectSampleRate{48000.0};
     bool loopEnabled{false};
     std::int64_t loopStartSample{0};
     std::int64_t loopEndSample{0};
@@ -132,6 +159,8 @@ struct ProjectManifest {
     std::vector<Track> tracks;
     std::vector<Clip> clips;
     std::vector<MidiClipReference> midiClips;
+    std::vector<ClipTakeLane> takeLanes;
+    std::vector<ClipComp> comps;
     std::vector<RoutingConnection> routing;
     std::vector<TrackMixState> trackMix;
     std::vector<PluginReference> plugins;

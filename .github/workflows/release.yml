@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  macos-release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    env:
+      LAMUSICA_JUCE_PATH: ${{ github.workspace }}/external/JUCE
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 7c9d3783b127263d72bb65fe0a7e2dc8a02a7ac2
+          path: external/JUCE
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '15.4'
+      - name: Import signing certificate
+        env:
+          LAMUSICA_CODESIGN_CERT_P12_BASE64: ${{ secrets.LAMUSICA_CODESIGN_CERT_P12_BASE64 }}
+          LAMUSICA_CODESIGN_CERT_PASSWORD: ${{ secrets.LAMUSICA_CODESIGN_CERT_PASSWORD }}
+        run: |
+          security create-keychain -p "$RUNNER_TEMP/lamusica" "$RUNNER_TEMP/lamusica-signing.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/lamusica-signing.keychain-db"
+          security unlock-keychain -p "$RUNNER_TEMP/lamusica" "$RUNNER_TEMP/lamusica-signing.keychain-db"
+          echo "$LAMUSICA_CODESIGN_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/lamusica-signing.p12"
+          security import "$RUNNER_TEMP/lamusica-signing.p12" -P "$LAMUSICA_CODESIGN_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$RUNNER_TEMP/lamusica-signing.keychain-db"
+          security list-keychain -d user -s "$RUNNER_TEMP/lamusica-signing.keychain-db"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$RUNNER_TEMP/lamusica" "$RUNNER_TEMP/lamusica-signing.keychain-db"
+      - name: Configure universal release
+        run: cmake --preset release-universal
+      - name: Build universal release
+        run: cmake --build --preset release-universal
+      - name: Test universal release
+        run: ctest --preset release-universal
+      - name: Sign binaries
+        env:
+          LAMUSICA_CODESIGN_IDENTITY: ${{ secrets.LAMUSICA_CODESIGN_IDENTITY }}
+        run: scripts/sign-macos.sh --identity "$LAMUSICA_CODESIGN_IDENTITY"
+      - name: Package DMG
+        run: cpack -G DragNDrop --config build/macos-release-universal/CPackConfig.cmake
+      - name: Package verification archive
+        run: cpack -G TGZ --config build/macos-release-universal/CPackConfig.cmake
+      - name: Notarize and staple
+        env:
+          LAMUSICA_NOTARY_PROFILE: ${{ secrets.LAMUSICA_NOTARY_PROFILE }}
+        run: scripts/notarize-macos.sh --artifact "$(ls LaMusica-*-Darwin.dmg)" --keychain-profile "$LAMUSICA_NOTARY_PROFILE"
+      - name: Verify release signature
+        run: scripts/verify-signature.sh --app build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app --artifact "$(ls LaMusica-*-Darwin.dmg)"
+      - name: Verify package contents
+        run: cmake -DPACKAGE="$(ls LaMusica-*-Darwin.tar.gz)" -P cmake/VerifyPackage.cmake
+      - name: Archive dSYMs
+        run: |
+          find build/macos-release-universal -name '*.dSYM' -print > build/macos-release-universal/dsym-files.txt
+          if [[ ! -s build/macos-release-universal/dsym-files.txt ]]; then
+            echo "No dSYM bundles were produced by the release-universal build" >&2
+            exit 1
+          fi
+          tar -czf LaMusica-dSYMs.tar.gz -T build/macos-release-universal/dsym-files.txt
+      - name: Build SBOM and checksums
+        run: scripts/sbom.sh --artifact "$(ls LaMusica-*-Darwin.dmg)" --output build/release-metadata
+      - name: Sign checksums
+        env:
+          LAMUSICA_CODESIGN_IDENTITY: ${{ secrets.LAMUSICA_CODESIGN_IDENTITY }}
+        run: codesign --force --timestamp --sign "$LAMUSICA_CODESIGN_IDENTITY" --detached build/release-metadata/SHA256SUMS.sig build/release-metadata/SHA256SUMS
+      - name: Vulnerability scan
+        uses: anchore/scan-action@v4
+        with:
+          path: build/release-metadata/LaMusica.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaMusica-release
+          path: |
+            LaMusica-*-Darwin.dmg
+            LaMusica-dSYMs.tar.gz
+            build/release-metadata/LaMusica.spdx.json
+            build/release-metadata/SHA256SUMS
+            build/release-metadata/SHA256SUMS.sig

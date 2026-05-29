@@ -1,19 +1,40 @@
 #include "lamusica/audio/AudioEngine.hpp"
 #include "lamusica/audio/WavFile.hpp"
+#include "lamusica/crash_report/CrashReporter.hpp"
 #include "lamusica/session/ApplicationSession.hpp"
+#include "lamusica/session/DiagnosticsScrubber.hpp"
 #include "lamusica/session/Export.hpp"
 #include "lamusica/session/GraphCompiler.hpp"
 #include "lamusica/session/Project.hpp"
 #include "lamusica/session/ProjectDocument.hpp"
 #include "lamusica/session/StarterProject.hpp"
+#include "i18n/Localization.hpp"
+#include "i18n/NumberFormat.hpp"
+#include "onboarding/GuidedTour.hpp"
+#include "onboarding/ProjectTemplates.hpp"
+#include "onboarding/WelcomeWindow.hpp"
+#include "ui/a11y/AccessibleControl.hpp"
+#include "ui/a11y/ContrastPreferences.hpp"
+#include "ui/a11y/LiveRegion.hpp"
+#include "ui/a11y/MotionPreferences.hpp"
 
 #include <algorithm>
+#include <csignal>
+#include <cmath>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -658,7 +679,8 @@ int appSessionPreferencesFirstTrackSmoke() {
         .allowMcpProjectMutation = true,
         .keyboardShortcuts = {{.command = "transport.play", .keyEquivalent = "space"}},
         .allowUserFolderScanning = true,
-        .shareDiagnostics = false};
+        .shareDiagnostics = false,
+        .diagnosticsConsent = lamusica::session::DiagnosticsConsent::Declined};
     session.setPreferences(preferences);
     session.setKeyboardShortcut("transport.play", "p");
     bool rejectedUnsafeMutation = false;
@@ -690,6 +712,422 @@ int appSessionPreferencesFirstTrackSmoke() {
               << " privacyScan=" << (stored.allowUserFolderScanning ? "true" : "false")
               << " rejectedUnsafeMutation=" << (rejectedUnsafeMutation ? "true" : "false") << '\n';
     return ready ? 0 : 17;
+}
+
+lamusica::daw::a11y::AccessibleControl makeA11yAuditTree(
+    const lamusica::session::ApplicationSessionStatus& status,
+    const lamusica::audio::AudioEngine& engine) {
+    namespace a11y = lamusica::daw::a11y;
+    lamusica::daw::i18n::LocalizationCatalog catalog;
+    catalog.loadBundledTables();
+    catalog.setActiveLocale("es");
+    const auto tr = [&catalog](std::string_view key) { return catalog.translate(key); };
+
+    a11y::AccessibleControl root{.id = "window.main",
+                                 .role = a11y::AccessibleRole::Window,
+                                 .name = tr("LaMusica"),
+                                 .description = tr("Main DAW window")};
+    root.children.push_back({.id = "transport.region",
+                             .role = a11y::AccessibleRole::Region,
+                             .name = tr("Transport"),
+                             .description = tr("Playback and loop controls"),
+                             .children = {{.id = "transport.play",
+                                           .role = a11y::AccessibleRole::Button,
+                                           .name = tr("Play"),
+                                           .description = tr("Start playback"),
+                                           .interactive = true,
+                                           .focusable = true},
+                                          {.id = "transport.stop",
+                                           .role = a11y::AccessibleRole::Button,
+                                           .name = tr("Stop"),
+                                           .description = tr("Stop playback"),
+                                           .interactive = true,
+                                           .focusable = true},
+                                          {.id = "transport.loop",
+                                           .role = a11y::AccessibleRole::ToggleButton,
+                                           .name = tr("Loop"),
+                                           .valueText = status.loopEnabled ? tr("On") : tr("Off"),
+                                           .description = tr("Toggle loop playback"),
+                                           .interactive = true,
+                                           .focusable = true},
+                                          {.id = "transport.playhead",
+                                           .role = a11y::AccessibleRole::Text,
+                                           .name = tr("Playhead"),
+                                           .valueText = a11y::formatBarBeat(
+                                               engine, status.playheadSample)}}});
+    root.children.push_back({.id = "browser.region",
+                             .role = a11y::AccessibleRole::Tree,
+                             .name = tr("Browser"),
+                             .description = tr("Project media and library browser"),
+                             .interactive = true,
+                             .focusable = true});
+    root.children.push_back({.id = "timeline.region",
+                             .role = a11y::AccessibleRole::Region,
+                             .name = tr("Timeline"),
+                             .description = tr("Arrangement timeline"),
+                             .children = {{.id = "timeline.clip.drums",
+                                           .role = a11y::AccessibleRole::ListItem,
+                                           .name = status.firstSectionName.empty()
+                                                       ? tr("Generated drums clip")
+                                                       : status.firstSectionName + " " +
+                                                             tr("drums clip"),
+                                           .valueText = tr("Starts at") + " " +
+                                                        a11y::formatBarBeat(engine, 0),
+                                           .description = tr("Timeline clip"),
+                                           .interactive = true,
+                                           .focusable = true}}});
+    root.children.push_back({.id = "cliplauncher.region",
+                             .role = a11y::AccessibleRole::Region,
+                             .name = tr("Clip Launcher"),
+                             .description = tr("Scene launch grid"),
+                             .children = {{.id = "cliplauncher.scene.a",
+                                           .role = a11y::AccessibleRole::Button,
+                                           .name = tr("Scene A"),
+                                           .description = tr("Launch scene A"),
+                                           .interactive = true,
+                                           .focusable = true},
+                                          {.id = "cliplauncher.slot.drums",
+                                           .role = a11y::AccessibleRole::ListItem,
+                                           .name = tr("Drum pattern slot"),
+                                           .valueText = tr("Queued"),
+                                           .description = tr("Clip launcher slot"),
+                                           .interactive = true,
+                                           .focusable = true}}});
+    root.children.push_back({.id = "inspector.region",
+                             .role = a11y::AccessibleRole::Region,
+                             .name = tr("Inspector"),
+                             .description = tr("Selected clip and track properties"),
+                             .interactive = true,
+                             .focusable = true});
+    root.children.push_back({.id = "mixer.region",
+                             .role = a11y::AccessibleRole::Region,
+                             .name = tr("Mixer"),
+                             .description = tr("Track levels, pan, meters, and routing"),
+                             .children = {{.id = "mixer.master.fader",
+                                           .role = a11y::AccessibleRole::Slider,
+                                           .name = tr("Master fader"),
+                                           .valueText = a11y::formatGainDb(0.0F),
+                                           .description = tr("Master output volume"),
+                                           .interactive = true,
+                                           .focusable = true},
+                                          {.id = "mixer.master.meter",
+                                           .role = a11y::AccessibleRole::Meter,
+                                           .name = tr("Master meter"),
+                                           .valueText = a11y::formatMeter(
+                                               status.lastMixExportPeak <= 0.0F
+                                                   ? -90.0F
+                                                   : 20.0F * static_cast<float>(
+                                                                std::log10(status.lastMixExportPeak)),
+                                               status.lastMixExportPeak >= 1.0F),
+                                           .description = tr("Master peak level"),
+                                           .interactive = true,
+                                           .focusable = false}}});
+    return root;
+}
+
+int appAccessibilityAuditSmoke() {
+    namespace a11y = lamusica::daw::a11y;
+    const auto projectPath =
+        std::filesystem::temp_directory_path() / "lamusica-daw-a11y.Project.lamusica";
+    std::filesystem::remove_all(projectPath);
+
+    lamusica::session::ApplicationSession session;
+    session.createFirstTrackProject(projectPath, "Accessibility Audit");
+    lamusica::audio::AudioEngine engine{{.sampleRate = 48000.0}};
+
+    const auto tree = makeA11yAuditTree(session.status(), engine);
+    const auto audit = a11y::auditAccessibilityTree(tree);
+    const auto order = a11y::focusOrder(tree);
+    const std::vector<std::string> expectedFocusOrder{"transport.play",
+                                                      "transport.stop",
+                                                      "transport.loop",
+                                                      "browser.region",
+                                                      "timeline.clip.drums",
+                                                      "cliplauncher.scene.a",
+                                                      "cliplauncher.slot.drums",
+                                                      "inspector.region",
+                                                      "mixer.master.fader"};
+    auto brokenTree = tree;
+    brokenTree.children.push_back({.id = "transport.play",
+                                   .role = a11y::AccessibleRole::Button,
+                                   .interactive = true,
+                                   .focusable = true});
+    const auto brokenAudit = a11y::auditAccessibilityTree(brokenTree);
+    const bool auditRegressionCaught =
+        std::ranges::any_of(brokenAudit.issues, [](const auto& issue) {
+            return issue.message == "accessible control id is duplicated";
+        }) &&
+        std::ranges::any_of(brokenAudit.issues, [](const auto& issue) {
+            return issue.message == "accessible name is empty";
+        });
+
+    bool routeOk = true;
+    const std::vector<std::pair<std::string_view, lamusica::session::ApplicationPanel>> routes{
+        {"view.browser", lamusica::session::ApplicationPanel::Browser},
+        {"view.timeline", lamusica::session::ApplicationPanel::Timeline},
+        {"view.inspector", lamusica::session::ApplicationPanel::Inspector},
+        {"view.mixer", lamusica::session::ApplicationPanel::Mixer},
+        {"transport.play", lamusica::session::ApplicationPanel::Transport}};
+    for (const auto& [command, panel] : routes) {
+        const auto route = session.routeMenuCommand(command);
+        routeOk = routeOk && route.enabled && route.panel == panel;
+    }
+
+    a11y::MotionPreferences motion;
+    motion.setReduceMotionForTesting(true);
+    a11y::ContrastPreferences contrast;
+    contrast.setIncreaseContrastForTesting(true);
+    a11y::LiveRegion liveRegion;
+    lamusica::daw::i18n::LocalizationCatalog catalog;
+    catalog.loadBundledTables();
+    catalog.setActiveLocale("es");
+    const bool localizedTransport = catalog.translate("Transport") == "Transporte";
+    const auto spanishFormat = lamusica::daw::i18n::numberFormatForLocale("es");
+    const bool localizedNumber =
+        lamusica::daw::i18n::formatDisplayNumber(120.5, 1, spanishFormat) == "120,5";
+    const bool announcedOnce = liveRegion.announce(catalog.translate("Stopped"));
+    const bool coalescedDuplicate = !liveRegion.announce(catalog.translate("Stopped"));
+
+    const bool ready = audit.ok() && auditRegressionCaught && order == expectedFocusOrder &&
+                       routeOk &&
+                       a11y::formatGainDb(-6.0F) == "-6.0 dB" &&
+                       a11y::formatPan(-0.23F) == "L23" &&
+                       motion.animationIntervalMilliseconds() >= 1000U &&
+                       a11y::contrastRatio(contrast.palette().foreground,
+                                           contrast.palette().background) >= 4.5 &&
+                       announcedOnce && coalescedDuplicate && localizedTransport &&
+                       localizedNumber;
+
+    std::cout << "LaMusica DAW a11y audit: issues=" << audit.issues.size()
+              << " focusable=" << order.size()
+              << " routeOk=" << (routeOk ? "true" : "false")
+              << " regressionCaught=" << (auditRegressionCaught ? "true" : "false")
+              << " reduceMotionMs=" << motion.animationIntervalMilliseconds()
+              << " contrast=" << a11y::contrastRatio(contrast.palette().foreground,
+                                                     contrast.palette().background)
+              << '\n';
+    for (const auto& issue : audit.issues) {
+        std::cerr << "a11y issue " << issue.id << ": " << issue.message << '\n';
+    }
+    std::filesystem::remove_all(projectPath);
+    return ready ? 0 : 18;
+}
+
+int appSessionDiagnosticsConsentSmoke() {
+    lamusica::session::ApplicationSession session;
+
+    bool rejectedUndecidedCrash = false;
+    try {
+        lamusica::session::ApplicationPreferences preferences;
+        preferences.shareDiagnostics = true;
+        session.setPreferences(preferences);
+    } catch (const std::exception&) {
+        rejectedUndecidedCrash = true;
+    }
+
+    bool rejectedDeclinedTelemetry = false;
+    try {
+        lamusica::session::ApplicationPreferences preferences;
+        preferences.diagnosticsConsent = lamusica::session::DiagnosticsConsent::Declined;
+        preferences.telemetryEnabled = true;
+        session.setPreferences(preferences);
+    } catch (const std::exception&) {
+        rejectedDeclinedTelemetry = true;
+    }
+
+    bool rejectedInvalidEndpoint = false;
+    try {
+        lamusica::session::ApplicationPreferences preferences;
+        preferences.diagnosticsConsent = lamusica::session::DiagnosticsConsent::Granted;
+        preferences.shareDiagnostics = true;
+        preferences.diagnosticsEndpoint = "http://example.test/diagnostics";
+        session.setPreferences(preferences);
+    } catch (const std::exception&) {
+        rejectedInvalidEndpoint = true;
+    }
+
+    lamusica::session::ApplicationPreferences granted;
+    granted.diagnosticsConsent = lamusica::session::DiagnosticsConsent::Granted;
+    granted.shareDiagnostics = true;
+    granted.diagnosticsEndpoint = "https://diagnostics.lamusica.dev/v1/crash";
+    session.setPreferences(granted);
+
+    const auto raw = std::string{
+        "signal=11\n/Users/alex/Projects/Secret Song.Project.lamusica/project.json\n"
+        "frame /Users/alex/la-musica/build/LaMusica.app/Contents/MacOS/LaMusica\n"
+        "project Secret Song\n"};
+    const auto payload = lamusica::session::makeDiagnosticsPayload(
+        {.applicationName = "LaMusica",
+         .version = "0.1.0",
+         .gitCommit = "local",
+         .osVersion = "macOS",
+         .signalNumber = 11,
+         .rawBacktrace = raw,
+         .projectName = "Secret Song"});
+    const bool scrubbed = payload.json.find("/Users/alex") == std::string::npos &&
+                          payload.json.find("Secret Song") == std::string::npos &&
+                          payload.json.find(".Project.lamusica") == std::string::npos &&
+                          payload.json.find("<path>") != std::string::npos &&
+                          payload.json.find("\"signal\":\"11\"") != std::string::npos;
+    const auto relativeBundleScrubbed = lamusica::session::scrubDiagnosticsText(
+        "frame Secret Relative.Project.lamusica/Audio/take.wav\n"
+        "frame Users/alex/Library/Logs/LaMusica.crashlog\n");
+    const bool scrubbedRelativeBundle =
+        relativeBundleScrubbed.find(".Project.lamusica") == std::string::npos &&
+        relativeBundleScrubbed.find("Users/alex") == std::string::npos;
+    const bool permitted = lamusica::session::diagnosticsUploadPermitted(
+        session.preferences().diagnosticsConsent, session.preferences().shareDiagnostics);
+    const bool denied = !lamusica::session::diagnosticsUploadPermitted(
+        lamusica::session::DiagnosticsConsent::Declined, true);
+    const auto crashDirectory =
+        std::filesystem::temp_directory_path() / "lamusica-diagnostics-smoke";
+    std::filesystem::remove_all(crashDirectory);
+    std::filesystem::create_directories(crashDirectory);
+    const auto crashLog = crashDirectory / "LaMusica-1.crashlog";
+    {
+        std::ofstream output{crashLog};
+        output << raw;
+    }
+    const auto collectedReports = lamusica::crash_report::collectCrashReports(crashDirectory);
+    const bool collected = collectedReports.size() == 1U &&
+                           collectedReports.front().contents.find("signal=11") !=
+                               std::string::npos;
+    bool signalHandlerDeferredBacktrace = true;
+#if defined(__unix__) || defined(__APPLE__)
+    const auto signalDirectory = crashDirectory / "signal";
+    std::filesystem::create_directories(signalDirectory);
+    const auto child = ::fork();
+    if (child == 0) {
+        lamusica::crash_report::installCrashReporter(
+            {.applicationName = "LaMusicaSignalSmoke", .directory = signalDirectory});
+        std::raise(SIGABRT);
+        ::_exit(2);
+    }
+    if (child > 0) {
+        int status = 0;
+        static_cast<void>(::waitpid(child, &status, 0));
+        const auto signalReports = lamusica::crash_report::collectCrashReports(signalDirectory);
+        signalHandlerDeferredBacktrace =
+            !signalReports.empty() &&
+            signalReports.front().contents.find("signal=6") != std::string::npos &&
+            signalReports.front().contents.find("backtrace=deferred") != std::string::npos &&
+            signalReports.front().contents.find("backtrace:\n") == std::string::npos;
+    } else {
+        signalHandlerDeferredBacktrace = false;
+    }
+#endif
+    const auto deniedRequest = lamusica::session::makeDiagnosticsUploadRequest(
+        lamusica::session::DiagnosticsConsent::Declined, true,
+        "https://diagnostics.lamusica.dev/v1/crash", {}, {.applicationName = "LaMusica",
+                                                          .version = "0.1.0",
+                                                          .gitCommit = "local",
+                                                          .osVersion = "macOS",
+                                                          .signalNumber = 11,
+                                                          .rawBacktrace = raw,
+                                                          .projectName = "Secret Song"});
+    const auto uploadRequest = lamusica::session::makeDiagnosticsUploadRequest(
+        session.preferences().diagnosticsConsent, session.preferences().shareDiagnostics,
+        "LAMUSICA_DIAGNOSTICS_ENDPOINT", "https://selfhosted.example.test/crash",
+        {.applicationName = "LaMusica",
+         .version = "0.1.0",
+         .gitCommit = "local",
+         .osVersion = "macOS",
+         .signalNumber = 11,
+         .rawBacktrace = collectedReports.empty() ? raw : collectedReports.front().contents,
+         .projectName = "Secret Song"});
+    const bool uploadDecision = !deniedRequest.permitted && uploadRequest.permitted &&
+                                deniedRequest.endpoint.empty() &&
+                                deniedRequest.payload.json.empty() &&
+                                uploadRequest.endpoint == "https://selfhosted.example.test/crash" &&
+                                uploadRequest.payload.json.find("Secret Song") ==
+                                    std::string::npos &&
+                                uploadRequest.payload.json.find("/Users/alex") ==
+                                    std::string::npos;
+    std::filesystem::remove_all(crashDirectory);
+
+    std::cout << "LaMusica DAW diagnostics consent: rejectedUndecidedCrash="
+              << (rejectedUndecidedCrash ? "true" : "false")
+              << " rejectedDeclinedTelemetry=" << (rejectedDeclinedTelemetry ? "true" : "false")
+              << " rejectedInvalidEndpoint=" << (rejectedInvalidEndpoint ? "true" : "false")
+              << " scrubbed=" << (scrubbed ? "true" : "false")
+              << " scrubbedRelativeBundle=" << (scrubbedRelativeBundle ? "true" : "false")
+              << " permitted=" << (permitted ? "true" : "false")
+              << " denied=" << (denied ? "true" : "false")
+              << " collected=" << (collected ? "true" : "false")
+              << " signalHandlerDeferredBacktrace="
+              << (signalHandlerDeferredBacktrace ? "true" : "false")
+              << " uploadDecision=" << (uploadDecision ? "true" : "false") << '\n';
+    return rejectedUndecidedCrash && rejectedDeclinedTelemetry && rejectedInvalidEndpoint &&
+                   scrubbed && scrubbedRelativeBundle && permitted && denied && collected &&
+                   signalHandlerDeferredBacktrace && uploadDecision
+               ? 0
+               : 19;
+}
+
+int appOnboardingTemplatesSmoke() {
+    namespace onboarding = lamusica::daw::onboarding;
+    const auto root = std::filesystem::temp_directory_path() / "lamusica-onboarding-smoke";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+
+    bool ready = onboarding::projectTemplates().size() == 4U;
+    std::size_t openedRecentCount = 0;
+    bool guidedTourDismissed = false;
+    for (const auto& projectTemplate : onboarding::projectTemplates()) {
+        lamusica::session::ApplicationSession session;
+        const auto projectPath = root / (projectTemplate.id + ".Project.lamusica");
+        onboarding::createProjectFromTemplate(session, projectTemplate.id, projectPath,
+                                              projectTemplate.id);
+        const auto chooser = onboarding::welcomeChooserState(session);
+        ready = ready && chooser.templates.size() == 4U && chooser.canOpenMostRecent;
+        if (projectTemplate.id == "empty") {
+            ready = ready && onboarding::shouldShowGuidedTour(session) &&
+                    onboarding::guidedTourSteps().size() == 5U;
+            onboarding::markGuidedTourSeen(session, true);
+            guidedTourDismissed = !onboarding::shouldShowGuidedTour(session);
+        }
+        const auto* document = session.currentDocument();
+        ready = ready && document != nullptr && document->isOpen() &&
+                session.status().hasOpenProject;
+        if (document != nullptr) {
+            lamusica::session::validateProjectManifest(document->manifest());
+            ready = ready && document->manifest().schemaVersion ==
+                                 lamusica::session::currentProjectSchemaVersion;
+        }
+        if (projectTemplate.id == "empty") {
+            const auto block = session.auditionCurrentMixBlock(64);
+            ready = ready && block.frames == 64U &&
+                    std::ranges::all_of(block.interleavedSamples,
+                                        [](float sample) { return sample == 0.0F; });
+        } else {
+            const auto mixPath = root / (projectTemplate.id + ".wav");
+            const auto bounce = session.exportCurrentMix(mixPath);
+            ready = ready && bounce.frames > 0U && std::filesystem::exists(mixPath);
+        }
+
+        lamusica::session::ApplicationSession recentSession;
+        recentSession.openProject(projectPath);
+        openedRecentCount += recentSession.recentProjects().empty() ? 0U : 1U;
+        ready = ready && recentSession.status().hasOpenProject &&
+                recentSession.recentProjects().front() == projectPath;
+    }
+
+    bool rejectedUnknownTemplate = false;
+    try {
+        lamusica::session::ApplicationSession session;
+        onboarding::createProjectFromTemplate(session, "missing-template",
+                                              root / "missing.Project.lamusica", "Missing");
+    } catch (const std::exception&) {
+        rejectedUnknownTemplate = true;
+    }
+
+    std::cout << "LaMusica onboarding templates: count="
+              << onboarding::projectTemplates().size()
+              << " recentOpened=" << openedRecentCount
+              << " rejectedUnknown=" << (rejectedUnknownTemplate ? "true" : "false")
+              << " tourDismissed=" << (guidedTourDismissed ? "true" : "false") << '\n';
+    std::filesystem::remove_all(root);
+    return ready && rejectedUnknownTemplate && guidedTourDismissed ? 0 : 20;
 }
 
 } // namespace
@@ -750,6 +1188,15 @@ int main(int argc, char** argv) {
     }
     if (hasArgument(argc, argv, "--app-session-import-edit-first-track-smoke")) {
         return appSessionImportEditFirstTrackSmoke();
+    }
+    if (hasArgument(argc, argv, "--a11y-audit")) {
+        return appAccessibilityAuditSmoke();
+    }
+    if (hasArgument(argc, argv, "--app-session-diagnostics-consent-smoke")) {
+        return appSessionDiagnosticsConsentSmoke();
+    }
+    if (hasArgument(argc, argv, "--onboarding-templates-smoke")) {
+        return appOnboardingTemplatesSmoke();
     }
 
     try {

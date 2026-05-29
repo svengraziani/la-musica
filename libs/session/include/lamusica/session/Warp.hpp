@@ -62,6 +62,13 @@ struct RenderCacheEntry {
     bool valid{false};
 };
 
+struct WarpRenderSegment {
+    std::int64_t sourceStartSample{0};
+    std::int64_t sourceEndSample{0};
+    std::int64_t timelineStartSample{0};
+    std::int64_t timelineEndSample{0};
+};
+
 struct WarpRenderPlan {
     std::string clipId;
     std::string cacheKey;
@@ -73,6 +80,7 @@ struct WarpRenderPlan {
     double stretchRatio{1.0};
     double pitchRatio{1.0};
     StretchQuality quality{StretchQuality::Balanced};
+    std::vector<WarpRenderSegment> segments;
     bool cacheHit{false};
 };
 

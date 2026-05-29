@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "dev.lamusica.schemas.project-v1",
-  "title": "LaMusica Project Manifest",
+  "$id": "dev.lamusica.schemas.project-v3",
+  "title": "LaMusica Project Manifest v3",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
     "name",
+    "projectSampleRate",
     "tempoMap",
     "timeSignatures",
     "markers",
@@ -14,14 +15,17 @@
     "tracks",
     "clips",
     "midiClips",
+    "takeLanes",
+    "comps",
     "routing",
     "plugins",
     "automation",
     "mcpAuditLog"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 3 },
     "name": { "type": "string", "minLength": 1 },
+    "projectSampleRate": { "type": "number", "exclusiveMinimum": 0 },
     "tempoMap": {
       "type": "array",
       "minItems": 1,
@@ -37,6 +41,8 @@
     "tracks": { "type": "array", "items": { "$ref": "#/$defs/track" } },
     "clips": { "type": "array", "items": { "$ref": "#/$defs/clip" } },
     "midiClips": { "type": "array", "items": { "$ref": "#/$defs/midiClip" } },
+    "takeLanes": { "type": "array", "items": { "$ref": "#/$defs/takeLane" } },
+    "comps": { "type": "array", "items": { "$ref": "#/$defs/comp" } },
     "routing": { "type": "array", "items": { "$ref": "#/$defs/routing" } },
     "trackMix": { "type": "array", "items": { "$ref": "#/$defs/trackMixState" } },
     "plugins": { "type": "array", "items": { "$ref": "#/$defs/plugin" } },
@@ -136,6 +142,55 @@
       "properties": {
         "clipId": { "$ref": "#/$defs/id" },
         "dataId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "takeLane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clipId", "takes"],
+      "properties": {
+        "clipId": { "$ref": "#/$defs/id" },
+        "takes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/take" } }
+      }
+    },
+    "take": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "sourceOffsetSamples",
+        "lengthSamples",
+        "muted",
+        "assetId"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "sourceOffsetSamples": { "$ref": "#/$defs/sample" },
+        "lengthSamples": { "type": "integer", "minimum": 1 },
+        "muted": { "type": "boolean" },
+        "assetId": { "type": "string" }
+      }
+    },
+    "comp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clipId", "segments"],
+      "properties": {
+        "clipId": { "$ref": "#/$defs/id" },
+        "segments": { "type": "array", "items": { "$ref": "#/$defs/compSegment" } }
+      }
+    },
+    "compSegment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["takeId", "clipStartSample", "lengthSamples", "takeSourceOffsetSamples"],
+      "properties": {
+        "takeId": { "$ref": "#/$defs/id" },
+        "clipStartSample": { "$ref": "#/$defs/sample" },
+        "lengthSamples": { "type": "integer", "minimum": 1 },
+        "takeSourceOffsetSamples": { "$ref": "#/$defs/sample" }
       }
     },
     "routing": {

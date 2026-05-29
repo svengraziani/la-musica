@@ -85,7 +85,8 @@ std::string bounceManifestJson(const audio::BounceResult& bounce) {
            << "\",\"startSample\":" << bounce.startSample << ",\"frames\":" << bounce.frames
            << ",\"channels\":" << bounce.channels << ",\"sampleRate\":" << bounce.sampleRate
            << ",\"peakBeforeNormalization\":" << bounce.peakBeforeNormalization
-           << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization << "}";
+           << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization
+           << ",\"peakAfterDither\":" << bounce.peakAfterDither << "}";
     return output.str();
 }
 
@@ -96,7 +97,8 @@ std::string projectMixManifestJson(const audio::BounceResult& bounce) {
            << "\",\"startSample\":" << bounce.startSample << ",\"frames\":" << bounce.frames
            << ",\"channels\":" << bounce.channels << ",\"sampleRate\":" << bounce.sampleRate
            << ",\"peakBeforeNormalization\":" << bounce.peakBeforeNormalization
-           << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization << "}";
+           << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization
+           << ",\"peakAfterDither\":" << bounce.peakAfterDither << "}";
     return output.str();
 }
 
@@ -110,7 +112,8 @@ std::string batchProjectMixManifestJson(const std::vector<audio::BounceResult>& 
                << "\",\"startSample\":" << bounce.startSample << ",\"frames\":" << bounce.frames
                << ",\"channels\":" << bounce.channels << ",\"sampleRate\":" << bounce.sampleRate
                << ",\"peakBeforeNormalization\":" << bounce.peakBeforeNormalization
-               << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization << "}";
+               << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization
+               << ",\"peakAfterDither\":" << bounce.peakAfterDither << "}";
         if (index + 1 < bounces.size()) {
             output << ',';
         }
@@ -129,7 +132,8 @@ std::string stemExportManifestJson(const std::vector<session::StemExportResult>&
                << "\",\"frames\":" << stem.bounce.frames << ",\"channels\":" << stem.bounce.channels
                << ",\"sampleRate\":" << stem.bounce.sampleRate
                << ",\"peakBeforeNormalization\":" << stem.bounce.peakBeforeNormalization
-               << ",\"peakAfterNormalization\":" << stem.bounce.peakAfterNormalization << "}";
+               << ",\"peakAfterNormalization\":" << stem.bounce.peakAfterNormalization
+               << ",\"peakAfterDither\":" << stem.bounce.peakAfterDither << "}";
         if (index + 1 < stems.size()) {
             output << ',';
         }
@@ -150,7 +154,8 @@ std::string bounceInPlaceManifestJson(const audio::BounceResult& bounce,
            << ",\"frames\":" << bounce.frames << ",\"channels\":" << bounce.channels
            << ",\"sampleRate\":" << bounce.sampleRate
            << ",\"peakBeforeNormalization\":" << bounce.peakBeforeNormalization
-           << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization << "}";
+           << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization
+           << ",\"peakAfterDither\":" << bounce.peakAfterDither << "}";
     return output.str();
 }
 
@@ -167,6 +172,7 @@ std::string freezeTrackManifestJson(const audio::BounceResult& bounce,
            << ",\"channels\":" << bounce.channels << ",\"sampleRate\":" << bounce.sampleRate
            << ",\"peakBeforeNormalization\":" << bounce.peakBeforeNormalization
            << ",\"peakAfterNormalization\":" << bounce.peakAfterNormalization
+           << ",\"peakAfterDither\":" << bounce.peakAfterDither
            << ",\"mutedSourceClips\":[";
     for (std::size_t index = 0; index < mutedClipIds.size(); ++index) {
         output << "\"" << escapeJson(mutedClipIds[index]) << "\"";

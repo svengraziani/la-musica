@@ -148,7 +148,8 @@ BounceResult bounceGraphToWav(const AudioGraph& graph, const BounceOptions& opti
             .bitDepth = options.bitDepth,
             .ditherMode = options.ditherMode,
             .peakBeforeNormalization = peakBefore,
-            .peakAfterNormalization = peakAfter};
+            .peakAfterNormalization = peakAfter,
+            .peakAfterDither = peakAfter};
 }
 
 } // namespace lamusica::audio

@@ -41,6 +41,7 @@ struct BounceResult {
     DitherMode ditherMode{DitherMode::None};
     float peakBeforeNormalization{0.0F};
     float peakAfterNormalization{0.0F};
+    float peakAfterDither{0.0F};
 };
 
 [[nodiscard]] float peakAbsoluteSample(const RenderedAudio& audio) noexcept;

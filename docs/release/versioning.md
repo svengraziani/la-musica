@@ -10,11 +10,13 @@ Project format and MCP schemas must carry their own schema versions and migratio
 
 ## Project Format Migrations
 
-- Current project manifest schema: `1`.
+- Current project manifest schema: `3`.
 - Schema `0` is treated as a legacy bootstrap format. The loader migrates `projectName` or
   `name` into the v1 `name` field, upgrades `schemaVersion` to `1`, and creates default tempo
   and time-signature metadata when those fields were absent.
-- Schema `1` manifests must include all required top-level arrays from
+- Schema `1` manifests are upgraded to schema `2` with `projectSampleRate = 48000.0`.
+- Schema `2` manifests are upgraded to schema `3` with empty comp `takeLanes` and `comps`.
+- Schema `3` manifests must include all required top-level arrays from
   `docs/schemas/project-v1.schema.json`; missing arrays are validation errors, not implicit
   defaults.
 - Future schema changes must add a deterministic migration in `migrateProjectManifest` and unit

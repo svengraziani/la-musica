@@ -1,8 +1,8 @@
 # Security Disclosure Process
 
-Until the first public stable release, report vulnerabilities privately to
-`security@lamusica.invalid`. Maintainers must replace this placeholder with a monitored production
-contact before publishing signed stable binaries.
+Report vulnerabilities privately to `security@lamusica.dev`. Maintainers should acknowledge credible
+reports within 3 business days and coordinate disclosure once a fix and release plan are available.
+Add a PGP key here before the first public stable release if encrypted intake is required.
 
 ## Intake
 

@@ -39,6 +39,7 @@ struct GraphNode {
     bool reversed{false};
     std::uint32_t sampleChannels{0};
     std::uint32_t sampleFrames{0};
+    double sampleRate{48000.0};
     std::vector<float> samples;
     std::vector<GraphNote> noteSequence;
 };

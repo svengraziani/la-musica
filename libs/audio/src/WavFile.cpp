@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -85,7 +86,12 @@ void validateWritableWav(const std::filesystem::path& path, const RenderedAudio&
     if (audio.channels == 0) {
         throw std::runtime_error("Cannot write WAV with zero channels");
     }
-    if (sampleRate <= 0.0) {
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0 ||
+        sampleRate > static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
+        throw std::runtime_error("Cannot write WAV with invalid sample rate");
+    }
+    const auto roundedSampleRate = std::round(sampleRate);
+    if (std::abs(sampleRate - roundedSampleRate) > 0.000001) {
         throw std::runtime_error("Cannot write WAV with invalid sample rate");
     }
     if (audio.interleavedSamples.size() !=

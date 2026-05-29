@@ -1,0 +1,3 @@
+add_executable(lamusica_plugin_scan_worker src/main.cpp)
+target_link_libraries(lamusica_plugin_scan_worker PRIVATE lamusica::plugin_host)
+lamusica_configure_target(lamusica_plugin_scan_worker)

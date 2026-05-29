@@ -36,6 +36,19 @@ audio::BounceOptions bounceOptionsForPath(const std::filesystem::path& path,
             .normalizeTargetPeak = options.normalizeTargetPeak};
 }
 
+double resolveExportSampleRate(const ProjectManifest& manifest, double requestedSampleRate) {
+    if (requestedSampleRate > 0.0) {
+        return requestedSampleRate;
+    }
+    return manifest.projectSampleRate;
+}
+
+ProjectExportOptions resolveProjectExportOptions(const ProjectManifest& manifest,
+                                                 ProjectExportOptions options) {
+    options.sampleRate = resolveExportSampleRate(manifest, options.sampleRate);
+    return options;
+}
+
 ProjectExportOptions projectOptionsForStem(const StemExportOptions& options,
                                            std::filesystem::path path) {
     return {.outputPath = std::move(path),
@@ -101,8 +114,11 @@ StemExportOptions makeLoopStemExportOptions(std::filesystem::path outputDirector
 
 audio::BounceResult exportProjectMixToWav(const ProjectManifest& manifest, const MixerState& mixer,
                                           const ProjectExportOptions& options) {
-    auto graph = compileProjectAudioGraph(manifest, mixer, {.projectRoot = options.projectRoot});
-    return audio::bounceGraphToWav(graph, bounceOptionsForPath(options.outputPath, options));
+    const auto resolvedOptions = resolveProjectExportOptions(manifest, options);
+    auto graph =
+        compileProjectAudioGraph(manifest, mixer, {.projectRoot = resolvedOptions.projectRoot});
+    return audio::bounceGraphToWav(
+        graph, bounceOptionsForPath(resolvedOptions.outputPath, resolvedOptions));
 }
 
 std::vector<StemExportResult> exportProjectStemsToWav(const ProjectManifest& manifest,
@@ -132,9 +148,11 @@ std::vector<StemExportResult> exportProjectStemsToWav(const ProjectManifest& man
 
         const auto outputPath = options.outputDirectory / (trackId + ".wav");
         const auto projectOptions = projectOptionsForStem(options, outputPath);
-        results.push_back({.trackId = trackId,
-                           .bounce = audio::bounceGraphToWav(
-                               graph, bounceOptionsForPath(outputPath, projectOptions))});
+        const auto resolvedOptions = resolveProjectExportOptions(manifest, projectOptions);
+        results.push_back(
+            {.trackId = trackId,
+             .bounce = audio::bounceGraphToWav(
+                 graph, bounceOptionsForPath(outputPath, resolvedOptions))});
     }
 
     return results;

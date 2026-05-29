@@ -20,6 +20,11 @@ function(lamusica_configure_target target_name)
     target_link_options(${target_name} PRIVATE -fsanitize=address)
   endif()
 
+  if(LAMUSICA_ENABLE_TSAN AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
+    target_compile_options(${target_name} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+    target_link_options(${target_name} PRIVATE -fsanitize=thread)
+  endif()
+
   if(LAMUSICA_ENABLE_PROFILING AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
     target_compile_options(${target_name} PRIVATE -g)
   endif()

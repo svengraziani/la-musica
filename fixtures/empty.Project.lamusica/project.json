@@ -1,6 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "name": "Empty Fixture",
+  "projectSampleRate": 48000.0,
+  "loopEnabled": false,
+  "loopStartSample": 0,
+  "loopEndSample": 0,
   "tempoMap": [
     {"samplePosition": 0, "bpm": 120}
   ],
@@ -12,7 +16,10 @@
   "tracks": [],
   "clips": [],
   "midiClips": [],
+  "takeLanes": [],
+  "comps": [],
   "routing": [],
+  "trackMix": [],
   "plugins": [],
   "automation": [],
   "mcpAuditLog": []

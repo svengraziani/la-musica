@@ -31,31 +31,6 @@ struct ClipGainEnvelope {
     std::vector<ClipEnvelopePoint> points;
 };
 
-struct ClipTake {
-    std::string id;
-    std::string name;
-    std::int64_t sourceOffsetSamples{0};
-    std::int64_t lengthSamples{0};
-    bool muted{false};
-};
-
-struct ClipTakeLane {
-    std::string clipId;
-    std::vector<ClipTake> takes;
-};
-
-struct ClipCompSegment {
-    std::string takeId;
-    std::int64_t clipStartSample{0};
-    std::int64_t lengthSamples{0};
-    std::int64_t takeSourceOffsetSamples{0};
-};
-
-struct ClipComp {
-    std::string clipId;
-    std::vector<ClipCompSegment> segments;
-};
-
 struct ClipTakeSource {
     std::string takeId;
     audio::RenderedAudio audio;

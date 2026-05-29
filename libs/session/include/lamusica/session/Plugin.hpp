@@ -46,6 +46,13 @@ struct PluginScanResult {
     std::string failureReason;
 };
 
+struct PluginScanSourceKey {
+    std::string identifier;
+    std::string path;
+    std::uint64_t sizeBytes{0};
+    std::int64_t mtimeNanoseconds{0};
+};
+
 enum class PluginScanOutcome {
     Valid,
     Invalid,
@@ -75,6 +82,7 @@ struct PluginScanReport {
 struct PluginScanCache {
     std::vector<PluginScanResult> results;
     std::vector<std::string> blacklist;
+    std::vector<PluginScanSourceKey> sourceKeys;
 };
 
 struct PluginHostEnvironment {

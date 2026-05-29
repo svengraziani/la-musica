@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <stdexcept>
 
 namespace lamusica::session {
@@ -63,6 +64,23 @@ const ClipTakeSource* findTakeSource(std::span<const ClipTakeSource> sources,
     const auto found = std::ranges::find_if(
         sources, [takeId](const ClipTakeSource& source) { return source.takeId == takeId; });
     return found == sources.end() ? nullptr : &*found;
+}
+
+float sourceSampleAt(const audio::RenderedAudio& source, std::int64_t frame,
+                     std::uint32_t channel) noexcept {
+    if (source.frames == 0U || source.channels == 0U) {
+        return 0.0F;
+    }
+    const auto clampedFrame = std::clamp<std::int64_t>(frame, 0, source.frames - 1);
+    return source.interleavedSamples[static_cast<std::size_t>(clampedFrame) * source.channels +
+                                     channel];
+}
+
+std::int64_t compBoundaryCrossfadeSamples(const ClipCompSegment& left,
+                                          const ClipCompSegment& right) noexcept {
+    constexpr std::int64_t defaultCrossfadeSamples = 64;
+    return std::max<std::int64_t>(
+        0, std::min({defaultCrossfadeSamples, left.lengthSamples, right.lengthSamples}));
 }
 
 } // namespace
@@ -159,6 +177,7 @@ void validateClipTakeLane(const Clip& clip, const ClipTakeLane& takeLane, const 
         }
     }
 
+    const ClipCompSegment* previousSegment = nullptr;
     std::int64_t previousSegmentEnd = 0;
     for (const auto& segment : comp.segments) {
         const auto* take = findTake(takeLane, segment.takeId);
@@ -174,7 +193,12 @@ void validateClipTakeLane(const Clip& clip, const ClipTakeLane& takeLane, const 
             throw std::runtime_error("Clip comp segment ranges are invalid");
         }
         if (segment.clipStartSample < previousSegmentEnd) {
-            throw std::runtime_error("Clip comp segments must be sorted and non-overlapping");
+            if (previousSegment == nullptr ||
+                previousSegmentEnd - segment.clipStartSample >
+                    compBoundaryCrossfadeSamples(*previousSegment, segment)) {
+                throw std::runtime_error(
+                    "Clip comp segments must be sorted and overlap only within the crossfade");
+            }
         }
         const auto clipEnd = segment.clipStartSample + segment.lengthSamples;
         if (clipEnd > clip.lengthSamples) {
@@ -186,7 +210,8 @@ void validateClipTakeLane(const Clip& clip, const ClipTakeLane& takeLane, const 
             takeEnd > source->audio.frames) {
             throw std::runtime_error("Clip comp segment extends beyond take source");
         }
-        previousSegmentEnd = clipEnd;
+        previousSegment = &segment;
+        previousSegmentEnd = std::max(previousSegmentEnd, clipEnd);
     }
 }
 
@@ -286,7 +311,8 @@ audio::RenderedAudio renderCompedClip(const Clip& clip, const ClipTakeLane& take
                                       static_cast<std::size_t>(clip.lengthSamples) * channels)};
     const auto linearGain = clip.muted ? 0.0F : dbToLinearGain(clip.gainDb);
 
-    for (const auto& segment : comp.segments) {
+    for (std::size_t segmentIndex = 0; segmentIndex < comp.segments.size(); ++segmentIndex) {
+        const auto& segment = comp.segments[segmentIndex];
         const auto* take = findTake(takeLane, segment.takeId);
         const auto* source = findTakeSource(sources, segment.takeId);
         if (take == nullptr || source == nullptr || take->muted) {
@@ -303,6 +329,47 @@ audio::RenderedAudio renderCompedClip(const Clip& clip, const ClipTakeLane& take
                         .interleavedSamples[static_cast<std::size_t>(sourceFrame) * channels +
                                             channel] *
                     fadeGain;
+            }
+        }
+
+        if (segmentIndex == 0U) {
+            continue;
+        }
+        const auto& previousSegment = comp.segments[segmentIndex - 1U];
+        const auto* previousTake = findTake(takeLane, previousSegment.takeId);
+        const auto* previousSource = findTakeSource(sources, previousSegment.takeId);
+        if (previousTake == nullptr || previousSource == nullptr || previousTake->muted) {
+            continue;
+        }
+        const auto crossfadeSamples =
+            compBoundaryCrossfadeSamples(previousSegment, segment);
+        if (crossfadeSamples <= 1) {
+            continue;
+        }
+        for (std::int64_t frame = 0; frame < crossfadeSamples; ++frame) {
+            const auto clipFrame = segment.clipStartSample + frame;
+            if (clipFrame >= clip.lengthSamples) {
+                break;
+            }
+            const auto denominator = static_cast<float>(crossfadeSamples - 1);
+            const auto rightRatio = static_cast<float>(frame) / denominator;
+            const auto rightGain = std::sin(rightRatio * std::numbers::pi_v<float> * 0.5F);
+            const auto leftGain = std::cos(rightRatio * std::numbers::pi_v<float> * 0.5F);
+            const auto clipGain = clipFadeGain(clip, clipFrame) * linearGain;
+            const auto previousSegmentEnd =
+                previousSegment.clipStartSample + previousSegment.lengthSamples;
+            const auto previousLocalFrame =
+                segment.clipStartSample >= previousSegmentEnd
+                    ? previousSegment.lengthSamples - crossfadeSamples + frame
+                    : clipFrame - previousSegment.clipStartSample;
+            const auto leftFrame = previousSegment.takeSourceOffsetSamples + previousLocalFrame;
+            const auto rightFrame = segment.takeSourceOffsetSamples + frame;
+            for (std::uint32_t channel = 0; channel < channels; ++channel) {
+                const auto leftSample = sourceSampleAt(previousSource->audio, leftFrame, channel);
+                const auto rightSample = sourceSampleAt(source->audio, rightFrame, channel);
+                rendered
+                    .interleavedSamples[static_cast<std::size_t>(clipFrame) * channels + channel] =
+                    ((leftSample * leftGain) + (rightSample * rightGain)) * clipGain;
             }
         }
     }

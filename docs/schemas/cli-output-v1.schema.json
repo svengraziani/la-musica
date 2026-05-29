@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lamusica.dev/schemas/cli-output-v1.schema.json",
+  "title": "LaMusica CLI Output v1",
+  "type": "object",
+  "required": ["schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "project": {
+      "type": "object",
+      "required": ["name", "schemaVersion", "tracks", "clips", "plugins", "automation"],
+      "properties": {
+        "name": { "type": "string" },
+        "schemaVersion": { "type": "integer", "minimum": 1 },
+        "tracks": { "type": "integer", "minimum": 0 },
+        "clips": { "type": "integer", "minimum": 0 },
+        "plugins": { "type": "integer", "minimum": 0 },
+        "automation": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "projectSchemaVersion": { "type": "integer", "minimum": 1 },
+    "cliSchemaVersion": { "type": "integer", "minimum": 1 },
+    "migrated": { "type": "boolean" },
+    "from": { "type": "integer", "minimum": 1 },
+    "to": { "type": "integer", "minimum": 1 },
+    "preview": { "type": "boolean" },
+    "mutated": { "type": "boolean" },
+    "command": { "type": "string" },
+    "confirmationToken": { "type": "string" },
+    "render": {
+      "type": "object",
+      "required": ["project", "output", "format", "bitDepth", "startSample", "frames", "stems", "postDitherPeak"],
+      "properties": {
+        "project": { "type": "string" },
+        "output": { "type": "string" },
+        "format": { "const": "wav" },
+        "bitDepth": { "enum": [16, 24] },
+        "startSample": { "type": "integer", "minimum": 0 },
+        "frames": { "type": "integer", "minimum": 1 },
+        "stems": { "type": "boolean" },
+        "stemCount": { "type": "integer", "minimum": 0 },
+        "postDitherPeak": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}
