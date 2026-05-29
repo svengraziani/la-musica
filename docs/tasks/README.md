@@ -5,6 +5,16 @@ intended full macOS DAW. The previous 001-025 bootstrap plan is no longer the ac
 order: much of it has been implemented as first-track/session scaffolding, and some items were
 intentionally deferred until JUCE and production UI dependencies are pinned.
 
+> **⚠️ Superseded ordering — read the production roadmap first.** A deep code audit (2026-05-28)
+> found the codebase is a `scaffold`: a well-tested headless offline session/render/MCP engine with
+> no live audio, no real plugin hosting, no interactive UI, and a stub MCP transport. The 026–036
+> epics below are **UI-first and assume a working engine that does not exist**. The authoritative,
+> dependency-ordered, code-grounded production plan now lives under
+> [`docs/planning/`](../planning/production-roadmap.md): see the
+> [Production Roadmap](../planning/production-roadmap.md) (tasks P01–P34) and the
+> [Production Readiness Assessment](../planning/production-readiness-assessment.md). Treat 026–036
+> as high-level background acceptance criteria; each P-task records its mapping back to them.
+
 For task-level choices and tradeoffs, use the
 [Decision And Compromise Register](../planning/decision-compromise-register.md).
 
