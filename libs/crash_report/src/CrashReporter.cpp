@@ -49,6 +49,13 @@ void writeNumber(long value) noexcept {
     writeBytes(buffer.data() + index, buffer.size() - index);
 }
 
+void writeField(std::string_view key, std::string_view value) noexcept {
+    writeBytes(key.data(), key.size());
+    writeLiteral("=");
+    writeBytes(value.data(), value.size());
+    writeLiteral("\n");
+}
+
 void signalHandler(int signalNumber) {
     writeLiteral("signal=");
     writeNumber(signalNumber);
@@ -98,11 +105,16 @@ void installCrashReporter(const CrashReporterOptions& options) {
         ::close(crashFd);
     }
     crashFd = fd;
+    writeField("application", options.applicationName);
+    writeField("version", options.version);
+    writeField("commit", options.gitCommit);
+    writeField("buildDate", options.buildDate);
+    writeLiteral("reportFormat=lamusica-crashlog-v1\n");
 
     struct sigaction action {};
     action.sa_handler = signalHandler;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = SA_RESETHAND;
+    action.sa_flags = static_cast<decltype(action.sa_flags)>(SA_RESETHAND);
     sigaction(SIGABRT, &action, nullptr);
     sigaction(SIGBUS, &action, nullptr);
     sigaction(SIGFPE, &action, nullptr);

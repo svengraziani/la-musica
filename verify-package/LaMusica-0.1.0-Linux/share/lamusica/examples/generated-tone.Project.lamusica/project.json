@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 3,
+  "name": "Generated Tone Example",
+  "projectSampleRate": 48000.0,
+  "loopEnabled": false,
+  "loopStartSample": 0,
+  "loopEndSample": 0,
+  "tempoMap": [
+    {"samplePosition": 0, "bpm": 120}
+  ],
+  "timeSignatures": [
+    {"samplePosition": 0, "numerator": 4, "denominator": 4}
+  ],
+  "markers": [
+    {"id": "marker-intro", "name": "Intro", "samplePosition": 0}
+  ],
+  "assets": [],
+  "tracks": [
+    {"id": "tone-track", "name": "Generated Tone", "type": "audio"},
+    {"id": "master", "name": "Master", "type": "master"}
+  ],
+  "clips": [
+    {
+      "id": "tone-clip",
+      "trackId": "tone-track",
+      "type": "audio",
+      "startSample": 0,
+      "lengthSamples": 48000,
+      "sourceOffsetSamples": 0,
+      "fadeInSamples": 0,
+      "fadeOutSamples": 0,
+      "gainDb": -6,
+      "muted": false,
+      "reversed": false,
+      "assetId": ""
+    }
+  ],
+  "midiClips": [],
+  "takeLanes": [],
+  "comps": [],
+  "routing": [
+    {"sourceTrackId": "tone-track", "destinationTrackId": "master"}
+  ],
+  "trackMix": [],
+  "plugins": [],
+  "automation": [],
+  "mcpAuditLog": []
+}

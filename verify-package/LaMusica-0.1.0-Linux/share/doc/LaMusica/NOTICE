@@ -1,0 +1,8 @@
+LaMusica
+Copyright (c) LaMusica contributors.
+
+LaMusica is licensed under AGPL-3.0-or-later. Corresponding source for official release artifacts is
+available from the same Git commit and release tag that produced the artifact. Release packages
+include this notice so recipients can locate the exact source, build scripts, and license terms.
+
+Security contact: security@lamusica.dev

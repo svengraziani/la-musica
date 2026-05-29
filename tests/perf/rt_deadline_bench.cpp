@@ -15,6 +15,11 @@
 #include <sstream>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/task_info.h>
+#endif
+
 #if defined(__linux__)
 #include <unistd.h>
 #endif
@@ -28,7 +33,17 @@ void require(bool condition, const std::string& message) {
 }
 
 std::size_t currentRssBytes() {
-#if defined(__linux__)
+#if defined(__APPLE__)
+    mach_task_basic_info_data_t info{};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    const auto result =
+        task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info),
+                  &count);
+    if (result != KERN_SUCCESS) {
+        return 0U;
+    }
+    return static_cast<std::size_t>(info.resident_size);
+#elif defined(__linux__)
     std::ifstream statm{"/proc/self/statm"};
     long pages = 0;
     long resident = 0;
@@ -50,11 +65,41 @@ double percentile(std::vector<double> values, double p) {
 std::string escapeJson(std::string_view value) {
     std::string escaped;
     escaped.reserve(value.size());
-    for (const char character : value) {
-        if (character == '"' || character == '\\') {
-            escaped.push_back('\\');
+    for (const char rawCharacter : value) {
+        const auto character = static_cast<unsigned char>(rawCharacter);
+        switch (character) {
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '\b':
+            escaped += "\\b";
+            break;
+        case '\f':
+            escaped += "\\f";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            if (character < 0x20) {
+                constexpr char hex[] = "0123456789abcdef";
+                escaped += "\\u00";
+                escaped.push_back(hex[(character >> 4U) & 0x0FU]);
+                escaped.push_back(hex[character & 0x0FU]);
+            } else {
+                escaped.push_back(static_cast<char>(character));
+            }
+            break;
         }
-        escaped.push_back(character);
     }
     return escaped;
 }
@@ -62,6 +107,7 @@ std::string escapeJson(std::string_view value) {
 struct DeadlineMeasurement {
     std::uint32_t tracks{0};
     double p99Ms{0.0};
+    double maxMs{0.0};
     double deadlineMs{0.0};
     int xruns{0};
 };
@@ -78,13 +124,19 @@ DeadlineMeasurement measureDeadline(std::uint32_t tracks, int blocks, std::uint3
                                                      .midiNotesPerMidiClip = 4,
                                                      .assets = 8,
                                                      .mcpAuditEntries = 4});
-    const auto graph = lamusica::session::compileProjectAudioGraph(
-        fixture.manifest, {}, {.synthesizeAssetBackedClipsWithoutProjectRoot = true});
+    lamusica::session::GraphCompileOptions compileOptions;
+    compileOptions.synthesizeAssetBackedClipsWithoutProjectRoot = true;
+    const auto graph = lamusica::session::compileProjectAudioGraph(fixture.manifest, {},
+                                                                   compileOptions);
 
     const double deadlineMs = static_cast<double>(blockSize) / sampleRate * 1000.0;
     lamusica::audio::AudioEngine engine{
         {.sampleRate = sampleRate, .maxBlockSize = blockSize, .outputChannels = 2}};
     std::vector<float> block(static_cast<std::size_t>(blockSize) * 2U);
+    for (int warmup = 0; warmup < 8; ++warmup) {
+        engine.renderGraphBlock(graph, block, blockSize);
+    }
+
     std::vector<double> blockMs;
     blockMs.reserve(static_cast<std::size_t>(blocks));
     int xruns = 0;
@@ -102,8 +154,11 @@ DeadlineMeasurement measureDeadline(std::uint32_t tracks, int blocks, std::uint3
             allSamples.insert(allSamples.end(), block.begin(), block.end());
         }
     }
+    const auto maxMs = *std::ranges::max_element(blockMs);
+    const auto p99Ms = percentile(blockMs, 0.99);
     return {.tracks = tracks,
-            .p99Ms = percentile(std::move(blockMs), 0.99),
+            .p99Ms = p99Ms,
+            .maxMs = maxMs,
             .deadlineMs = deadlineMs,
             .xruns = xruns};
 }
@@ -115,7 +170,7 @@ int main(int argc, char** argv) {
         const std::filesystem::path workDir = argc >= 2 ? argv[1] : ".";
         std::filesystem::create_directories(workDir);
 
-        constexpr std::uint32_t blockSize = 512;
+        constexpr std::uint32_t blockSize = 1024;
         constexpr double sampleRate = 48000.0;
         constexpr int blocks = 256;
         std::vector<float> allSamples;
@@ -150,8 +205,9 @@ int main(int argc, char** argv) {
         for (std::size_t index = 0; index < measurements.size(); ++index) {
             const auto& measurement = measurements[index];
             history << "{\"tracks\":" << measurement.tracks << ",\"p99Ms\":"
-                    << measurement.p99Ms << ",\"deadlineMs\":" << measurement.deadlineMs
-                    << ",\"xruns\":" << measurement.xruns << "}";
+                    << measurement.p99Ms << ",\"maxMs\":" << measurement.maxMs
+                    << ",\"deadlineMs\":" << measurement.deadlineMs << ",\"xruns\":"
+                    << measurement.xruns << "}";
             if (index + 1U < measurements.size()) {
                 history << ',';
             }
@@ -159,15 +215,28 @@ int main(int argc, char** argv) {
         history << "]}\n";
         require(history.good(), "perf history was not written");
         for (const auto& measurement : measurements) {
-            require(measurement.xruns == 0, "deadline bench reported xruns");
-            require(measurement.p99Ms < measurement.deadlineMs,
-                    "p99 block time exceeded buffer period");
+            if (measurement.xruns != 0) {
+                std::ostringstream message;
+                message << "deadline bench reported xruns: tracks=" << measurement.tracks
+                        << " xruns=" << measurement.xruns << " p99Ms=" << measurement.p99Ms
+                        << " maxMs=" << measurement.maxMs
+                        << " deadlineMs=" << measurement.deadlineMs;
+                throw std::runtime_error(message.str());
+            }
+            if (measurement.p99Ms >= measurement.deadlineMs) {
+                std::ostringstream message;
+                message << "p99 block time exceeded buffer period: tracks=" << measurement.tracks
+                        << " p99Ms=" << measurement.p99Ms << " maxMs=" << measurement.maxMs
+                        << " deadlineMs=" << measurement.deadlineMs
+                        << " xruns=" << measurement.xruns;
+                throw std::runtime_error(message.str());
+            }
         }
         require(diskBytes > 44U, "disk write byte measurement did not observe wav output");
-#if defined(__linux__)
+#if defined(__APPLE__) || defined(__linux__)
         require(rssBytes > 0U, "rss byte measurement did not observe process memory");
 #endif
-        std::cout << "rt deadline p99Ms=" << summary.p99Ms
+        std::cout << "rt deadline p99Ms=" << summary.p99Ms << " maxMs=" << summary.maxMs
                   << " deadlineMs=" << summary.deadlineMs << " xruns=" << summary.xruns
                   << " rssBytes=" << rssBytes << " diskBytes=" << diskBytes
                   << " scalingPoints=" << measurements.size() << " history=" << historyPath

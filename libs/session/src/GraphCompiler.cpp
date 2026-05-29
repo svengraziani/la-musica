@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -36,6 +37,13 @@ std::string clipNodeId(std::string_view clipId) {
 
 std::string compSegmentNodeId(std::string_view clipId, std::size_t segmentIndex) {
     return clipNodeId(clipId) + "#seg" + std::to_string(segmentIndex);
+}
+
+std::int64_t compBoundaryCrossfadeSamples(const ClipCompSegment& left,
+                                          const ClipCompSegment& right) noexcept {
+    constexpr std::int64_t defaultCrossfadeSamples = 64;
+    return std::max<std::int64_t>(
+        0, std::min({defaultCrossfadeSamples, left.lengthSamples, right.lengthSamples}));
 }
 
 bool hasNode(const audio::AudioGraph& graph, std::string_view nodeId) {
@@ -202,6 +210,40 @@ const WarpState* findWarpState(const GraphCompileOptions& options, std::string_v
     return found == options.warpStates.end() ? nullptr : &*found;
 }
 
+bool safeRelativeCachePath(const std::filesystem::path& path) {
+    if (path.empty() || path.is_absolute()) {
+        return false;
+    }
+    for (const auto& part : path) {
+        if (part == "..") {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<audio::WavAudioData> readWarpCacheWav(const GraphCompileOptions& options,
+                                                    const WarpRenderPlan& plan,
+                                                    double expectedSampleRate,
+                                                    std::uint32_t expectedChannels) {
+    const std::filesystem::path relativePath{plan.relativePath};
+    if (!plan.cacheHit || options.projectRoot.empty() || !safeRelativeCachePath(relativePath)) {
+        return std::nullopt;
+    }
+    const auto cachePath = options.projectRoot / relativePath;
+    if (!std::filesystem::exists(cachePath)) {
+        return std::nullopt;
+    }
+    auto cached = audio::readPcm16Wav(cachePath);
+    const auto expectedFrames = plan.timelineEndSample - plan.timelineStartSample;
+    if (expectedFrames <= 0 || cached.audio.frames != static_cast<std::uint32_t>(expectedFrames) ||
+        cached.audio.channels != expectedChannels ||
+        std::abs(cached.sampleRate - expectedSampleRate) > 0.000001) {
+        return std::nullopt;
+    }
+    return cached;
+}
+
 audio::WavAudioData readClipAssetWav(const ProjectManifest& manifest,
                                      const GraphCompileOptions& options,
                                      std::string_view assetId) {
@@ -254,12 +296,15 @@ audio::GraphNode makeClipNode(const ProjectManifest& manifest, const Clip& clip,
                                    sourceStart + clip.lengthSamples);
         const auto plan = makeWarpRenderPlan(*warp, options.warpRenderCache, sourceStart,
                                              sourceEnd, "Cache/" + clip.id + "-warp.wav");
-        const auto rendered = renderWarpedAudio(wav.audio, plan);
+        const auto cached =
+            readWarpCacheWav(options, plan, manifest.projectSampleRate, wav.audio.channels);
+        const auto rendered =
+            cached.has_value() ? cached->audio : renderWarpedAudio(wav.audio, plan);
         node.sourceOffsetSamples = 0;
         node.lengthSamples = rendered.frames;
         node.sampleChannels = rendered.channels;
         node.sampleFrames = rendered.frames;
-        node.sampleRate = manifest.projectSampleRate;
+        node.sampleRate = cached.has_value() ? cached->sampleRate : manifest.projectSampleRate;
         node.samples = std::move(rendered.interleavedSamples);
     }
     return node;
@@ -268,6 +313,12 @@ audio::GraphNode makeClipNode(const ProjectManifest& manifest, const Clip& clip,
 std::optional<std::vector<audio::GraphNode>>
 makeCompSegmentNodes(const ProjectManifest& manifest, const Clip& clip,
                      const GraphCompileOptions& options) {
+    struct SegmentSource {
+        const ClipCompSegment* segment{nullptr};
+        const ClipTake* take{nullptr};
+        audio::WavAudioData wav;
+    };
+
     if (clip.type != ClipType::Audio) {
         return std::nullopt;
     }
@@ -288,10 +339,9 @@ makeCompSegmentNodes(const ProjectManifest& manifest, const Clip& clip,
     }
 
     constexpr std::int64_t internalCrossfadeSamples = 64;
-    std::vector<audio::GraphNode> nodes;
-    nodes.reserve(comp->segments.size());
-    for (std::size_t index = 0; index < comp->segments.size(); ++index) {
-        const auto& segment = comp->segments[index];
+    std::vector<SegmentSource> segmentSources;
+    segmentSources.reserve(comp->segments.size());
+    for (const auto& segment : comp->segments) {
         const auto* take = findTake(*takeLane, segment.takeId);
         if (take == nullptr) {
             throw std::runtime_error("Clip comp references missing take id: " + segment.takeId);
@@ -300,32 +350,72 @@ makeCompSegmentNodes(const ProjectManifest& manifest, const Clip& clip,
         if (assetId.empty()) {
             throw std::runtime_error("Comp take has no source asset: " + take->id);
         }
-        const auto wav = readClipAssetWav(manifest, options, assetId);
+        auto wav = readClipAssetWav(manifest, options, assetId);
         if (segment.takeSourceOffsetSamples + segment.lengthSamples > wav.audio.frames) {
             throw std::runtime_error("Comp segment exceeds take source asset: " + take->id);
         }
+        segmentSources.push_back({.segment = &segment, .take = take, .wav = std::move(wav)});
+    }
+
+    std::vector<std::int64_t> boundaryCrossfades(comp->segments.size() - 1U, 0);
+    for (std::size_t index = 0; index + 1U < segmentSources.size(); ++index) {
+        const auto& left = segmentSources[index];
+        const auto& right = segmentSources[index + 1U];
+        if (left.take->muted || right.take->muted) {
+            continue;
+        }
+        boundaryCrossfades[index] = std::min(
+            internalCrossfadeSamples, compBoundaryCrossfadeSamples(*left.segment, *right.segment));
+    }
+
+    std::vector<audio::GraphNode> nodes;
+    nodes.reserve(comp->segments.size() + boundaryCrossfades.size());
+    for (std::size_t index = 0; index < comp->segments.size(); ++index) {
+        const auto& segmentSource = segmentSources[index];
+        const auto& segment = *segmentSource.segment;
+        const auto& take = *segmentSource.take;
+        const auto& wav = segmentSource.wav;
+        const auto incomingCrossfade = index == 0U ? 0 : boundaryCrossfades[index - 1U];
 
         audio::GraphNode node;
         node.id = compSegmentNodeId(clip.id, index);
-        node.kind = take->muted ? audio::GraphNodeKind::Silence : audio::GraphNodeKind::Sample;
+        node.kind = take.muted ? audio::GraphNodeKind::Silence : audio::GraphNodeKind::Sample;
         node.gain = dbToLinearGain(clip.gainDb);
         node.startSample = clip.startSample + segment.clipStartSample;
         node.lengthSamples = segment.lengthSamples;
         node.sourceOffsetSamples = segment.takeSourceOffsetSamples;
         const bool firstSegment = index == 0U;
         const bool lastSegment = index + 1U == comp->segments.size();
-        node.fadeInSamples =
-            firstSegment ? clip.fadeInSamples
-                         : std::min(internalCrossfadeSamples, segment.lengthSamples);
-        node.fadeOutSamples =
-            lastSegment ? clip.fadeOutSamples
-                        : std::min(internalCrossfadeSamples, segment.lengthSamples);
+        node.fadeInSamples = firstSegment ? clip.fadeInSamples : incomingCrossfade;
+        node.fadeOutSamples = lastSegment ? clip.fadeOutSamples : 0;
         node.reversed = clip.reversed;
         node.sampleChannels = wav.audio.channels;
         node.sampleFrames = wav.audio.frames;
         node.sampleRate = wav.sampleRate;
-        node.samples = take->muted ? std::vector<float>{} : wav.audio.interleavedSamples;
+        node.samples = take.muted ? std::vector<float>{} : wav.audio.interleavedSamples;
         nodes.push_back(std::move(node));
+
+        if (index + 1U == comp->segments.size() || boundaryCrossfades[index] <= 0 ||
+            take.muted) {
+            continue;
+        }
+
+        const auto& nextSegment = *segmentSources[index + 1U].segment;
+        audio::GraphNode tailNode;
+        tailNode.id = compSegmentNodeId(clip.id, index) + "#tail";
+        tailNode.kind = audio::GraphNodeKind::Sample;
+        tailNode.gain = dbToLinearGain(clip.gainDb);
+        tailNode.startSample = clip.startSample + nextSegment.clipStartSample;
+        tailNode.lengthSamples = boundaryCrossfades[index];
+        tailNode.sourceOffsetSamples =
+            segment.takeSourceOffsetSamples + segment.lengthSamples - boundaryCrossfades[index];
+        tailNode.fadeOutSamples = boundaryCrossfades[index];
+        tailNode.reversed = clip.reversed;
+        tailNode.sampleChannels = wav.audio.channels;
+        tailNode.sampleFrames = wav.audio.frames;
+        tailNode.sampleRate = wav.sampleRate;
+        tailNode.samples = wav.audio.interleavedSamples;
+        nodes.push_back(std::move(tailNode));
     }
     return nodes;
 }

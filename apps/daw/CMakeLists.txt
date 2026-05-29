@@ -22,10 +22,26 @@ set(LAMUSICA_DAW_ONBOARDING_SOURCES
     src/onboarding/GuidedTour.cpp
     src/onboarding/ProjectTemplates.cpp
     src/onboarding/WelcomeWindow.cpp)
+set(LAMUSICA_DAW_LOCALIZED_BUNDLE_RESOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/macos/en.lproj/InfoPlist.strings"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/macos/es.lproj/InfoPlist.strings"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/macos/fr.lproj/InfoPlist.strings")
+foreach(LAMUSICA_DAW_LOCALIZED_BUNDLE_RESOURCE
+        IN LISTS
+        LAMUSICA_DAW_LOCALIZED_BUNDLE_RESOURCES)
+  get_filename_component(LAMUSICA_DAW_LOCALIZATION_DIR
+                         "${LAMUSICA_DAW_LOCALIZED_BUNDLE_RESOURCE}" DIRECTORY)
+  get_filename_component(LAMUSICA_DAW_LOCALIZATION_NAME
+                         "${LAMUSICA_DAW_LOCALIZATION_DIR}" NAME)
+  set_source_files_properties(
+    "${LAMUSICA_DAW_LOCALIZED_BUNDLE_RESOURCE}"
+    PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/${LAMUSICA_DAW_LOCALIZATION_NAME}")
+endforeach()
 
 target_sources(lamusica_daw PRIVATE src/main_juce.cpp ${LAMUSICA_DAW_A11Y_SOURCES}
                                     ${LAMUSICA_DAW_I18N_SOURCES}
-                                    ${LAMUSICA_DAW_ONBOARDING_SOURCES})
+                                    ${LAMUSICA_DAW_ONBOARDING_SOURCES}
+                                    ${LAMUSICA_DAW_LOCALIZED_BUNDLE_RESOURCES})
 target_include_directories(lamusica_daw PRIVATE src)
 
 target_link_libraries(lamusica_daw PRIVATE lamusica::build_info lamusica::crash_report

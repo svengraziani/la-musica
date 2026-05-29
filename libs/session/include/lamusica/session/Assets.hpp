@@ -72,6 +72,7 @@ enum class MediaAnalysisJobStatus {
 struct MediaAnalysisJob {
     std::string id;
     std::string assetId;
+    double expectedSampleRate{0.0};
     MediaAnalysisJobStatus status{MediaAnalysisJobStatus::Pending};
     std::string message;
     std::optional<MediaAnalysisResult> result;
@@ -224,7 +225,8 @@ void invalidateAnalysisCachesForSampleRate(AssetCatalog& catalog, double sampleR
                                                     double sampleRate,
                                                     std::int64_t samplesPerBucket);
 [[nodiscard]] MediaAnalysisJob scheduleMediaAnalysis(AssetCatalog& catalog, std::string jobId,
-                                                     std::string assetId);
+                                                     std::string assetId,
+                                                     double expectedSampleRate = 0.0);
 void completeMediaAnalysis(AssetCatalog& catalog, std::string_view jobId,
                            MediaAnalysisResult result);
 void failMediaAnalysis(AssetCatalog& catalog, std::string_view jobId, std::string message);

@@ -9,6 +9,9 @@ namespace lamusica::crash_report {
 
 struct CrashReporterOptions {
     std::string_view applicationName;
+    std::string_view version;
+    std::string_view gitCommit;
+    std::string_view buildDate;
     std::filesystem::path directory;
 };
 

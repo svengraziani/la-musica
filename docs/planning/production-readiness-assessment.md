@@ -8,6 +8,31 @@
 > [`tasks/`](tasks/). Read it alongside the
 > [Decision And Compromise Register](decision-compromise-register.md).
 
+## Status Update — 2026-05-29
+
+The verdict below is the original 2026-05-28 baseline snapshot. The current tree has since closed
+substantial P26-P34 implementation gaps:
+
+- P26 now has CI-labeled determinism, plugin-hosting, audio-correctness, behavior, CLI, perf, and
+  headless GUI binding tests, plus artifact-based assertions replacing brittle stdout-only checks.
+- P27 now has scripted signing, notarization/stapling, signature verification, dSYM archival,
+  symbolication verification, provenance checks, SBOM/checksum generation, dependency-lock checks,
+  package verification, release workflow gates, and release docs. The remaining release gates still
+  require a real macOS release environment: Developer ID signing/notarization/stapling,
+  Gatekeeper launch from a clean account, and symbolication against archived dSYMs on macOS.
+- P28/P29/P33 now cover warp DSP, project sample-rate persistence/reconciliation, mixed-rate audio
+  import, sample-rate-tagged analysis caches, and comp-segment graph/export rendering.
+- P30/P31/P34 now cover automated accessibility audits, localization table coverage, Spanish
+  strings, a stub third-locale add test, onboarding templates, localized welcome accessibility
+  metadata, and bundled manual lookup. The qualitative VoiceOver checklist remains a manual macOS
+  release gate.
+- P32 now has explicit diagnostics consent defaults, endpoint validation/override docs, scrubber
+  tests, privacy documentation, and package-verifier coverage.
+
+Use the task files, tests, release scripts, and workflows as the authoritative current evidence.
+This assessment remains useful as the historical audit that motivated the roadmap, not as a fresh
+description of today's implementation state.
+
 ## Verdict
 
 LaMusica today is **honest, well-tested scaffolding — not a working DAW.** The model and

@@ -1,8 +1,93 @@
-set(LAMUSICA_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
+if(NOT DEFINED LAMUSICA_DEPENDENCY_LOCK_ROOT OR LAMUSICA_DEPENDENCY_LOCK_ROOT STREQUAL "")
+  set(LAMUSICA_DEPENDENCY_LOCK_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
+endif()
+get_filename_component(LAMUSICA_ROOT "${LAMUSICA_DEPENDENCY_LOCK_ROOT}" ABSOLUTE)
 set(LAMUSICA_DEPENDENCY_DOC "${LAMUSICA_ROOT}/docs/developer/dependencies.md")
 set(LAMUSICA_PINNED_JUCE_COMMIT "7c9d3783b127263d72bb65fe0a7e2dc8a02a7ac2")
 set(LAMUSICA_PINNED_JUCE_CONTENT_SHA256
     "e2ee824cf139a72e3720e996c1cdc70e9ff9dac9653c7f74ccf7d40cf1e3d1c4")
+
+if(DEFINED LAMUSICA_DEPENDENCY_LOCK_SELF_TEST AND LAMUSICA_DEPENDENCY_LOCK_SELF_TEST)
+  set(self_test_root "${CMAKE_CURRENT_BINARY_DIR}/dependency-lock-self-test")
+  file(REMOVE_RECURSE "${self_test_root}")
+  file(MAKE_DIRECTORY "${self_test_root}/docs/developer" "${self_test_root}/libs/nested"
+       "${self_test_root}/fake-juce/modules")
+  file(WRITE "${self_test_root}/docs/developer/dependencies.md"
+       "# Dependency Lock Strategy\n"
+       "JUCE 8.0.13 ${LAMUSICA_PINNED_JUCE_COMMIT} "
+       "${LAMUSICA_PINNED_JUCE_CONTENT_SHA256} LAMUSICA_JUCE_PATH "
+       "content manifest checksum CMake Policy\n")
+  file(WRITE "${self_test_root}/CMakeLists.txt" "cmake_minimum_required(VERSION 3.25)\n")
+  file(WRITE "${self_test_root}/libs/nested/CMakeLists.txt"
+       "FetchContent_Declare(unreviewed URL https://example.invalid/archive.tar.gz)\n")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -DLAMUSICA_DEPENDENCY_LOCK_ROOT=${self_test_root} -P
+            "${CMAKE_CURRENT_LIST_FILE}"
+    RESULT_VARIABLE forbidden_result
+    OUTPUT_VARIABLE forbidden_output
+    ERROR_VARIABLE forbidden_error)
+  if(forbidden_result EQUAL 0)
+    message(FATAL_ERROR
+            "Dependency lock self-test failed to reject a nested FetchContent_Declare")
+  endif()
+  if(NOT forbidden_error MATCHES "FetchContent_Declare")
+    message(FATAL_ERROR
+            "Dependency lock self-test rejected the fixture for the wrong reason: ${forbidden_error}")
+  endif()
+
+  foreach(disallowed_fixture
+          IN
+          ITEMS "CPMAddPackage(unreviewed GITHUB_REPOSITORY example/project)"
+                "ExternalProject_Add(unreviewed URL https://example.invalid/archive.tar.gz)"
+                "find_package(Conan REQUIRED)"
+                "set(CMAKE_TOOLCHAIN_FILE /tmp/vcpkg/scripts/buildsystems/vcpkg.cmake)")
+    file(WRITE "${self_test_root}/libs/nested/CMakeLists.txt"
+         "${disallowed_fixture}\n")
+    execute_process(
+      COMMAND "${CMAKE_COMMAND}" -DLAMUSICA_DEPENDENCY_LOCK_ROOT=${self_test_root} -P
+              "${CMAKE_CURRENT_LIST_FILE}"
+      RESULT_VARIABLE disallowed_result
+      OUTPUT_VARIABLE disallowed_output
+      ERROR_VARIABLE disallowed_error)
+    if(disallowed_result EQUAL 0)
+      message(FATAL_ERROR
+              "Dependency lock self-test failed to reject nested ${disallowed_fixture}")
+    endif()
+  endforeach()
+
+  file(WRITE "${self_test_root}/libs/nested/CMakeLists.txt" "# reviewed local-only build file\n")
+  file(WRITE "${self_test_root}/fake-juce/CMakeLists.txt" "project(FakeJUCE)\n")
+  file(WRITE "${self_test_root}/fake-juce/modules/fake_juce.h" "#pragma once\n")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -DLAMUSICA_DEPENDENCY_LOCK_ROOT=${self_test_root}
+            -DLAMUSICA_JUCE_PATH=${self_test_root}/fake-juce
+            -DLAMUSICA_JUCE_CONTENT_SHA256=0000000000000000000000000000000000000000000000000000000000000000
+            -P "${CMAKE_CURRENT_LIST_FILE}"
+    RESULT_VARIABLE juce_checksum_result
+    OUTPUT_VARIABLE juce_checksum_output
+    ERROR_VARIABLE juce_checksum_error)
+  if(juce_checksum_result EQUAL 0)
+    message(FATAL_ERROR
+            "Dependency lock self-test failed to reject a mismatched JUCE content checksum")
+  endif()
+  if(NOT juce_checksum_error MATCHES "JUCE content manifest checksum mismatch")
+    message(FATAL_ERROR
+            "Dependency lock self-test rejected the JUCE checksum fixture for the wrong reason: ${juce_checksum_error}")
+  endif()
+
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -DLAMUSICA_DEPENDENCY_LOCK_ROOT=${self_test_root} -P
+            "${CMAKE_CURRENT_LIST_FILE}"
+    RESULT_VARIABLE clean_result
+    OUTPUT_VARIABLE clean_output
+    ERROR_VARIABLE clean_error)
+  if(NOT clean_result EQUAL 0)
+    message(FATAL_ERROR "Dependency lock self-test clean fixture failed: ${clean_error}")
+  endif()
+  file(REMOVE_RECURSE "${self_test_root}")
+  message(STATUS "Dependency lock self-test passed")
+  return()
+endif()
 
 if((NOT DEFINED LAMUSICA_JUCE_PATH OR LAMUSICA_JUCE_PATH STREQUAL "") AND
    DEFINED ENV{LAMUSICA_JUCE_PATH})
@@ -22,17 +107,15 @@ foreach(required_text IN ITEMS "JUCE" "8.0.13" "${LAMUSICA_PINNED_JUCE_COMMIT}"
   endif()
 endforeach()
 
-file(
-  GLOB_RECURSE LAMUSICA_BUILD_FILES
-  LIST_DIRECTORIES false
-  "${LAMUSICA_ROOT}/CMakeLists.txt"
-  "${LAMUSICA_ROOT}/*/CMakeLists.txt"
-  "${LAMUSICA_ROOT}/*.cmake")
+file(GLOB_RECURSE LAMUSICA_SOURCE_FILES LIST_DIRECTORIES false "${LAMUSICA_ROOT}/*")
 
 set(filtered_build_files)
-foreach(build_file IN LISTS LAMUSICA_BUILD_FILES)
+foreach(build_file IN LISTS LAMUSICA_SOURCE_FILES)
   file(RELATIVE_PATH relative_build_file "${LAMUSICA_ROOT}" "${build_file}")
   if(relative_build_file MATCHES "^(build|external|_CPack_Packages)/")
+    continue()
+  endif()
+  if(NOT relative_build_file MATCHES "(^|/)CMakeLists\\.txt$|\\.cmake$")
     continue()
   endif()
   if(relative_build_file STREQUAL "cmake/CheckDependencyLock.cmake")
@@ -44,7 +127,8 @@ list(REMOVE_DUPLICATES filtered_build_files)
 
 foreach(build_file IN LISTS filtered_build_files)
   file(READ "${build_file}" build_text)
-  foreach(disallowed IN ITEMS "FetchContent_Declare" "CPMAddPackage" "ExternalProject_Add" "vcpkg")
+  foreach(disallowed IN ITEMS "FetchContent_Declare" "CPMAddPackage" "ExternalProject_Add" "Conan"
+                              "conan" "vcpkg")
     if(build_text MATCHES "${disallowed}")
       message(FATAL_ERROR
               "Build file ${build_file} uses ${disallowed}; update dependency lock strategy first")

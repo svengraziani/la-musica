@@ -8,6 +8,7 @@
 #include "lamusica/session/Project.hpp"
 #include "lamusica/session/ProjectDocument.hpp"
 #include "lamusica/session/StarterProject.hpp"
+#include "lamusica/version.hpp"
 #include "i18n/Localization.hpp"
 #include "i18n/NumberFormat.hpp"
 #include "onboarding/GuidedTour.hpp"
@@ -750,6 +751,20 @@ lamusica::daw::a11y::AccessibleControl makeA11yAuditTree(
                                            .description = tr("Toggle loop playback"),
                                            .interactive = true,
                                            .focusable = true},
+                                          {.id = "transport.record",
+                                           .role = a11y::AccessibleRole::ToggleButton,
+                                           .name = tr("Record"),
+                                           .valueText = tr("Off"),
+                                           .description = tr("Arm track"),
+                                           .interactive = true,
+                                           .focusable = true},
+                                          {.id = "transport.monitor",
+                                           .role = a11y::AccessibleRole::ToggleButton,
+                                           .name = tr("Input monitoring"),
+                                           .valueText = tr("Off"),
+                                           .description = tr("Input monitoring"),
+                                           .interactive = true,
+                                           .focusable = true},
                                           {.id = "transport.playhead",
                                            .role = a11y::AccessibleRole::Text,
                                            .name = tr("Playhead"),
@@ -774,6 +789,17 @@ lamusica::daw::a11y::AccessibleControl makeA11yAuditTree(
                                            .valueText = tr("Starts at") + " " +
                                                         a11y::formatBarBeat(engine, 0),
                                            .description = tr("Timeline clip"),
+                                           .interactive = true,
+                                           .focusable = true}}});
+    root.children.push_back({.id = "pianoroll.region",
+                             .role = a11y::AccessibleRole::Region,
+                             .name = tr("Piano Roll"),
+                             .description = tr("status.midiNotes"),
+                             .children = {{.id = "pianoroll.note.c3",
+                                           .role = a11y::AccessibleRole::ListItem,
+                                           .name = tr("MIDI note C3"),
+                                           .valueText = a11y::formatBarBeat(engine, 0),
+                                           .description = tr("Piano-roll note"),
                                            .interactive = true,
                                            .focusable = true}}});
     root.children.push_back({.id = "cliplauncher.region",
@@ -810,6 +836,13 @@ lamusica::daw::a11y::AccessibleControl makeA11yAuditTree(
                                            .description = tr("Master output volume"),
                                            .interactive = true,
                                            .focusable = true},
+                                          {.id = "mixer.master.pan",
+                                           .role = a11y::AccessibleRole::Slider,
+                                           .name = tr("Master pan"),
+                                           .valueText = a11y::formatPan(0.0F),
+                                           .description = tr("Master pan position"),
+                                           .interactive = true,
+                                           .focusable = true},
                                           {.id = "mixer.master.meter",
                                            .role = a11y::AccessibleRole::Meter,
                                            .name = tr("Master meter"),
@@ -822,6 +855,40 @@ lamusica::daw::a11y::AccessibleControl makeA11yAuditTree(
                                            .description = tr("Master peak level"),
                                            .interactive = true,
                                            .focusable = false}}});
+    root.children.push_back({.id = "plugin.region",
+                             .role = a11y::AccessibleRole::Region,
+                             .name = tr("Plugin controls"),
+                             .description = tr("Plugin controls"),
+                             .children = {{.id = "plugin.synth.cutoff",
+                                           .role = a11y::AccessibleRole::Slider,
+                                           .name = tr("Synth cutoff"),
+                                           .valueText = "50%",
+                                           .description = tr("Plugin parameter"),
+                                           .interactive = true,
+                                           .focusable = true}}});
+    root.children.push_back({.id = "export.dialog",
+                             .role = a11y::AccessibleRole::Window,
+                             .name = tr("Export dialog"),
+                             .description = tr("Export dialog"),
+                             .children = {{.id = "export.format",
+                                           .role = a11y::AccessibleRole::Button,
+                                           .name = tr("Output format"),
+                                           .valueText = "WAV",
+                                           .description = tr("Output format"),
+                                           .interactive = true,
+                                           .focusable = true},
+                                          {.id = "export.confirm",
+                                           .role = a11y::AccessibleRole::Button,
+                                           .name = tr("Confirm export"),
+                                           .description = tr("Confirm export"),
+                                           .interactive = true,
+                                           .focusable = true},
+                                          {.id = "export.cancel",
+                                           .role = a11y::AccessibleRole::Button,
+                                           .name = tr("Cancel export"),
+                                           .description = tr("Cancel export"),
+                                           .interactive = true,
+                                           .focusable = true}}});
     return root;
 }
 
@@ -838,18 +905,62 @@ int appAccessibilityAuditSmoke() {
     const auto tree = makeA11yAuditTree(session.status(), engine);
     const auto audit = a11y::auditAccessibilityTree(tree);
     const auto order = a11y::focusOrder(tree);
+    const auto playheadControl = a11y::findAccessibleControl(tree, "transport.playhead");
+    const auto faderControl = a11y::findAccessibleControl(tree, "mixer.master.fader");
+    const auto panControl = a11y::findAccessibleControl(tree, "mixer.master.pan");
+    const auto meterControl = a11y::findAccessibleControl(tree, "mixer.master.meter");
+    const bool valueTextOk =
+        playheadControl.has_value() &&
+        (*playheadControl)->valueText == a11y::formatBarBeat(engine, session.status().playheadSample) &&
+        faderControl.has_value() && (*faderControl)->valueText == a11y::formatGainDb(0.0F) &&
+        panControl.has_value() && (*panControl)->valueText == a11y::formatPan(0.0F) &&
+        meterControl.has_value() &&
+        (*meterControl)->valueText ==
+            a11y::formatMeter(session.status().lastMixExportPeak <= 0.0F
+                                  ? -90.0F
+                                  : 20.0F * static_cast<float>(
+                                               std::log10(session.status().lastMixExportPeak)),
+                              session.status().lastMixExportPeak >= 1.0F);
     const std::vector<std::string> expectedFocusOrder{"transport.play",
                                                       "transport.stop",
                                                       "transport.loop",
+                                                      "transport.record",
+                                                      "transport.monitor",
                                                       "browser.region",
                                                       "timeline.clip.drums",
+                                                      "pianoroll.note.c3",
                                                       "cliplauncher.scene.a",
                                                       "cliplauncher.slot.drums",
                                                       "inspector.region",
-                                                      "mixer.master.fader"};
+                                                      "mixer.master.fader",
+                                                      "mixer.master.pan",
+                                                      "plugin.synth.cutoff",
+                                                      "export.format",
+                                                      "export.confirm",
+                                                      "export.cancel"};
     auto brokenTree = tree;
     brokenTree.children.push_back({.id = "transport.play",
                                    .role = a11y::AccessibleRole::Button,
+                                   .interactive = true,
+                                   .focusable = true});
+    a11y::AccessibleControl unsetRoleControl;
+    unsetRoleControl.id = "broken.unset-role";
+    unsetRoleControl.name = "Broken unset role";
+    unsetRoleControl.interactive = true;
+    unsetRoleControl.focusable = true;
+    brokenTree.children.push_back(std::move(unsetRoleControl));
+    brokenTree.children.push_back({.id = "broken.focusable-without-action",
+                                   .role = a11y::AccessibleRole::Button,
+                                   .name = "Broken focusable without action",
+                                   .focusable = true});
+    brokenTree.children.push_back({.id = "broken.slider-without-value",
+                                   .role = a11y::AccessibleRole::Slider,
+                                   .name = "Broken slider without value",
+                                   .interactive = true,
+                                   .focusable = true});
+    brokenTree.children.push_back({.id = "broken.button-without-help",
+                                   .role = a11y::AccessibleRole::Button,
+                                   .name = "Broken button without help",
                                    .interactive = true,
                                    .focusable = true});
     const auto brokenAudit = a11y::auditAccessibilityTree(brokenTree);
@@ -859,6 +970,18 @@ int appAccessibilityAuditSmoke() {
         }) &&
         std::ranges::any_of(brokenAudit.issues, [](const auto& issue) {
             return issue.message == "accessible name is empty";
+        }) &&
+        std::ranges::any_of(brokenAudit.issues, [](const auto& issue) {
+            return issue.message == "accessible role is unset";
+        }) &&
+        std::ranges::any_of(brokenAudit.issues, [](const auto& issue) {
+            return issue.message == "focusable control is not interactive";
+        }) &&
+        std::ranges::any_of(brokenAudit.issues, [](const auto& issue) {
+            return issue.message == "interactive help text is empty";
+        }) &&
+        std::ranges::any_of(brokenAudit.issues, [](const auto& issue) {
+            return issue.message == "value text is empty";
         });
 
     bool routeOk = true;
@@ -876,7 +999,9 @@ int appAccessibilityAuditSmoke() {
     a11y::MotionPreferences motion;
     motion.setReduceMotionForTesting(true);
     a11y::ContrastPreferences contrast;
+    const auto defaultPalette = contrast.palette();
     contrast.setIncreaseContrastForTesting(true);
+    const auto highContrastPalette = contrast.palette();
     a11y::LiveRegion liveRegion;
     lamusica::daw::i18n::LocalizationCatalog catalog;
     catalog.loadBundledTables();
@@ -889,22 +1014,28 @@ int appAccessibilityAuditSmoke() {
     const bool coalescedDuplicate = !liveRegion.announce(catalog.translate("Stopped"));
 
     const bool ready = audit.ok() && auditRegressionCaught && order == expectedFocusOrder &&
+                       valueTextOk &&
                        routeOk &&
                        a11y::formatGainDb(-6.0F) == "-6.0 dB" &&
                        a11y::formatPan(-0.23F) == "L23" &&
                        motion.animationIntervalMilliseconds() >= 1000U &&
-                       a11y::contrastRatio(contrast.palette().foreground,
-                                           contrast.palette().background) >= 4.5 &&
+                       a11y::contrastRatio(defaultPalette.foreground,
+                                           defaultPalette.background) >= 4.5 &&
+                       a11y::contrastRatio(highContrastPalette.foreground,
+                                           highContrastPalette.background) >= 4.5 &&
+                       a11y::contrastRatio(highContrastPalette.focusRing,
+                                           highContrastPalette.background) >= 3.0 &&
                        announcedOnce && coalescedDuplicate && localizedTransport &&
                        localizedNumber;
 
     std::cout << "LaMusica DAW a11y audit: issues=" << audit.issues.size()
               << " focusable=" << order.size()
               << " routeOk=" << (routeOk ? "true" : "false")
+              << " valueTextOk=" << (valueTextOk ? "true" : "false")
               << " regressionCaught=" << (auditRegressionCaught ? "true" : "false")
               << " reduceMotionMs=" << motion.animationIntervalMilliseconds()
-              << " contrast=" << a11y::contrastRatio(contrast.palette().foreground,
-                                                     contrast.palette().background)
+              << " contrast=" << a11y::contrastRatio(highContrastPalette.foreground,
+                                                     highContrastPalette.background)
               << '\n';
     for (const auto& issue : audit.issues) {
         std::cerr << "a11y issue " << issue.id << ": " << issue.message << '\n';
@@ -975,6 +1106,17 @@ int appSessionDiagnosticsConsentSmoke() {
     const bool scrubbedRelativeBundle =
         relativeBundleScrubbed.find(".Project.lamusica") == std::string::npos &&
         relativeBundleScrubbed.find("Users/alex") == std::string::npos;
+    const auto windowsBundleScrubbed = lamusica::session::scrubDiagnosticsText(
+        "frame C:\\Users\\alex\\Documents\\Secret Song.Project.lamusica\\take.wav\n"
+        "frame Users\\alex\\AppData\\Local\\LaMusica\\LaMusica.crashlog\n"
+        "frame \\\\studio-nas\\sessions\\Secret Song.Project.lamusica\\take.wav\n",
+        "Secret Song");
+    const bool scrubbedWindowsBundle =
+        windowsBundleScrubbed.find("C:\\") == std::string::npos &&
+        windowsBundleScrubbed.find("\\\\studio-nas") == std::string::npos &&
+        windowsBundleScrubbed.find("Users\\alex") == std::string::npos &&
+        windowsBundleScrubbed.find("Secret Song") == std::string::npos &&
+        windowsBundleScrubbed.find(".Project.lamusica") == std::string::npos;
     const bool permitted = lamusica::session::diagnosticsUploadPermitted(
         session.preferences().diagnosticsConsent, session.preferences().shareDiagnostics);
     const bool denied = !lamusica::session::diagnosticsUploadPermitted(
@@ -999,7 +1141,11 @@ int appSessionDiagnosticsConsentSmoke() {
     const auto child = ::fork();
     if (child == 0) {
         lamusica::crash_report::installCrashReporter(
-            {.applicationName = "LaMusicaSignalSmoke", .directory = signalDirectory});
+            {.applicationName = "LaMusicaSignalSmoke",
+             .version = lamusica::build::version,
+             .gitCommit = lamusica::build::gitCommit,
+             .buildDate = lamusica::build::buildDate,
+             .directory = signalDirectory});
         std::raise(SIGABRT);
         ::_exit(2);
     }
@@ -1009,6 +1155,13 @@ int appSessionDiagnosticsConsentSmoke() {
         const auto signalReports = lamusica::crash_report::collectCrashReports(signalDirectory);
         signalHandlerDeferredBacktrace =
             !signalReports.empty() &&
+            signalReports.front().contents.find("application=LaMusicaSignalSmoke") !=
+                std::string::npos &&
+            signalReports.front().contents.find("version=") != std::string::npos &&
+            signalReports.front().contents.find("commit=") != std::string::npos &&
+            signalReports.front().contents.find("buildDate=") != std::string::npos &&
+            signalReports.front().contents.find("reportFormat=lamusica-crashlog-v1") !=
+                std::string::npos &&
             signalReports.front().contents.find("signal=6") != std::string::npos &&
             signalReports.front().contents.find("backtrace=deferred") != std::string::npos &&
             signalReports.front().contents.find("backtrace:\n") == std::string::npos;
@@ -1051,6 +1204,7 @@ int appSessionDiagnosticsConsentSmoke() {
               << " rejectedInvalidEndpoint=" << (rejectedInvalidEndpoint ? "true" : "false")
               << " scrubbed=" << (scrubbed ? "true" : "false")
               << " scrubbedRelativeBundle=" << (scrubbedRelativeBundle ? "true" : "false")
+              << " scrubbedWindowsBundle=" << (scrubbedWindowsBundle ? "true" : "false")
               << " permitted=" << (permitted ? "true" : "false")
               << " denied=" << (denied ? "true" : "false")
               << " collected=" << (collected ? "true" : "false")
@@ -1058,8 +1212,8 @@ int appSessionDiagnosticsConsentSmoke() {
               << (signalHandlerDeferredBacktrace ? "true" : "false")
               << " uploadDecision=" << (uploadDecision ? "true" : "false") << '\n';
     return rejectedUndecidedCrash && rejectedDeclinedTelemetry && rejectedInvalidEndpoint &&
-                   scrubbed && scrubbedRelativeBundle && permitted && denied && collected &&
-                   signalHandlerDeferredBacktrace && uploadDecision
+                   scrubbed && scrubbedRelativeBundle && scrubbedWindowsBundle && permitted &&
+                   denied && collected && signalHandlerDeferredBacktrace && uploadDecision
                ? 0
                : 19;
 }

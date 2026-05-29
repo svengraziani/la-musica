@@ -267,6 +267,7 @@ enum class DiagnosticsConsent {
 };
 
 struct ApplicationPreferences {
+    std::string preferredLocale;
     std::string audioDeviceId;
     std::vector<std::string> enabledMidiInputIds;
     std::vector<std::string> pluginSearchPaths;
@@ -351,6 +352,7 @@ class ApplicationSession {
     void closeProject() noexcept;
     [[nodiscard]] bool recoverLastProject(const std::filesystem::path& path);
     void setPreferences(ApplicationPreferences preferences);
+    void setDiagnosticsConsent(bool granted);
     void setKeyboardShortcut(std::string command, std::string keyEquivalent);
     void focusPanel(ApplicationPanel panel) noexcept;
     [[nodiscard]] MenuCommandRoute routeMenuCommand(std::string_view command);

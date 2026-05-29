@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -1655,7 +1656,10 @@ ApplicationSession::recordFirstTrackTake(FirstTrackRecordingOptions options) {
     const auto fadeSamples =
         std::min<std::int64_t>(128, static_cast<std::int64_t>(plan.recordFrames / 2U));
     manifest.assets.push_back(
-        {.id = assetId, .relativePath = relativePath, .mediaType = "audio/wav"});
+        {.id = assetId,
+         .relativePath = relativePath,
+         .mediaType = "audio/wav",
+         .sourceSampleRate = engine_.config().sampleRate});
     manifest.clips.push_back({.id = clipId,
                               .trackId = std::string{recordedTakeTrackId},
                               .type = ClipType::Audio,
@@ -1938,7 +1942,10 @@ ApplicationSession::importAudioFileToFirstTrack(std::filesystem::path sourcePath
     const auto fadeSamples =
         std::min<std::int64_t>(128, static_cast<std::int64_t>(wav.audio.frames / 2U));
     manifest.assets.push_back(
-        {.id = assetId, .relativePath = relativePath, .mediaType = "audio/wav"});
+        {.id = assetId,
+         .relativePath = relativePath,
+         .mediaType = "audio/wav",
+         .sourceSampleRate = wav.sampleRate});
     manifest.clips.push_back({.id = clipId,
                               .trackId = std::string{importedAudioTrackId},
                               .type = ClipType::Audio,
@@ -2068,6 +2075,16 @@ bool ApplicationSession::recoverLastProject(const std::filesystem::path& path) {
 void ApplicationSession::setPreferences(ApplicationPreferences preferences) {
     validatePreferences(preferences);
     preferences_ = std::move(preferences);
+}
+
+void ApplicationSession::setDiagnosticsConsent(bool granted) {
+    auto preferences = preferences_;
+    preferences.diagnosticsConsent = granted ? DiagnosticsConsent::Granted
+                                             : DiagnosticsConsent::Declined;
+    preferences.shareDiagnostics = granted;
+    preferences.telemetryEnabled = false;
+    preferences.diagnosticsEndpoint.clear();
+    setPreferences(std::move(preferences));
 }
 
 void ApplicationSession::setKeyboardShortcut(std::string command, std::string keyEquivalent) {
@@ -2373,6 +2390,12 @@ void ApplicationSession::validatePreferences(const ApplicationPreferences& prefe
     }
     if (!diagnosticsEndpointAllowed(preferences.diagnosticsEndpoint)) {
         throw std::runtime_error("Diagnostics endpoint must be empty, HTTPS, or an environment override");
+    }
+    for (const auto character : preferences.preferredLocale) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (!std::isalnum(byte) && character != '-' && character != '_') {
+            throw std::runtime_error("Preferred locale must be a BCP-47-style locale id");
+        }
     }
 
     for (const auto& midiInputId : preferences.enabledMidiInputIds) {

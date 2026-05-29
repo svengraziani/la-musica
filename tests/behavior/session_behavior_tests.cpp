@@ -1,9 +1,11 @@
 #include "lamusica/audio/WavFile.hpp"
 #include "lamusica/audio/Recording.hpp"
+#include "lamusica/audio/AudioEngine.hpp"
 #include "lamusica/session/ApplicationSession.hpp"
 #include "lamusica/session/AudioClipEditing.hpp"
 #include "lamusica/session/Automation.hpp"
 #include "lamusica/session/ClipLauncher.hpp"
+#include "lamusica/session/GraphCompiler.hpp"
 #include "lamusica/session/Mixer.hpp"
 #include "lamusica/session/ProjectManifest.hpp"
 #include "lamusica/session/Timeline.hpp"
@@ -28,6 +30,45 @@ lamusica::audio::RenderedAudio monoTake(std::initializer_list<float> samples) {
     return {.channels = 1,
             .frames = static_cast<std::uint32_t>(samples.size()),
             .interleavedSamples = std::vector<float>{samples}};
+}
+
+lamusica::audio::RenderedAudio constantMonoTake(float sample, std::uint32_t frames) {
+    return {.channels = 1,
+            .frames = frames,
+            .interleavedSamples = std::vector<float>(frames, sample)};
+}
+
+lamusica::audio::RenderedAudio renderGraphInBlocks(const lamusica::audio::AudioGraph& graph,
+                                                   std::uint32_t totalFrames,
+                                                   std::uint32_t blockSize) {
+    lamusica::audio::AudioEngine engine{
+        {.sampleRate = 48000.0, .maxBlockSize = blockSize, .outputChannels = 1}};
+    lamusica::audio::RenderedAudio rendered{
+        .channels = 1,
+        .frames = totalFrames,
+        .interleavedSamples = std::vector<float>(totalFrames)};
+    std::vector<float> block(blockSize);
+    for (std::uint32_t offset = 0; offset < totalFrames; offset += blockSize) {
+        const auto frames = std::min(blockSize, totalFrames - offset);
+        std::fill(block.begin(), block.end(), 0.0F);
+        engine.renderGraphBlock(graph, block, frames);
+        std::copy(block.begin(), block.begin() + frames,
+                  rendered.interleavedSamples.begin() + offset);
+    }
+    return rendered;
+}
+
+void requireSameSamples(const lamusica::audio::RenderedAudio& left,
+                        const lamusica::audio::RenderedAudio& right,
+                        const std::string& message) {
+    require(left.channels == right.channels && left.frames == right.frames &&
+                left.interleavedSamples.size() == right.interleavedSamples.size(),
+            message + " layout mismatch");
+    for (std::size_t index = 0; index < left.interleavedSamples.size(); ++index) {
+        require(std::abs(left.interleavedSamples[index] - right.interleavedSamples[index]) <
+                    0.000001F,
+                message + " sample mismatch");
+    }
 }
 
 void assertRecordingArtifact(const std::filesystem::path& workDir) {
@@ -120,7 +161,9 @@ void assertCompArtifact(const std::filesystem::path& workDir) {
     const auto rendered = lamusica::session::renderCompedClip(clip, takeLane, comp, sources);
     require(rendered.frames == 6U, "comped clip frame count mismatch");
     require(rendered.interleavedSamples[0] == 0.1F &&
-                std::abs(rendered.interleavedSamples[3] - 0.3F) < 0.0001F &&
+                std::abs(rendered.interleavedSamples[3] - 0.1F) < 0.0001F &&
+                rendered.interleavedSamples[3] < rendered.interleavedSamples[4] &&
+                rendered.interleavedSamples[4] < rendered.interleavedSamples[5] &&
                 rendered.interleavedSamples[5] > 0.8F,
             "comped clip did not select and crossfade the expected take segments");
 
@@ -145,6 +188,88 @@ void assertCompArtifact(const std::filesystem::path& workDir) {
     }
     require(rejectedOutOfTakeRange,
             "project manifest accepted a comp segment outside the referenced take range");
+}
+
+void assertCompiledCompGraphArtifact(const std::filesystem::path& workDir) {
+    const auto projectRoot = workDir / "compiled-comp.Project.lamusica";
+    std::filesystem::remove_all(projectRoot);
+    std::filesystem::create_directories(projectRoot / "Audio");
+    const auto takeAPath = projectRoot / "Audio" / "take-a.wav";
+    const auto takeBPath = projectRoot / "Audio" / "take-b.wav";
+    lamusica::audio::writePcm16Wav(takeAPath, constantMonoTake(0.5F, 256), 48000.0);
+    lamusica::audio::writePcm16Wav(takeBPath, constantMonoTake(-0.5F, 256), 48000.0);
+
+    lamusica::session::ProjectManifest manifest;
+    manifest.name = "Compiled Comp";
+    manifest.assets = {{.id = "take-a-asset",
+                        .relativePath = "Audio/take-a.wav",
+                        .mediaType = "audio/wav"},
+                       {.id = "take-b-asset",
+                        .relativePath = "Audio/take-b.wav",
+                        .mediaType = "audio/wav"}};
+    manifest.tracks = {{.id = "track-a",
+                        .name = "Track A",
+                        .type = lamusica::session::TrackType::Audio},
+                       {.id = "master",
+                        .name = "Master",
+                        .type = lamusica::session::TrackType::Master}};
+    manifest.routing = {{.sourceTrackId = "track-a", .destinationTrackId = "master"}};
+    manifest.clips = {{.id = "comp-clip",
+                       .trackId = "track-a",
+                       .type = lamusica::session::ClipType::Audio,
+                       .startSample = 0,
+                       .lengthSamples = 256,
+                       .assetId = "take-a-asset"}};
+    manifest.takeLanes = {{.clipId = "comp-clip",
+                           .takes = {{.id = "take-a",
+                                      .name = "Take A",
+                                      .lengthSamples = 256,
+                                      .assetId = "take-a-asset"},
+                                     {.id = "take-b",
+                                      .name = "Take B",
+                                      .lengthSamples = 256,
+                                      .assetId = "take-b-asset"}}}};
+    manifest.comps = {{.clipId = "comp-clip",
+                       .segments = {{.takeId = "take-a",
+                                     .clipStartSample = 0,
+                                     .lengthSamples = 128},
+                                    {.takeId = "take-b",
+                                     .clipStartSample = 128,
+                                     .lengthSamples = 128}}}};
+    lamusica::session::validateProjectManifest(manifest);
+
+    const auto graph = lamusica::session::compileProjectAudioGraph(
+        manifest, {}, {.projectRoot = projectRoot});
+    const auto render64 = renderGraphInBlocks(graph, 256, 64);
+    const auto render128 = renderGraphInBlocks(graph, 256, 128);
+    const auto render512 = renderGraphInBlocks(graph, 256, 512);
+    requireSameSamples(render64, render128,
+                       "compiled comp render changed between 64 and 128 sample blocks");
+    requireSameSamples(render64, render512,
+                       "compiled comp render changed between 64 and 512 sample blocks");
+    require(render64.interleavedSamples[32] > 0.45F,
+            "compiled comp did not render take A before the boundary");
+    require(render64.interleavedSamples[224] < -0.45F,
+            "compiled comp did not render take B after the boundary");
+
+    float maxBoundaryDelta = 0.0F;
+    for (std::size_t index = 129; index < 192; ++index) {
+        maxBoundaryDelta =
+            std::max(maxBoundaryDelta,
+                     std::abs(render64.interleavedSamples[index] -
+                              render64.interleavedSamples[index - 1U]));
+    }
+    require(maxBoundaryDelta < 0.05F,
+            "compiled comp boundary rendered a hard cut instead of a crossfade");
+
+    const auto beforeEdit = render64;
+    std::swap(manifest.comps.front().segments[0].takeId,
+              manifest.comps.front().segments[1].takeId);
+    const auto editedGraph = lamusica::session::compileProjectAudioGraph(
+        manifest, {}, {.projectRoot = projectRoot});
+    const auto edited = renderGraphInBlocks(editedGraph, 256, 64);
+    require(beforeEdit.interleavedSamples != edited.interleavedSamples,
+            "editing comp segment take ids did not change exported PCM");
 }
 
 void assertFaderGroupAndTimelineGrouping() {
@@ -272,6 +397,7 @@ int main(int argc, char** argv) {
         assertRecordingArtifact(workDir);
         assertRecordingWorkflowPlan();
         assertCompArtifact(workDir);
+        assertCompiledCompGraphArtifact(workDir);
         assertFaderGroupAndTimelineGrouping();
         assertAutomationWriteModes();
         assertClipLauncherArtifact();

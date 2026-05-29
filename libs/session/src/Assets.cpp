@@ -449,6 +449,15 @@ void invalidateAnalysisCachesForSampleRate(AssetCatalog& catalog, double sampleR
     std::erase_if(catalog.analyses, [sampleRate](const AssetAnalysis& analysis) {
         return !sampleRatesMatch(analysis.sampleRate, sampleRate);
     });
+
+    for (auto& job : catalog.analysisJobs) {
+        if (job.status == MediaAnalysisJobStatus::Pending && job.expectedSampleRate > 0.0 &&
+            !sampleRatesMatch(job.expectedSampleRate, sampleRate)) {
+            job.status = MediaAnalysisJobStatus::Failed;
+            job.message = "invalidated by project sample-rate change";
+            job.result.reset();
+        }
+    }
 }
 
 MediaAnalysisResult analyzeAudioAsset(std::string assetId, const audio::RenderedAudio& audio,
@@ -546,18 +555,25 @@ MediaAnalysisResult analyzeAudioAsset(std::string assetId, const audio::Rendered
 }
 
 MediaAnalysisJob scheduleMediaAnalysis(AssetCatalog& catalog, std::string jobId,
-                                       std::string assetId) {
+                                       std::string assetId, double expectedSampleRate) {
     if (jobId.empty()) {
         throw std::runtime_error("Media analysis job id must not be empty");
     }
     if (!assetExists(catalog, assetId)) {
         throw std::runtime_error("Media analysis job references missing asset");
     }
+    if (expectedSampleRate < 0.0 ||
+        (expectedSampleRate > 0.0 && !std::isfinite(expectedSampleRate))) {
+        throw std::runtime_error("Media analysis job sample rate must be positive and finite");
+    }
     if (findAnalysisJob(catalog, jobId) != nullptr) {
         throw std::runtime_error("Media analysis job id already exists");
     }
 
-    MediaAnalysisJob job{.id = std::move(jobId), .assetId = std::move(assetId)};
+    MediaAnalysisJob job{};
+    job.id = std::move(jobId);
+    job.assetId = std::move(assetId);
+    job.expectedSampleRate = expectedSampleRate;
     catalog.analysisJobs.push_back(job);
     return job;
 }
@@ -570,6 +586,14 @@ void completeMediaAnalysis(AssetCatalog& catalog, std::string_view jobId,
     }
     if (result.analysis.assetId != job->assetId || result.waveform.assetId != job->assetId) {
         throw std::runtime_error("Media analysis result asset id does not match job");
+    }
+    if (job->status != MediaAnalysisJobStatus::Pending) {
+        throw std::runtime_error("Media analysis job is no longer pending");
+    }
+    if (job->expectedSampleRate > 0.0 &&
+        (!sampleRatesMatch(result.analysis.sampleRate, job->expectedSampleRate) ||
+         !sampleRatesMatch(result.waveform.sampleRate, job->expectedSampleRate))) {
+        throw std::runtime_error("Media analysis result sample rate does not match job");
     }
 
     upsertAnalysis(catalog, result.analysis);

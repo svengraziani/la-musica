@@ -160,8 +160,9 @@ void assertFirstTrackReady(int argc, char** argv) {
     require(readiness.automationLaneCount == parseUint32(argv[7], "automation"),
             "first-track automation count mismatch");
     require(readiness.starterMidiNoteCount == 8U, "first-track MIDI note count mismatch");
-    (void)lamusica::session::compileProjectAudioGraph(document.manifest(), {},
-                                                      {.projectRoot = document.path()});
+    lamusica::session::GraphCompileOptions compileOptions;
+    compileOptions.projectRoot = document.path();
+    (void)lamusica::session::compileProjectAudioGraph(document.manifest(), {}, compileOptions);
     std::cout << "artifact first-track ready path=" << document.path()
               << " renderFrames=" << readiness.renderFrames << " tracks=" << readiness.trackCount
               << " clips=" << readiness.clipCount << " plugins=" << readiness.pluginCount
@@ -364,24 +365,51 @@ void assertExamples(int argc, char** argv) {
 }
 
 void assertCliJson(int argc, char** argv) {
-    require(argc == 4, "assert-cli-json requires <json-file> <query|preview|render|schema>");
+    require(argc == 4,
+            "assert-cli-json requires <json-file> "
+            "<query|query-arbitrary|query-escaped|preview|preview-arbitrary|render|schema|migrate>");
     const auto json = readTextFile(argv[2]);
     const std::string_view kind{argv[3]};
     requireContains(json, "\"schemaVersion\":1", "cli json schemaVersion mismatch");
-    if (kind == "query") {
+    for (const auto character : json) {
+        const auto byte = static_cast<unsigned char>(character);
+        require(character == '\n' || byte >= 0x20U, "cli json contains a raw control byte");
+    }
+    if (kind == "query" || kind == "query-arbitrary" || kind == "query-escaped") {
         requireContains(json, "\"project\":{", "cli query json missing project object");
         requireContains(json, "\"name\":", "cli query json missing project name");
         requireContains(json, "\"tracks\":", "cli query json missing track count");
         requireContains(json, "\"clips\":", "cli query json missing clip count");
         requireContains(json, "\"plugins\":", "cli query json missing plugin count");
         requireContains(json, "\"automation\":", "cli query json missing automation count");
-    } else if (kind == "preview") {
+        requireContains(json, "\"trackIds\":[", "cli query json missing track ids");
+        requireContains(json, "\"clipIds\":[", "cli query json missing clip ids");
+        if (kind == "query-arbitrary") {
+            requireContains(json, "\"track-custom\"", "cli arbitrary query json missing custom track id");
+            requireContains(json, "\"custom-clip-alpha\"",
+                            "cli arbitrary query json missing custom clip id");
+        }
+        if (kind == "query-escaped") {
+            requireContains(json, "\\\"Escaped\\\"", "cli query json did not escape quotes");
+            requireContains(json, "\\\\ Path", "cli query json did not escape backslash");
+            requireContains(json, "\\t", "cli query json did not escape tab");
+            requireContains(json, "\\u0001", "cli query json did not escape control byte");
+        }
+    } else if (kind == "preview" || kind == "preview-arbitrary") {
         requireContains(json, "\"preview\":true", "cli preview json missing preview=true");
         requireContains(json, "\"mutated\":false", "cli preview json missing mutated=false");
         requireContains(json, "\"command\":\"set-clip-gain\"",
                         "cli preview json missing command");
-        requireContains(json, "\"confirmationToken\":\"set-clip-gain:clip-drum-loop:confirm\"",
-                        "cli preview json missing confirmation token");
+        if (kind == "preview-arbitrary") {
+            requireContains(json, "\"clipId\":\"custom-clip-alpha\"",
+                            "cli arbitrary preview json missing custom clip id");
+            requireContains(
+                json, "\"confirmationToken\":\"set-clip-gain:clip-custom-clip-alpha:confirm\"",
+                "cli arbitrary preview json missing confirmation token");
+        } else {
+            requireContains(json, "\"confirmationToken\":\"set-clip-gain:clip-drum-loop:confirm\"",
+                            "cli preview json missing confirmation token");
+        }
     } else if (kind == "render") {
         requireContains(json, "\"render\":{", "cli render json missing render object");
         requireContains(json, "\"format\":\"wav\"", "cli render json missing wav format");
@@ -392,10 +420,104 @@ void assertCliJson(int argc, char** argv) {
     } else if (kind == "schema") {
         requireContains(json, "\"projectSchemaVersion\":", "cli schema json missing project schema");
         requireContains(json, "\"cliSchemaVersion\":1", "cli schema json missing cli schema");
+    } else if (kind == "migrate") {
+        requireContains(json, "\"migrated\":true", "cli migrate json missing migrated=true");
+        requireContains(json, "\"from\":0", "cli migrate json missing legacy source schema");
+        requireContains(json,
+                        "\"to\":" +
+                            std::to_string(lamusica::session::currentProjectSchemaVersion),
+                        "cli migrate json missing current target schema");
     } else {
         throw std::runtime_error("unknown cli json kind: " + std::string{kind});
     }
     std::cout << "artifact cli json ok path=" << std::filesystem::path{argv[2]}
+              << " kind=" << kind << '\n';
+}
+
+void assertCliText(int argc, char** argv) {
+    require(argc == 4,
+            "assert-cli-text requires <text-file> "
+            "<first-track-clips|first-track-takes|first-track-mix|inspect-ready|inspect-missing-media>");
+    const auto text = readTextFile(argv[2]);
+    const std::string_view kind{argv[3]};
+    if (kind == "first-track-clips") {
+        requireContains(text, "first-track clips:", "clip listing missing header");
+        requireContains(text, "count=2", "clip listing missing initial clip count");
+        requireContains(text, "firstTrackEditable=true", "clip listing missing editable status");
+        requireContains(text, "mediaReady=true", "clip listing missing media readiness");
+        requireContains(text, "clip clipId=drum-loop", "clip listing missing drum loop");
+        requireContains(text, "clip clipId=bass-pattern", "clip listing missing bass pattern");
+    } else if (kind == "first-track-clips-edited") {
+        requireContains(text, "first-track clips:", "edited clip listing missing header");
+        requireContains(text, "count=5", "edited clip listing missing clip count");
+        requireContains(text, "firstTrackEditable=true",
+                        "edited clip listing missing editable status");
+        requireContains(text, "mediaReady=true", "edited clip listing missing media readiness");
+        requireContains(text, "clip clipId=imported-audio-1",
+                        "edited clip listing missing imported audio");
+        requireContains(text, "clip clipId=imported-audio-copy",
+                        "edited clip listing missing duplicated import");
+        requireContains(text, "startSample=108000", "edited clip listing missing duplicate start");
+        requireContains(text, "sourceOffsetSamples=12000",
+                        "edited clip listing missing source offset");
+        requireContains(text, "muted=false", "edited clip listing missing unmuted state");
+    } else if (kind == "first-track-takes") {
+        requireContains(text, "first-track takes:", "take listing missing header");
+        requireContains(text, "count=1", "take listing missing take count");
+        requireContains(text, "take clipId=recorded-take-1", "take listing missing recorded take");
+        requireContains(text, "frames=24000", "take listing missing frame count");
+        requireContains(text, "muted=false", "take listing should show unmuted take");
+        requireContains(text, "mediaAvailable=true", "take listing missing media status");
+    } else if (kind == "first-track-takes-punch") {
+        requireContains(text, "first-track takes:", "punch take listing missing header");
+        requireContains(text, "count=1", "punch take listing missing take count");
+        requireContains(text, "muted=0", "punch take listing missing muted summary");
+        requireContains(text, "take clipId=recorded-take-1",
+                        "punch take listing missing recorded take");
+        requireContains(text, "startSample=48000", "punch take listing missing punch start");
+        requireContains(text, "frames=48000", "punch take listing missing punch frame count");
+        requireContains(text, "muted=false", "punch take listing should show unmuted take");
+        requireContains(text, "mediaAvailable=true", "punch take listing missing media status");
+    } else if (kind == "first-track-takes-muted") {
+        requireContains(text, "first-track takes:", "muted take listing missing header");
+        requireContains(text, "count=1", "muted take listing missing take count");
+        requireContains(text, "muted=1", "muted take listing missing muted summary");
+        requireContains(text, "take clipId=recorded-take-1",
+                        "muted take listing missing recorded take");
+        requireContains(text, "muted=true", "muted take listing should show muted take");
+        requireContains(text, "mediaAvailable=true", "muted take listing missing media status");
+    } else if (kind == "first-track-mix") {
+        requireContains(text, "first-track track mix:", "track mix listing missing header");
+        requireContains(text, "count=3", "track mix listing missing track count");
+        requireContains(text, "track trackId=drums", "track mix listing missing drums");
+        requireContains(text, "volumeDb=-12", "track mix listing missing volume");
+        requireContains(text, "pan=0.25", "track mix listing missing pan");
+        requireContains(text, "muted=false", "track mix listing missing muted flag");
+        requireContains(text, "solo=false", "track mix listing missing solo flag");
+    } else if (kind == "inspect-ready") {
+        requireContains(text, "project name=\"CLI Edited First Track\"",
+                        "inspect output missing project name");
+        requireContains(text, "schemaVersion=", "inspect output missing schema version");
+        requireContains(text, "tracks=5", "inspect output missing track count");
+        requireContains(text, "clips=5", "inspect output missing clip count");
+        requireContains(text, "firstTrackReady=true", "inspect output missing ready status");
+        requireContains(text, "firstTrackEditable=true", "inspect output missing editable status");
+        requireContains(text, "mediaReady=true", "inspect output missing media readiness");
+        requireContains(text, "renderFrames=192000", "inspect output missing render frames");
+    } else if (kind == "inspect-missing-media") {
+        requireContains(text, "project name=\"CLI Edited First Track\"",
+                        "missing-media inspect output missing project name");
+        requireContains(text, "firstTrackReady=false",
+                        "missing-media inspect output should not be ready");
+        requireContains(text, "firstTrackEditable=false",
+                        "missing-media inspect output should not be editable");
+        requireContains(text, "mediaReady=false",
+                        "missing-media inspect output missing media failure");
+        requireContains(text, "media error:", "missing-media inspect output missing error detail");
+    } else {
+        throw std::runtime_error("unknown cli text kind: " + std::string{kind});
+    }
+    std::cout << "artifact cli text ok path=" << std::filesystem::path{argv[2]}
               << " kind=" << kind << '\n';
 }
 
@@ -437,6 +559,8 @@ int main(int argc, char** argv) {
             assertExamples(argc, argv);
         } else if (verb == "assert-cli-json") {
             assertCliJson(argc, argv);
+        } else if (verb == "assert-cli-text") {
+            assertCliText(argc, argv);
         } else {
             throw std::runtime_error("unknown artifact assertion verb: " + std::string{verb});
         }

@@ -10,11 +10,40 @@ namespace {
 std::string escapeJson(std::string_view value) {
     std::string escaped;
     escaped.reserve(value.size());
-    for (const char character : value) {
-        if (character == '"' || character == '\\') {
+    for (const char rawCharacter : value) {
+        const auto character = static_cast<unsigned char>(rawCharacter);
+        switch (character) {
+        case '"':
+        case '\\':
             escaped.push_back('\\');
+            escaped.push_back(static_cast<char>(character));
+            break;
+        case '\b':
+            escaped += "\\b";
+            break;
+        case '\f':
+            escaped += "\\f";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            if (character < 0x20) {
+                constexpr char hex[] = "0123456789abcdef";
+                escaped += "\\u00";
+                escaped.push_back(hex[(character >> 4U) & 0x0FU]);
+                escaped.push_back(hex[character & 0x0FU]);
+            } else {
+                escaped.push_back(static_cast<char>(character));
+            }
+            break;
         }
-        escaped.push_back(character);
     }
     return escaped;
 }

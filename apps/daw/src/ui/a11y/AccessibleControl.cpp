@@ -16,11 +16,20 @@ void auditNode(const AccessibleControl& control, AccessibilityAuditResult& resul
     } else if (!ids.insert(control.id).second) {
         result.issues.push_back({.id = control.id, .message = "accessible control id is duplicated"});
     }
+    if (!control.decorative && control.role == AccessibleRole::Unknown) {
+        result.issues.push_back({.id = control.id, .message = "accessible role is unset"});
+    }
     if (!control.decorative && control.name.empty()) {
         result.issues.push_back({.id = control.id, .message = "accessible name is empty"});
     }
     if (control.interactive && !control.focusable && control.role != AccessibleRole::Meter) {
         result.issues.push_back({.id = control.id, .message = "interactive control is not focusable"});
+    }
+    if (control.focusable && !control.interactive) {
+        result.issues.push_back({.id = control.id, .message = "focusable control is not interactive"});
+    }
+    if (control.interactive && control.description.empty()) {
+        result.issues.push_back({.id = control.id, .message = "interactive help text is empty"});
     }
     if ((control.role == AccessibleRole::Slider || control.role == AccessibleRole::Meter ||
          control.role == AccessibleRole::ToggleButton) &&
@@ -57,6 +66,8 @@ const AccessibleControl* findControl(const AccessibleControl& control, std::stri
 
 std::string toString(AccessibleRole role) {
     switch (role) {
+    case AccessibleRole::Unknown:
+        return "unknown";
     case AccessibleRole::Window:
         return "window";
     case AccessibleRole::Region:
@@ -76,7 +87,7 @@ std::string toString(AccessibleRole role) {
     case AccessibleRole::Text:
         return "text";
     }
-    return "region";
+    return "unknown";
 }
 
 std::string formatGainDb(float gainDb) {

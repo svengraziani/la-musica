@@ -10,7 +10,9 @@
 #include "lamusica/session/StarterProject.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <exception>
+#include <fstream>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -128,6 +130,31 @@ std::uint32_t parseUint32(std::string_view value, std::string_view label) {
     return static_cast<std::uint32_t>(parsed);
 }
 
+std::uint32_t readRawProjectSchemaVersion(const std::filesystem::path& projectPath) {
+    std::ifstream input{projectPath / lamusica::session::ProjectDocument::manifestFileName};
+    if (!input) {
+        throw std::runtime_error("Project manifest could not be opened");
+    }
+
+    const std::string json{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    constexpr std::string_view key{"\"schemaVersion\""};
+    const auto keyPosition = json.find(key);
+    if (keyPosition == std::string::npos) {
+        throw std::runtime_error("Project manifest is missing schemaVersion");
+    }
+    const auto colonPosition = json.find(':', keyPosition + key.size());
+    if (colonPosition == std::string::npos) {
+        throw std::runtime_error("Project manifest schemaVersion is missing a value separator");
+    }
+    const auto valueStart = json.find_first_not_of(" \n\r\t", colonPosition + 1);
+    if (valueStart == std::string::npos || !std::isdigit(static_cast<unsigned char>(json[valueStart]))) {
+        throw std::runtime_error("Project manifest schemaVersion is not an unsigned integer");
+    }
+    const auto valueEnd = json.find_first_not_of("0123456789", valueStart);
+    return parseUint32(std::string_view{json}.substr(valueStart, valueEnd - valueStart),
+                       "schemaVersion");
+}
+
 std::int64_t parseInt64(std::string_view value, std::string_view label) {
     std::int64_t parsed{};
     std::istringstream input{std::string{value}};
@@ -159,7 +186,9 @@ bool parseBool(std::string_view value, std::string_view label) {
 std::string escapeJson(std::string_view value) {
     std::string escaped;
     escaped.reserve(value.size());
+    constexpr char hex[] = "0123456789abcdef";
     for (const char character : value) {
+        const auto byte = static_cast<unsigned char>(character);
         switch (character) {
         case '"':
         case '\\':
@@ -176,7 +205,13 @@ std::string escapeJson(std::string_view value) {
             escaped += "\\t";
             break;
         default:
-            escaped.push_back(character);
+            if (byte < 0x20U) {
+                escaped += "\\u00";
+                escaped.push_back(hex[(byte >> 4U) & 0x0FU]);
+                escaped.push_back(hex[byte & 0x0FU]);
+            } else {
+                escaped.push_back(character);
+            }
             break;
         }
     }
@@ -212,6 +247,21 @@ lamusica::session::Clip* findClip(lamusica::session::ProjectManifest& manifest,
 
 std::string confirmationToken(std::string_view commandId, std::string_view auditId) {
     return std::string{commandId} + ":" + std::string{auditId} + ":confirm";
+}
+
+template <typename Range, typename Selector>
+void writeJsonStringArray(std::ostream& output, std::string_view key, const Range& values,
+                          Selector selector) {
+    output << ",\"" << key << "\":[";
+    bool first = true;
+    for (const auto& value : values) {
+        if (!first) {
+            output << ',';
+        }
+        first = false;
+        output << '"' << escapeJson(selector(value)) << '"';
+    }
+    output << ']';
 }
 
 std::pair<std::int64_t, std::uint32_t> parseRange(std::string_view value) {
@@ -326,7 +376,16 @@ int main(int argc, char** argv) {
                           << ",\"tracks\":" << manifest.tracks.size()
                           << ",\"clips\":" << manifest.clips.size()
                           << ",\"plugins\":" << manifest.plugins.size()
-                          << ",\"automation\":" << manifest.automation.size() << "}}\n";
+                          << ",\"automation\":" << manifest.automation.size();
+                writeJsonStringArray(std::cout, "trackIds", manifest.tracks,
+                                     [](const auto& track) -> const std::string& {
+                                         return track.id;
+                                     });
+                writeJsonStringArray(std::cout, "clipIds", manifest.clips,
+                                     [](const auto& clip) -> const std::string& {
+                                         return clip.id;
+                                     });
+                std::cout << "}}\n";
             } else {
                 std::cout << "query project=\"" << document.project().name()
                           << "\" schemaVersion=" << manifest.schemaVersion
@@ -345,8 +404,8 @@ int main(int argc, char** argv) {
     if ((argc == 3 || argc == 4) && std::string_view{argv[1]} == "migrate") {
         try {
             const bool json = hasFlag(argc, argv, "--json");
+            const auto before = readRawProjectSchemaVersion(argv[2]);
             auto document = lamusica::session::ProjectDocument::open(argv[2]);
-            const auto before = document.manifest().schemaVersion;
             document.mutableManifest() =
                 lamusica::session::migrateProjectManifest(document.manifest());
             lamusica::session::validateProjectManifest(document.manifest());
@@ -1051,8 +1110,9 @@ int main(int argc, char** argv) {
             bool mediaReady = true;
             std::string mediaError;
             try {
-                (void)lamusica::session::compileProjectAudioGraph(manifest, {},
-                                                                  {.projectRoot = document.path()});
+                lamusica::session::GraphCompileOptions compileOptions;
+                compileOptions.projectRoot = document.path();
+                (void)lamusica::session::compileProjectAudioGraph(manifest, {}, compileOptions);
             } catch (const std::exception& error) {
                 mediaReady = false;
                 mediaError = error.what();
@@ -1119,7 +1179,7 @@ int main(int argc, char** argv) {
                  .normalizeTargetPeak = 0.98F});
             std::cout << "rendered project: " << document.project().name()
                       << " path=" << result.outputPath << " frames=" << result.frames
-                      << " peak=" << result.peakAfterNormalization << '\n';
+                      << " postDitherPeak=" << result.peakAfterDither << '\n';
             return 0;
         } catch (const std::exception& error) {
             std::cerr << "project render failed: " << error.what() << '\n';

@@ -29,6 +29,14 @@ std::span<const GuidedTourStep> guidedTourSteps() noexcept {
     return steps;
 }
 
+GuidedTourMotionPolicy guidedTourMotionPolicy(
+    const a11y::MotionPreferences& motionPreferences) noexcept {
+    if (motionPreferences.reduceMotion()) {
+        return {.animated = false, .transitionMilliseconds = 0U};
+    }
+    return {};
+}
+
 void markGuidedTourSeen(session::ApplicationSession& session, bool seen) {
     auto preferences = session.preferences();
     preferences.guidedTourSeen = seen;

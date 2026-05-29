@@ -1,4 +1,8 @@
 build/
+_CPack_Packages/
+LaMusica-*.dmg
+LaMusica-*.tar.gz
+LaMusica-dSYMs.tar.gz
 .DS_Store
 compile_commands.json
 *.user

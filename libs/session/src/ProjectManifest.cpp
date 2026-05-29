@@ -707,7 +707,11 @@ std::string serializeProjectManifest(const ProjectManifest& manifest) {
                [](std::ostringstream& itemOutput, const Asset& asset) {
                    itemOutput << "{\"id\": \"" << escapeJson(asset.id) << "\", \"relativePath\": \""
                               << escapeJson(asset.relativePath.generic_string())
-                              << "\", \"mediaType\": \"" << escapeJson(asset.mediaType) << "\"}";
+                              << "\", \"mediaType\": \"" << escapeJson(asset.mediaType) << "\"";
+                   if (asset.sourceSampleRate > 0.0) {
+                       itemOutput << ", \"sourceSampleRate\": " << asset.sourceSampleRate;
+                   }
+                   itemOutput << "}";
                });
     output << ",\n";
 
@@ -919,7 +923,9 @@ ProjectManifest parseProjectManifest(std::string_view json) {
         const auto& asset = itemObject(item, "assets");
         manifest.assets.push_back({.id = requireString(asset, "id"),
                                    .relativePath = requireString(asset, "relativePath"),
-                                   .mediaType = requireString(asset, "mediaType")});
+                                   .mediaType = requireString(asset, "mediaType"),
+                                   .sourceSampleRate =
+                                       optionalDouble(asset, "sourceSampleRate").value_or(0.0)});
     }
 
     for (const auto& item : manifestArray(root, manifest.schemaVersion, "tracks")) {
@@ -1052,27 +1058,59 @@ ProjectManifest parseProjectManifest(std::string_view json) {
     return manifest;
 }
 
+namespace {
+
+void migrateSchema0To1(ProjectManifest& manifest) {
+    if (manifest.tempoMap.empty()) {
+        manifest.tempoMap.push_back({});
+    }
+    if (manifest.timeSignatures.empty()) {
+        manifest.timeSignatures.push_back({});
+    }
+    manifest.schemaVersion = 1;
+}
+
+void migrateSchema1To2(ProjectManifest& manifest) {
+    manifest.projectSampleRate = 48000.0;
+    manifest.schemaVersion = 2;
+}
+
+void migrateSchema2To3(ProjectManifest& manifest) {
+    manifest.schemaVersion = 3;
+}
+
+struct ProjectMigrationStep {
+    std::uint32_t fromVersion;
+    std::uint32_t toVersion;
+    void (*apply)(ProjectManifest&);
+};
+
+constexpr ProjectMigrationStep projectMigrationSteps[] = {{0, 1, migrateSchema0To1},
+                                                          {1, 2, migrateSchema1To2},
+                                                          {2, 3, migrateSchema2To3}};
+
+} // namespace
+
 ProjectManifest migrateProjectManifest(ProjectManifest manifest) {
     if (manifest.schemaVersion > currentProjectSchemaVersion) {
         throw std::runtime_error("Unsupported project schema version: " +
                                  std::to_string(manifest.schemaVersion));
     }
 
-    if (manifest.schemaVersion == 0) {
-        manifest.schemaVersion = 1;
-        if (manifest.tempoMap.empty()) {
-            manifest.tempoMap.push_back({});
+    while (manifest.schemaVersion < currentProjectSchemaVersion) {
+        const auto found =
+            std::ranges::find_if(projectMigrationSteps, [&](const ProjectMigrationStep& step) {
+                return step.fromVersion == manifest.schemaVersion;
+            });
+        if (found == std::end(projectMigrationSteps) ||
+            found->toVersion > currentProjectSchemaVersion) {
+            throw std::runtime_error("No project migration registered for schema version: " +
+                                     std::to_string(manifest.schemaVersion));
         }
-        if (manifest.timeSignatures.empty()) {
-            manifest.timeSignatures.push_back({});
+        found->apply(manifest);
+        if (manifest.schemaVersion != found->toVersion) {
+            throw std::runtime_error("Project migration did not advance schema version");
         }
-    }
-    if (manifest.schemaVersion == 1) {
-        manifest.projectSampleRate = 48000.0;
-        manifest.schemaVersion = 2;
-    }
-    if (manifest.schemaVersion == 2) {
-        manifest.schemaVersion = currentProjectSchemaVersion;
     }
 
     return manifest;
@@ -1179,6 +1217,11 @@ void validateProjectManifest(const ProjectManifest& manifest) {
         }
         if (asset.mediaType.empty()) {
             throw std::runtime_error("Asset media type must not be empty");
+        }
+        if (asset.sourceSampleRate != 0.0 &&
+            (!std::isfinite(asset.sourceSampleRate) || asset.sourceSampleRate <= 0.0)) {
+            throw std::runtime_error("Asset source sample rate must be positive when present: " +
+                                     asset.id);
         }
         if (!assetIds.insert(asset.id).second) {
             throw std::runtime_error("Duplicate asset id: " + asset.id);

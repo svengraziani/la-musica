@@ -12,7 +12,30 @@ namespace {
 bool isPathChar(char character) noexcept {
     return std::isalnum(static_cast<unsigned char>(character)) || character == '/' ||
            character == '_' || character == '-' || character == '.' || character == ' ' ||
-           character == ':' || character == '+';
+           character == ':' || character == '+' || character == '\\';
+}
+
+bool isPathSeparator(char character) noexcept {
+    return character == '/' || character == '\\';
+}
+
+bool startsWindowsDrivePath(std::string_view text, std::size_t index) noexcept {
+    return index + 2U < text.size() &&
+           std::isalpha(static_cast<unsigned char>(text[index])) != 0 && text[index + 1U] == ':' &&
+           isPathSeparator(text[index + 2U]);
+}
+
+bool startsWindowsUserPath(std::string_view token) noexcept {
+    return token.starts_with("Users\\") || token.starts_with("Users/");
+}
+
+bool containsUserPath(std::string_view token) noexcept {
+    return startsWindowsUserPath(token) || token.find(" Users\\") != std::string_view::npos ||
+           token.find(" Users/") != std::string_view::npos;
+}
+
+bool startsUncPath(std::string_view text, std::size_t index) noexcept {
+    return index + 1U < text.size() && text[index] == '\\' && text[index + 1U] == '\\';
 }
 
 std::string replaceAll(std::string text, std::string_view needle, std::string_view replacement) {
@@ -29,7 +52,8 @@ std::string replaceAll(std::string text, std::string_view needle, std::string_vi
 
 std::string jsonEscape(std::string_view value) {
     std::string escaped;
-    for (const unsigned char character : value) {
+    for (const char rawCharacter : value) {
+        const auto character = static_cast<unsigned char>(rawCharacter);
         switch (character) {
         case '"':
             escaped += "\\\"";
@@ -80,7 +104,9 @@ std::string scrubDiagnosticsText(std::string_view text, std::string_view project
     for (std::size_t index = 0; index < scrubbed.size();) {
         const bool absoluteUnixPath = scrubbed[index] == '/';
         const bool homePath = scrubbed.compare(index, 2, "~/") == 0;
-        if (absoluteUnixPath || homePath) {
+        const bool windowsDrivePath = startsWindowsDrivePath(scrubbed, index);
+        const bool uncPath = startsUncPath(scrubbed, index);
+        if (absoluteUnixPath || homePath || windowsDrivePath || uncPath) {
             while (index < scrubbed.size() && isPathChar(scrubbed[index])) {
                 ++index;
             }
@@ -96,7 +122,7 @@ std::string scrubDiagnosticsText(std::string_view text, std::string_view project
             }
             const auto token = std::string_view{scrubbed}.substr(index, end - index);
             if (token.find(".Project.lamusica") != std::string_view::npos ||
-                token.starts_with("Users/")) {
+                containsUserPath(token)) {
                 index = end;
                 output += "<path>";
                 continue;
@@ -106,15 +132,17 @@ std::string scrubDiagnosticsText(std::string_view text, std::string_view project
         ++index;
     }
     output = replaceAll(std::move(output), "Users/<path>", "<path>");
+    output = replaceAll(std::move(output), "Users\\<path>", "<path>");
     return output;
 }
 
 DiagnosticsPayload makeDiagnosticsPayload(const DiagnosticsPayloadInput& input) {
     DiagnosticsPayload payload;
-    payload.fields["applicationName"] = input.applicationName;
-    payload.fields["version"] = input.version;
-    payload.fields["gitCommit"] = input.gitCommit;
-    payload.fields["osVersion"] = input.osVersion;
+    payload.fields["applicationName"] =
+        scrubDiagnosticsText(input.applicationName, input.projectName);
+    payload.fields["version"] = scrubDiagnosticsText(input.version, input.projectName);
+    payload.fields["gitCommit"] = scrubDiagnosticsText(input.gitCommit, input.projectName);
+    payload.fields["osVersion"] = scrubDiagnosticsText(input.osVersion, input.projectName);
     payload.fields["signal"] = std::to_string(input.signalNumber);
     payload.fields["backtrace"] = scrubDiagnosticsText(input.rawBacktrace, input.projectName);
 
@@ -134,8 +162,45 @@ DiagnosticsPayload makeDiagnosticsPayload(const DiagnosticsPayloadInput& input) 
 }
 
 bool diagnosticsEndpointAllowed(std::string_view endpoint) noexcept {
-    return endpoint.empty() || endpoint.starts_with("https://") ||
-           endpoint == "LAMUSICA_DIAGNOSTICS_ENDPOINT";
+    if (endpoint.empty() || endpoint == "LAMUSICA_DIAGNOSTICS_ENDPOINT") {
+        return true;
+    }
+    constexpr std::string_view scheme{"https://"};
+    if (!endpoint.starts_with(scheme) || endpoint.size() == scheme.size()) {
+        return false;
+    }
+    const auto hostAndPath = endpoint.substr(scheme.size());
+    const auto hostEnd = hostAndPath.find('/');
+    const auto authority = hostAndPath.substr(0, hostEnd);
+    if (authority.empty() || authority.find_first_of(" \t\r\n@") != std::string_view::npos) {
+        return false;
+    }
+
+    std::string_view host = authority;
+    std::string_view port;
+    const auto colon = authority.find(':');
+    if (colon != std::string_view::npos) {
+        host = authority.substr(0, colon);
+        port = authority.substr(colon + 1U);
+        if (port.empty()) {
+            return false;
+        }
+        for (const auto digit : port) {
+            if (!std::isdigit(static_cast<unsigned char>(digit))) {
+                return false;
+            }
+        }
+    }
+    if (host.empty()) {
+        return false;
+    }
+    for (const auto character : host) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (!std::isalnum(byte) && character != '-' && character != '.') {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool diagnosticsUploadPermitted(DiagnosticsConsent consent, bool shareDiagnostics) noexcept {
@@ -168,7 +233,7 @@ DiagnosticsUploadRequest makeDiagnosticsUploadRequest(
 
     request.endpoint = resolveDiagnosticsEndpoint(preferenceEndpoint, environmentEndpoint);
     request.payload = makeDiagnosticsPayload(input);
-    if (!request.endpoint.starts_with("https://")) {
+    if (request.endpoint.empty() || !diagnosticsEndpointAllowed(request.endpoint)) {
         request.reason = "diagnostics endpoint is not HTTPS";
         return request;
     }

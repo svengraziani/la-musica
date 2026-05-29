@@ -3,6 +3,7 @@
 #include "lamusica/version.hpp"
 #include "lamusica/crash_report/CrashReporter.hpp"
 #include "i18n/Localization.hpp"
+#include "i18n/NumberFormat.hpp"
 #include "onboarding/GuidedTour.hpp"
 #include "onboarding/ProjectTemplates.hpp"
 #include "onboarding/WelcomeWindow.hpp"
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -150,6 +152,11 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
   public:
     MainComponent() {
         catalog_.loadBundledTables();
+        catalog_.setActiveLocale(lamusica::daw::i18n::resolveLocale(
+            session_.preferences().preferredLocale.empty()
+                ? std::optional<std::string_view>{}
+                : std::optional<std::string_view>{session_.preferences().preferredLocale},
+            juce::SystemStats::getDisplayLanguage().toStdString()));
         setAccessible(true);
         setWantsKeyboardFocus(true);
         setTitle(tr("LaMusica"));
@@ -184,6 +191,7 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
         addAndMakeVisible(openRecentButton_);
 
         showWelcomeButton_.setButtonText(tr("onboarding.help.showWelcome"));
+        showWelcomeButton_.setHelpText(tr("onboarding.help.showWelcome"));
         showWelcomeButton_.onClick = [this] {
             welcomeVisible_ = true;
             refresh();
@@ -191,22 +199,27 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
         addAndMakeVisible(showWelcomeButton_);
 
         userManualButton_.setButtonText(tr("onboarding.help.userManual"));
+        userManualButton_.setHelpText(tr("onboarding.help.userManual"));
         userManualButton_.onClick = [this] { showUserManual(); };
         addAndMakeVisible(userManualButton_);
 
         restartTourButton_.setButtonText(tr("onboarding.help.restartTour"));
+        restartTourButton_.setHelpText(tr("onboarding.help.restartTour"));
         restartTourButton_.onClick = [this] { restartGuidedTour(); };
         addAndMakeVisible(restartTourButton_);
 
         skipTourButton_.setButtonText(tr("onboarding.tour.skip"));
+        skipTourButton_.setHelpText(tr("onboarding.tour.skip"));
         skipTourButton_.onClick = [this] { dismissGuidedTour(); };
         addAndMakeVisible(skipTourButton_);
 
         shareDiagnosticsButton_.setButtonText(tr("privacy.shareDiagnostics"));
+        shareDiagnosticsButton_.setHelpText(tr("privacy.shareDiagnostics"));
         shareDiagnosticsButton_.onClick = [this] { setDiagnosticsConsent(true); };
         addAndMakeVisible(shareDiagnosticsButton_);
 
         keepPrivateButton_.setButtonText(tr("privacy.keepPrivate"));
+        keepPrivateButton_.setHelpText(tr("privacy.keepPrivate"));
         keepPrivateButton_.onClick = [this] { setDiagnosticsConsent(false); };
         addAndMakeVisible(keepPrivateButton_);
 
@@ -286,57 +299,59 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
             inspector_.setText(tr("Inspector") + "\n" + tr("status.noSelection"));
             mixer_.setText(tr("Mixer") + "\n" + tr("status.noProjectOpen"));
         } else {
-        transport_.setText(juce::String{status.projectName.c_str()} + "\n" + tr("Stopped") +
-                           " | " + juce::String{status.tempoBpm, 0} + " BPM | " +
-                           juce::String{status.timeSignatureNumerator} + "/" +
-                           juce::String{status.timeSignatureDenominator} + " | " +
-                           juce::String{status.renderFrames} + " " + tr("status.frames") +
-                           "\n" + tr("Loop") + " " +
-                           (status.loopEnabled ? tr("status.on") + " " : tr("status.off") + " ") +
-                           juce::String{status.loopStartSample} + "-" +
-                           juce::String{status.loopEndSample} + " | " + tr("Playhead") + " " +
-                           juce::String{status.playheadSample});
+            transport_.setText(juce::String{status.projectName.c_str()} + "\n" +
+                               tr("Stopped") + " | " + displayNumber(status.tempoBpm, 1) +
+                               " BPM | " + juce::String{status.timeSignatureNumerator} + "/" +
+                               juce::String{status.timeSignatureDenominator} + " | " +
+                               juce::String{status.renderFrames} + " " + tr("status.frames") +
+                               "\n" + tr("Loop") + " " +
+                               (status.loopEnabled ? tr("status.on") + " "
+                                                   : tr("status.off") + " ") +
+                               juce::String{status.loopStartSample} + "-" +
+                               juce::String{status.loopEndSample} + " | " + tr("Playhead") +
+                               " " + juce::String{status.playheadSample});
 
-        browser_.setText(tr("Browser") + "\n" + tr("status.ready") + ": " +
-                         (status.firstTrackReady ? tr("status.yes") : tr("status.no")) +
-                         " | " + tr("status.editable") + ": " +
-                         (status.firstTrackEditable ? tr("status.yes") : tr("status.no")) +
-                         " | " + tr("status.media") + ": " +
-                         (status.mediaReady ? tr("status.ok") : tr("status.missing")) + "\n" +
-                         tr("status.tracks") + " " +
-                         juce::String{static_cast<int>(status.trackCount)} + " | " +
-                         tr("status.clips") + " " +
-                         juce::String{static_cast<int>(status.clipCount)});
+            browser_.setText(tr("Browser") + "\n" + tr("status.ready") + ": " +
+                             (status.firstTrackReady ? tr("status.yes") : tr("status.no")) +
+                             " | " + tr("status.editable") + ": " +
+                             (status.firstTrackEditable ? tr("status.yes") : tr("status.no")) +
+                             " | " + tr("status.media") + ": " +
+                             (status.mediaReady ? tr("status.ok") : tr("status.missing")) +
+                             "\n" + tr("status.tracks") + " " +
+                             juce::String{static_cast<int>(status.trackCount)} + " | " +
+                             tr("status.clips") + " " +
+                             juce::String{static_cast<int>(status.clipCount)});
 
-        timeline_.setText(tr("status.timelinePianoRoll") + "\n" +
-                          juce::String{status.firstSectionName.c_str()} + " -> " +
-                          juce::String{status.finalSectionName.c_str()} + "\n" +
-                          tr("status.sections") + " " +
-                          juce::String{static_cast<int>(status.markerCount)} + " | " +
-                          tr("status.midiNotes") + " " +
-                          juce::String{static_cast<int>(status.starterMidiNoteCount)} + " | " +
-                          tr("status.bass") + " " +
-                          juce::String{status.starterBassTransposeSemitones} + " " +
-                          tr("status.semitonesShort"));
+            timeline_.setText(tr("status.timelinePianoRoll") + "\n" +
+                              juce::String{status.firstSectionName.c_str()} + " -> " +
+                              juce::String{status.finalSectionName.c_str()} + "\n" +
+                              tr("status.sections") + " " +
+                              juce::String{static_cast<int>(status.markerCount)} + " | " +
+                              tr("status.midiNotes") + " " +
+                              juce::String{static_cast<int>(status.starterMidiNoteCount)} +
+                              " | " + tr("status.bass") + " " +
+                              juce::String{status.starterBassTransposeSemitones} + " " +
+                              tr("status.semitonesShort"));
 
-        inspector_.setText(
-            tr("Inspector") + "\n" + tr("status.starterDevices") + " " +
-            juce::String{static_cast<int>(status.pluginCount)} + " | " +
-            tr("status.automationLanes") + " " +
-            juce::String{static_cast<int>(status.automationLaneCount)} + "\n" +
-            tr("status.recordedTakes") + " " +
-            juce::String{static_cast<int>(status.recordedTakeCount)} + " | " +
-            tr("status.imports") + " " +
-            juce::String{static_cast<int>(status.importedAudioClipCount)});
+            inspector_.setText(
+                tr("Inspector") + "\n" + tr("status.starterDevices") + " " +
+                juce::String{static_cast<int>(status.pluginCount)} + " | " +
+                tr("status.automationLanes") + " " +
+                juce::String{static_cast<int>(status.automationLaneCount)} + "\n" +
+                tr("status.recordedTakes") + " " +
+                juce::String{static_cast<int>(status.recordedTakeCount)} + " | " +
+                tr("status.imports") + " " +
+                juce::String{static_cast<int>(status.importedAudioClipCount)});
 
-        mixer_.setText(
-            tr("Mixer") + "\n" + tr("status.generatedRouting") + "\n" +
-            tr("status.lastExport") + " " + juce::String{status.lastMixExportFrames} + " " +
-            tr("status.frames") + " | " + tr("status.peak") + " " +
-            juce::String{status.lastMixExportPeak, 2} + "\n" + tr("status.packageMix") + " " +
-            juce::String{status.lastPackageMixFrames} + " | " + tr("Loop") + " " +
-            juce::String{status.lastPackageLoopFrames} + " | " + tr("status.stems") + " " +
-            juce::String{static_cast<int>(status.lastPackageStemCount)});
+            mixer_.setText(
+                tr("Mixer") + "\n" + tr("status.generatedRouting") + "\n" +
+                tr("status.lastExport") + " " + juce::String{status.lastMixExportFrames} + " " +
+                tr("status.frames") + " | " + tr("status.peak") + " " +
+                displayNumber(status.lastMixExportPeak, 2) + "\n" +
+                tr("status.packageMix") + " " + juce::String{status.lastPackageMixFrames} +
+                " | " + tr("Loop") + " " + juce::String{status.lastPackageLoopFrames} +
+                " | " + tr("status.stems") + " " +
+                juce::String{static_cast<int>(status.lastPackageStemCount)});
         }
 
         const auto& preferences = session_.preferences();
@@ -398,6 +413,11 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
         return juce::String{catalog_.translate(key)};
     }
 
+    juce::String displayNumber(double value, int decimals) const {
+        return juce::String{lamusica::daw::i18n::formatDisplayNumber(
+            value, decimals, lamusica::daw::i18n::numberFormatForLocale(catalog_.activeLocale()))};
+    }
+
     void configureTemplateButton(juce::TextButton& button, std::string templateId) {
         const auto* projectTemplate =
             lamusica::daw::onboarding::findProjectTemplate(templateId);
@@ -441,8 +461,14 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
     }
 
     void showUserManual() {
+        const auto executableDir =
+            juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                .getParentDirectory()
+                .getFullPathName()
+                .toStdString();
         const auto preview =
-            lamusica::daw::onboarding::userManualPreview(std::filesystem::current_path());
+            lamusica::daw::onboarding::userManualPreview(std::filesystem::path{executableDir},
+                                                         catalog_.activeLocale());
         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
                                                tr("onboarding.help.userManual"),
                                                juce::String{preview});
@@ -460,14 +486,8 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
     }
 
     void setDiagnosticsConsent(bool granted) {
-        auto preferences = session_.preferences();
-        preferences.diagnosticsConsent = granted ? lamusica::session::DiagnosticsConsent::Granted
-                                                 : lamusica::session::DiagnosticsConsent::Declined;
-        preferences.shareDiagnostics = granted;
-        preferences.telemetryEnabled = false;
-        preferences.diagnosticsEndpoint.clear();
         try {
-            session_.setPreferences(preferences);
+            session_.setDiagnosticsConsent(granted);
             lastError_ = {};
         } catch (const std::exception& error) {
             lastError_ = error.what();
@@ -555,7 +575,11 @@ class LaMusicaApplication final : public juce::JUCEApplication {
 
     void initialise(const juce::String& commandLine) override {
         lamusica::crash_report::installCrashReporter(
-            {.applicationName = "LaMusica", .directory = {}});
+            {.applicationName = "LaMusica",
+             .version = lamusica::build::version,
+             .gitCommit = lamusica::build::gitCommit,
+             .buildDate = lamusica::build::buildDate,
+             .directory = {}});
         const auto tokens = splitCommandLine(commandLine);
         if (hasVersionArgument(tokens)) {
             printVersion();

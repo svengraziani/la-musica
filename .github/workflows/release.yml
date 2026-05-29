@@ -5,6 +5,18 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to publish, for example v0.1.0
+        required: true
+      completed_macos_evidence:
+        description: Path to completed macOS release evidence markdown
+        required: false
+        default: docs/release/completed-macos-release-evidence.md
+      completed_voiceover_evidence:
+        description: Path to completed VoiceOver evidence markdown
+        required: false
+        default: docs/release/completed-accessibility-voiceover-evidence.md
 
 jobs:
   macos-release:
@@ -15,20 +27,63 @@ jobs:
       LAMUSICA_JUCE_PATH: ${{ github.workspace }}/external/JUCE
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref }}
+      - name: Release script self-tests
+        run: |
+          scripts/archive-dsyms.sh --self-test
+          scripts/sign-macos.sh --self-test
+          scripts/notarize-macos.sh --self-test
+          scripts/verify-signature.sh --self-test
+          scripts/sign-checksums.sh --self-test
+          scripts/sbom.sh --self-test
+          scripts/verify-provenance.sh --self-test
+          scripts/verify-release-evidence.sh --self-test
+          scripts/verify-release-workflow.sh --self-test
+          scripts/verify-ci-workflow.sh --self-test
+          scripts/verify-symbolication.sh --self-test
+          cmake -DLAMUSICA_DEPENDENCY_LOCK_SELF_TEST=ON -P cmake/CheckDependencyLock.cmake
+          cmake -DLAMUSICA_VERIFY_PACKAGE_SELF_TEST=ON -P cmake/VerifyPackage.cmake
       - name: Checkout JUCE
         uses: actions/checkout@v4
         with:
           repository: juce-framework/JUCE
           ref: 7c9d3783b127263d72bb65fe0a7e2dc8a02a7ac2
           path: external/JUCE
+      - name: Dependency lock check
+        run: cmake -P cmake/CheckDependencyLock.cmake
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '15.4'
+      - name: Validate release secrets
+        env:
+          LAMUSICA_CODESIGN_CERT_P12_BASE64: ${{ secrets.LAMUSICA_CODESIGN_CERT_P12_BASE64 }}
+          LAMUSICA_CODESIGN_CERT_PASSWORD: ${{ secrets.LAMUSICA_CODESIGN_CERT_PASSWORD }}
+          LAMUSICA_CODESIGN_IDENTITY: ${{ secrets.LAMUSICA_CODESIGN_IDENTITY }}
+          LAMUSICA_NOTARY_KEY_ID: ${{ secrets.LAMUSICA_NOTARY_KEY_ID }}
+          LAMUSICA_NOTARY_ISSUER_ID: ${{ secrets.LAMUSICA_NOTARY_ISSUER_ID }}
+          LAMUSICA_NOTARY_KEY_P8_BASE64: ${{ secrets.LAMUSICA_NOTARY_KEY_P8_BASE64 }}
+        run: |
+          require_secret() {
+            local name="$1"
+            local value="${!name:-}"
+            if [[ -z "$value" ]]; then
+              echo "Missing required release secret: $name" >&2
+              exit 1
+            fi
+          }
+          require_secret LAMUSICA_CODESIGN_CERT_P12_BASE64
+          require_secret LAMUSICA_CODESIGN_CERT_PASSWORD
+          require_secret LAMUSICA_CODESIGN_IDENTITY
+          require_secret LAMUSICA_NOTARY_KEY_ID
+          require_secret LAMUSICA_NOTARY_ISSUER_ID
+          require_secret LAMUSICA_NOTARY_KEY_P8_BASE64
       - name: Import signing certificate
         env:
           LAMUSICA_CODESIGN_CERT_P12_BASE64: ${{ secrets.LAMUSICA_CODESIGN_CERT_P12_BASE64 }}
           LAMUSICA_CODESIGN_CERT_PASSWORD: ${{ secrets.LAMUSICA_CODESIGN_CERT_PASSWORD }}
+          LAMUSICA_CODESIGN_IDENTITY: ${{ secrets.LAMUSICA_CODESIGN_IDENTITY }}
         run: |
           security create-keychain -p "$RUNNER_TEMP/lamusica" "$RUNNER_TEMP/lamusica-signing.keychain-db"
           security set-keychain-settings -lut 21600 "$RUNNER_TEMP/lamusica-signing.keychain-db"
@@ -37,12 +92,56 @@ jobs:
           security import "$RUNNER_TEMP/lamusica-signing.p12" -P "$LAMUSICA_CODESIGN_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$RUNNER_TEMP/lamusica-signing.keychain-db"
           security list-keychain -d user -s "$RUNNER_TEMP/lamusica-signing.keychain-db"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$RUNNER_TEMP/lamusica" "$RUNNER_TEMP/lamusica-signing.keychain-db"
+          security find-identity -v -p codesigning "$RUNNER_TEMP/lamusica-signing.keychain-db" | grep -F "$LAMUSICA_CODESIGN_IDENTITY"
       - name: Configure universal release
         run: cmake --preset release-universal
       - name: Build universal release
         run: cmake --build --preset release-universal
+      - name: Verify universal architectures
+        run: |
+          check_arches() {
+            local binary="$1"
+            local archs
+            archs="$(lipo -archs "$binary")"
+            [[ " $archs " == *" arm64 "* ]] || { echo "$binary missing arm64: $archs" >&2; exit 1; }
+            [[ " $archs " == *" x86_64 "* ]] || { echo "$binary missing x86_64: $archs" >&2; exit 1; }
+          }
+          check_arches build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app/Contents/MacOS/LaMusica
+          check_arches build/macos-release-universal/apps/plugin_scan_worker/lamusica_plugin_scan_worker
+          check_arches build/macos-release-universal/apps/mcpd/lamusica_mcpd
+          check_arches build/macos-release-universal/tools/cli/lamusica_cli
+      - name: Generate dSYMs
+        run: scripts/archive-dsyms.sh
+      - name: Verify dSYM symbolication
+        run: |
+          verify_main_symbol() {
+            local binary="$1"
+            local dsym="${binary}.dSYM"
+            for arch in arm64 x86_64; do
+              scripts/verify-symbolication.sh \
+                --binary "$binary" \
+                --dsym "$dsym" \
+                --symbol main \
+                --expect main \
+                --arch "$arch"
+            done
+          }
+          verify_main_symbol build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app/Contents/MacOS/LaMusica
+          verify_main_symbol build/macos-release-universal/apps/plugin_scan_worker/lamusica_plugin_scan_worker
+          verify_main_symbol build/macos-release-universal/apps/mcpd/lamusica_mcpd
+          verify_main_symbol build/macos-release-universal/tools/cli/lamusica_cli
+      - name: Verify provenance stamping
+        run: |
+          scripts/verify-provenance.sh \
+            --app build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app/Contents/MacOS/LaMusica \
+            --mcpd build/macos-release-universal/apps/mcpd/lamusica_mcpd \
+            --cli build/macos-release-universal/tools/cli/lamusica_cli
       - name: Test universal release
         run: ctest --preset release-universal
+      - name: Validate release examples
+        run: |
+          build/macos-release-universal/tools/cli/lamusica_cli verify-examples fixtures/examples
+          build/macos-release-universal/tools/cli/lamusica_cli verify-examples fixtures/tutorials
       - name: Sign binaries
         env:
           LAMUSICA_CODESIGN_IDENTITY: ${{ secrets.LAMUSICA_CODESIGN_IDENTITY }}
@@ -53,10 +152,24 @@ jobs:
         run: cpack -G TGZ --config build/macos-release-universal/CPackConfig.cmake
       - name: Notarize and staple
         env:
-          LAMUSICA_NOTARY_PROFILE: ${{ secrets.LAMUSICA_NOTARY_PROFILE }}
-        run: scripts/notarize-macos.sh --artifact "$(ls LaMusica-*-Darwin.dmg)" --keychain-profile "$LAMUSICA_NOTARY_PROFILE"
+          LAMUSICA_NOTARY_KEY_ID: ${{ secrets.LAMUSICA_NOTARY_KEY_ID }}
+          LAMUSICA_NOTARY_ISSUER_ID: ${{ secrets.LAMUSICA_NOTARY_ISSUER_ID }}
+          LAMUSICA_NOTARY_KEY_P8_BASE64: ${{ secrets.LAMUSICA_NOTARY_KEY_P8_BASE64 }}
+        run: |
+          echo "$LAMUSICA_NOTARY_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/lamusica-notary.p8"
+          scripts/notarize-macos.sh \
+            --artifact "$(ls LaMusica-*-Darwin.dmg)" \
+            --key "$RUNNER_TEMP/lamusica-notary.p8" \
+            --key-id "$LAMUSICA_NOTARY_KEY_ID" \
+            --issuer "$LAMUSICA_NOTARY_ISSUER_ID"
       - name: Verify release signature
-        run: scripts/verify-signature.sh --app build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app --artifact "$(ls LaMusica-*-Darwin.dmg)"
+        run: |
+          scripts/verify-signature.sh \
+            --app build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app \
+            --binary build/macos-release-universal/apps/plugin_scan_worker/lamusica_plugin_scan_worker \
+            --binary build/macos-release-universal/apps/mcpd/lamusica_mcpd \
+            --binary build/macos-release-universal/tools/cli/lamusica_cli \
+            --artifact "$(ls LaMusica-*-Darwin.dmg)"
       - name: Verify package contents
         run: cmake -DPACKAGE="$(ls LaMusica-*-Darwin.tar.gz)" -P cmake/VerifyPackage.cmake
       - name: Archive dSYMs
@@ -66,26 +179,103 @@ jobs:
             echo "No dSYM bundles were produced by the release-universal build" >&2
             exit 1
           fi
+          require_dsym() {
+            local dsym="$1"
+            if ! grep -Fxq "$dsym" build/macos-release-universal/dsym-files.txt; then
+              echo "Missing expected dSYM bundle from release archive list: $dsym" >&2
+              exit 1
+            fi
+          }
+          require_dsym build/macos-release-universal/apps/daw/lamusica_daw_artefacts/LaMusica.app/Contents/MacOS/LaMusica.dSYM
+          require_dsym build/macos-release-universal/apps/plugin_scan_worker/lamusica_plugin_scan_worker.dSYM
+          require_dsym build/macos-release-universal/apps/mcpd/lamusica_mcpd.dSYM
+          require_dsym build/macos-release-universal/tools/cli/lamusica_cli.dSYM
           tar -czf LaMusica-dSYMs.tar.gz -T build/macos-release-universal/dsym-files.txt
       - name: Build SBOM and checksums
-        run: scripts/sbom.sh --artifact "$(ls LaMusica-*-Darwin.dmg)" --output build/release-metadata
+        run: |
+          scripts/sbom.sh \
+            --artifact "$(ls LaMusica-*-Darwin.dmg)" \
+            --artifact LaMusica-dSYMs.tar.gz \
+            --output build/release-metadata
       - name: Sign checksums
         env:
           LAMUSICA_CODESIGN_IDENTITY: ${{ secrets.LAMUSICA_CODESIGN_IDENTITY }}
-        run: codesign --force --timestamp --sign "$LAMUSICA_CODESIGN_IDENTITY" --detached build/release-metadata/SHA256SUMS.sig build/release-metadata/SHA256SUMS
-      - name: Vulnerability scan
-        uses: anchore/scan-action@v4
-        with:
-          path: build/release-metadata/LaMusica.spdx.json
-          fail-build: true
-          severity-cutoff: critical
-      - name: Upload release artifacts
+        run: scripts/sign-checksums.sh --identity "$LAMUSICA_CODESIGN_IDENTITY" --checksums build/release-metadata/SHA256SUMS
+      - name: Stage manual release evidence templates
+        run: |
+          cp docs/release/macos-release-evidence-template.md build/release-metadata/
+          cp docs/release/accessibility-voiceover-evidence-template.md build/release-metadata/
+      - name: Upload candidate artifacts for manual evidence
         uses: actions/upload-artifact@v4
         with:
-          name: LaMusica-release
+          name: LaMusica-release-candidate
+          if-no-files-found: error
           path: |
             LaMusica-*-Darwin.dmg
             LaMusica-dSYMs.tar.gz
             build/release-metadata/LaMusica.spdx.json
             build/release-metadata/SHA256SUMS
             build/release-metadata/SHA256SUMS.sig
+            build/release-metadata/macos-release-evidence-template.md
+            build/release-metadata/accessibility-voiceover-evidence-template.md
+      - name: Validate completed release evidence before publication
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG_INPUT: ${{ github.event.inputs.release_tag }}
+          MACOS_EVIDENCE_INPUT: ${{ github.event.inputs.completed_macos_evidence }}
+          VOICEOVER_EVIDENCE_INPUT: ${{ github.event.inputs.completed_voiceover_evidence }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && ! "$RELEASE_TAG_INPUT" =~ ^v[0-9]+(\.[0-9]+){2}([-+][A-Za-z0-9._-]+)?$ ]]; then
+            echo "Manual release publication requires a semantic v* release_tag input, got: $RELEASE_TAG_INPUT" >&2
+            exit 1
+          fi
+          macos_evidence="${MACOS_EVIDENCE_INPUT:-docs/release/completed-macos-release-evidence.md}"
+          voiceover_evidence="${VOICEOVER_EVIDENCE_INPUT:-docs/release/completed-accessibility-voiceover-evidence.md}"
+          if [[ ! -s "$macos_evidence" ]]; then
+            echo "Completed macOS release evidence is required before publication: $macos_evidence" >&2
+            exit 1
+          fi
+          if [[ ! -s "$voiceover_evidence" ]]; then
+            echo "Completed VoiceOver release evidence is required before publication: $voiceover_evidence" >&2
+            exit 1
+          fi
+          scripts/verify-release-evidence.sh --macos "$macos_evidence" --voiceover "$voiceover_evidence"
+          cp "$macos_evidence" build/release-metadata/completed-macos-release-evidence.md
+          cp "$voiceover_evidence" build/release-metadata/completed-accessibility-voiceover-evidence.md
+      - name: Vulnerability scan
+        uses: anchore/scan-action@v4
+        with:
+          path: build/release-metadata/LaMusica.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            LaMusica-*-Darwin.dmg
+            LaMusica-dSYMs.tar.gz
+            build/release-metadata/LaMusica.spdx.json
+            build/release-metadata/SHA256SUMS
+            build/release-metadata/SHA256SUMS.sig
+            build/release-metadata/macos-release-evidence-template.md
+            build/release-metadata/accessibility-voiceover-evidence-template.md
+            build/release-metadata/completed-macos-release-evidence.md
+            build/release-metadata/completed-accessibility-voiceover-evidence.md
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaMusica-release
+          if-no-files-found: error
+          path: |
+            LaMusica-*-Darwin.dmg
+            LaMusica-dSYMs.tar.gz
+            build/release-metadata/LaMusica.spdx.json
+            build/release-metadata/SHA256SUMS
+            build/release-metadata/SHA256SUMS.sig
+            build/release-metadata/macos-release-evidence-template.md
+            build/release-metadata/accessibility-voiceover-evidence-template.md
+            build/release-metadata/completed-macos-release-evidence.md
+            build/release-metadata/completed-accessibility-voiceover-evidence.md

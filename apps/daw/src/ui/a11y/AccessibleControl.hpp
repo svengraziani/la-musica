@@ -11,6 +11,7 @@
 namespace lamusica::daw::a11y {
 
 enum class AccessibleRole {
+    Unknown,
     Window,
     Region,
     Button,
@@ -24,7 +25,7 @@ enum class AccessibleRole {
 
 struct AccessibleControl {
     std::string id;
-    AccessibleRole role{AccessibleRole::Region};
+    AccessibleRole role{AccessibleRole::Unknown};
     std::string name;
     std::string valueText;
     std::string description;

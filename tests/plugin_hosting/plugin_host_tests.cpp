@@ -96,25 +96,40 @@ int main(int argc, char** argv) {
             .timeoutMilliseconds = static_cast<std::uint32_t>(probeTimeout.count())};
         const auto validProbe = lamusica::plugin_host::probePluginWithWorker(
             workerPath, {.description = mockPlugin, .mode = "valid"}, probePolicy);
+        const auto invalidProbe = lamusica::plugin_host::probePluginWithWorker(
+            workerPath,
+            {.description = {.identifier = "lamusica.test.invalid",
+                             .name = "Invalid Test Plugin",
+                             .vendor = "LaMusica",
+                             .parameters = {}},
+             .mode = "invalid"},
+            probePolicy);
         const auto crashProbe = lamusica::plugin_host::probePluginWithWorker(
             workerPath,
             {.description = {.identifier = "lamusica.test.crash",
                              .name = "Crashing Test Plugin",
-                             .vendor = "LaMusica"},
+                             .vendor = "LaMusica",
+                             .parameters = {}},
              .mode = "crash"},
             probePolicy);
         const auto timeoutProbe = lamusica::plugin_host::probePluginWithWorker(
             workerPath,
             {.description = {.identifier = "lamusica.test.timeout",
                              .name = "Hanging Test Plugin",
-                             .vendor = "LaMusica"},
+                             .vendor = "LaMusica",
+                             .parameters = {}},
              .mode = "hang"},
             probePolicy);
         require(validProbe.processIsolated, "valid plugin probe was not process isolated");
+        require(invalidProbe.processIsolated, "invalid plugin probe was not process isolated");
         require(crashProbe.processIsolated, "crashing plugin probe was not process isolated");
         require(timeoutProbe.processIsolated, "hanging plugin probe was not process isolated");
         require(validProbe.candidate.outcome == lamusica::session::PluginScanOutcome::Valid,
                 "valid plugin probe did not exit cleanly");
+        require(invalidProbe.candidate.outcome == lamusica::session::PluginScanOutcome::Invalid,
+                "invalid plugin probe did not report a validation failure");
+        require(invalidProbe.exitCode == 2 && invalidProbe.candidate.failureReason == "worker_exit_2",
+                "invalid plugin probe did not preserve worker failure reason");
         require(crashProbe.candidate.outcome == lamusica::session::PluginScanOutcome::Crashed,
                 "crashing plugin probe was not observed as a child-process crash");
         require(timeoutProbe.candidate.outcome == lamusica::session::PluginScanOutcome::TimedOut,
@@ -123,11 +138,16 @@ int main(int argc, char** argv) {
 
         lamusica::session::PluginScanCache cache;
         const std::vector<lamusica::session::PluginScanCandidate> candidates{
-            validProbe.candidate, crashProbe.candidate, timeoutProbe.candidate};
+            validProbe.candidate, invalidProbe.candidate, crashProbe.candidate,
+            timeoutProbe.candidate};
         const auto scan = lamusica::session::scanPluginCandidates(cache, candidates, probePolicy);
-        require(scan.scanned.size() == 3U, "scanner did not report all plugin candidates");
+        require(scan.scanned.size() == 4U, "scanner did not report all plugin candidates");
         require(lamusica::session::findPlugin(cache, "lamusica.test.gain").has_value(),
                 "valid mock plugin was not discoverable");
+        require(!lamusica::session::findPlugin(cache, "lamusica.test.invalid").has_value(),
+                "invalid plugin should not be discoverable");
+        require(!lamusica::session::isBlacklisted(cache, "lamusica.test.invalid"),
+                "invalid plugin should not be crash-blacklisted");
         require(lamusica::session::isBlacklisted(cache, "lamusica.test.crash"),
                 "crashing plugin was not isolated in blacklist");
         require(lamusica::session::isBlacklisted(cache, "lamusica.test.timeout"),
@@ -188,6 +208,10 @@ int main(int argc, char** argv) {
         require(lamusica::audio::peakAbsoluteSample(wet) >
                     lamusica::audio::peakAbsoluteSample(dry) * 2.0F,
                 "mock plugin transform did not affect rendered audio");
+        const auto peakRatio =
+            lamusica::audio::peakAbsoluteSample(wet) / lamusica::audio::peakAbsoluteSample(dry);
+        require(std::abs(peakRatio - 3.0F) < 0.01F,
+                "mock plugin transform did not preserve expected gain ratio");
 
         const auto rtAudit = lamusica::session::auditRealtimeGraphCallback(
             mockPluginTransformGraph(0.5F), {.maxBlockSize = 128}, 128);
@@ -195,8 +219,8 @@ int main(int argc, char** argv) {
         require(rtAudit.callbackCompleted && rtAudit.transportAdvanced,
                 "realtime plugin callback did not complete and advance");
 
-        std::cout << "plugin-hosting mockProcessed=true stateRoundTrip=true crashIsolated=true "
-                     "timeoutIsolated=true rtViolations=0\n";
+        std::cout << "plugin-hosting mockProcessed=true stateRoundTrip=true invalidRejected=true "
+                     "crashIsolated=true timeoutIsolated=true rtViolations=0\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "plugin hosting test failed: " << error.what() << '\n';

@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "LaMusica";
+"NSMicrophoneUsageDescription" = "LaMusica needs microphone access when recording audio into a project.";
+"NSAppleEventsUsageDescription" = "LaMusica may use Apple Events only for user-approved local automation workflows.";

@@ -31,7 +31,11 @@ add_executable(
   unit/onboarding_tests.cpp
   ../apps/daw/src/onboarding/ProjectTemplates.cpp
   ../apps/daw/src/onboarding/WelcomeWindow.cpp
-  ../apps/daw/src/onboarding/GuidedTour.cpp)
+  ../apps/daw/src/onboarding/GuidedTour.cpp
+  ../apps/daw/src/i18n/Localization.cpp
+  ../apps/daw/src/i18n/StringTables.cpp
+  ../apps/daw/src/ui/a11y/AccessibleControl.cpp
+  ../apps/daw/src/ui/a11y/MotionPreferences.cpp)
 target_include_directories(lamusica_onboarding_tests PRIVATE ../apps/daw/src)
 target_link_libraries(lamusica_onboarding_tests PRIVATE lamusica::session)
 lamusica_configure_target(lamusica_onboarding_tests)
@@ -79,13 +83,17 @@ add_test(NAME lamusica_rt_deadline_bench
 set_tests_properties(lamusica_rt_deadline_bench PROPERTIES LABELS perf)
 
 add_test(NAME lamusica_onboarding_tests
-         COMMAND lamusica_onboarding_tests "${CMAKE_CURRENT_BINARY_DIR}/onboarding")
+         COMMAND lamusica_onboarding_tests "${CMAKE_CURRENT_BINARY_DIR}/onboarding"
+                 "${PROJECT_SOURCE_DIR}")
 set_tests_properties(lamusica_onboarding_tests PROPERTIES LABELS onboarding)
 
 add_test(NAME lamusica_mcpd_fixture_client
          COMMAND lamusica_mcp_fixture_client $<TARGET_FILE:lamusica_mcpd>
                  "${PROJECT_SOURCE_DIR}/fixtures/empty.Project.lamusica")
 add_test(NAME lamusica_mcpd_health COMMAND lamusica_mcpd --health)
+add_test(NAME lamusica_mcpd_diagnostics_crash_smoke
+         COMMAND lamusica_mcpd --diagnostics-crash-smoke)
+set_tests_properties(lamusica_mcpd_diagnostics_crash_smoke PROPERTIES LABELS privacy)
 add_test(NAME lamusica_daw_first_track_smoke
          COMMAND lamusica_daw_smoke --first-track-smoke)
 add_test(NAME lamusica_daw_app_session_first_track_smoke
@@ -162,6 +170,8 @@ set(LAMUSICA_FIRST_TRACK_PACKAGE
     "${CMAKE_CURRENT_BINARY_DIR}/cli-first-track-package")
 set(LAMUSICA_FIRST_TRACK_RENDER
     "${CMAKE_CURRENT_BINARY_DIR}/cli-first-track.wav")
+set(LAMUSICA_FIRST_TRACK_RENDER_LOG
+    "${CMAKE_CURRENT_BINARY_DIR}/cli-first-track-render.log")
 set(LAMUSICA_TUTORIAL_FIRST_TRACK_RENDER
     "${CMAKE_CURRENT_BINARY_DIR}/tutorial-first-track.wav")
 set(LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT
@@ -176,12 +186,34 @@ set(LAMUSICA_CLI_MIX_FIRST_TRACK_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/cli-mix-first-track.Project.lamusica")
 set(LAMUSICA_CLI_GENERIC_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/cli-generic.Project.lamusica")
+set(LAMUSICA_CLI_ARBITRARY_ID_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/cli-arbitrary-id.Project.lamusica")
 set(LAMUSICA_CLI_GENERIC_RENDER "${CMAKE_CURRENT_BINARY_DIR}/cli-generic-range.wav")
 set(LAMUSICA_CLI_GENERIC_STEMS "${CMAKE_CURRENT_BINARY_DIR}/cli-generic-stems")
 set(LAMUSICA_CLI_SCHEMA_JSON "${CMAKE_CURRENT_BINARY_DIR}/cli-schema.json")
 set(LAMUSICA_CLI_GENERIC_QUERY_JSON "${CMAKE_CURRENT_BINARY_DIR}/cli-generic-query.json")
+set(LAMUSICA_CLI_ARBITRARY_ID_QUERY_JSON
+    "${CMAKE_CURRENT_BINARY_DIR}/cli-arbitrary-id-query.json")
+set(LAMUSICA_CLI_ARBITRARY_ID_PREVIEW_JSON
+    "${CMAKE_CURRENT_BINARY_DIR}/cli-arbitrary-id-preview.json")
+set(LAMUSICA_CLI_ESCAPED_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/cli-escaped.Project.lamusica")
+set(LAMUSICA_CLI_ESCAPED_QUERY_JSON "${CMAKE_CURRENT_BINARY_DIR}/cli-escaped-query.json")
 set(LAMUSICA_CLI_GENERIC_PREVIEW_JSON "${CMAKE_CURRENT_BINARY_DIR}/cli-generic-preview.json")
 set(LAMUSICA_CLI_GENERIC_RENDER_JSON "${CMAKE_CURRENT_BINARY_DIR}/cli-generic-render.json")
+set(LAMUSICA_CLI_MIGRATE_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/cli-legacy-v0.Project.lamusica")
+set(LAMUSICA_CLI_MIGRATE_JSON "${CMAKE_CURRENT_BINARY_DIR}/cli-migrate.json")
+set(LAMUSICA_CLI_PUNCH_TAKES_TEXT "${CMAKE_CURRENT_BINARY_DIR}/cli-punch-takes.txt")
+set(LAMUSICA_CLI_INITIAL_CLIPS_TEXT "${CMAKE_CURRENT_BINARY_DIR}/cli-initial-clips.txt")
+set(LAMUSICA_CLI_EDITED_CLIPS_TEXT "${CMAKE_CURRENT_BINARY_DIR}/cli-edited-clips.txt")
+set(LAMUSICA_CLI_RECORDED_TAKES_TEXT "${CMAKE_CURRENT_BINARY_DIR}/cli-recorded-takes.txt")
+set(LAMUSICA_CLI_MUTED_TAKES_TEXT "${CMAKE_CURRENT_BINARY_DIR}/cli-muted-takes.txt")
+set(LAMUSICA_CLI_MIX_TEXT "${CMAKE_CURRENT_BINARY_DIR}/cli-track-mix.txt")
+set(LAMUSICA_CLI_INSPECT_READY_TEXT "${CMAKE_CURRENT_BINARY_DIR}/cli-inspect-ready.txt")
+set(LAMUSICA_CLI_INSPECT_MISSING_MEDIA_TEXT
+    "${CMAKE_CURRENT_BINARY_DIR}/cli-inspect-missing-media.txt")
+set(LAMUSICA_CLI_INSPECT_RELINKED_TEXT "${CMAKE_CURRENT_BINARY_DIR}/cli-inspect-relinked.txt")
 add_test(NAME lamusica_cli_first_track_lifecycle_clean
          COMMAND ${CMAKE_COMMAND} -E rm -rf "${LAMUSICA_CLI_LIFECYCLE_PROJECT}"
                  "${LAMUSICA_FIRST_TRACK_PROJECT}" "${LAMUSICA_FIRST_TRACK_PACKAGE}"
@@ -193,12 +225,37 @@ add_test(NAME lamusica_cli_first_track_lifecycle_clean
                  "${LAMUSICA_CLI_GENERIC_PROJECT}" "${LAMUSICA_CLI_GENERIC_RENDER}"
                  "${LAMUSICA_CLI_GENERIC_STEMS}" "${LAMUSICA_CLI_SCHEMA_JSON}"
                  "${LAMUSICA_CLI_GENERIC_QUERY_JSON}" "${LAMUSICA_CLI_GENERIC_PREVIEW_JSON}"
-                 "${LAMUSICA_CLI_GENERIC_RENDER_JSON}")
+                 "${LAMUSICA_CLI_GENERIC_RENDER_JSON}" "${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}"
+                 "${LAMUSICA_CLI_ARBITRARY_ID_PREVIEW_JSON}"
+                 "${LAMUSICA_CLI_ESCAPED_PROJECT}"
+                 "${LAMUSICA_CLI_ESCAPED_QUERY_JSON}" "${LAMUSICA_CLI_MIGRATE_PROJECT}"
+                 "${LAMUSICA_CLI_MIGRATE_JSON}" "${LAMUSICA_CLI_PUNCH_TAKES_TEXT}"
+                 "${LAMUSICA_CLI_INITIAL_CLIPS_TEXT}" "${LAMUSICA_CLI_EDITED_CLIPS_TEXT}"
+                 "${LAMUSICA_CLI_RECORDED_TAKES_TEXT}" "${LAMUSICA_CLI_MUTED_TAKES_TEXT}"
+                 "${LAMUSICA_CLI_MIX_TEXT}" "${LAMUSICA_CLI_INSPECT_READY_TEXT}"
+                 "${LAMUSICA_CLI_INSPECT_MISSING_MEDIA_TEXT}"
+                 "${LAMUSICA_CLI_INSPECT_RELINKED_TEXT}")
+add_test(NAME lamusica_cli_help COMMAND lamusica_cli --help)
+set_tests_properties(lamusica_cli_help PROPERTIES LABELS cli)
 add_test(
   NAME lamusica_cli_schema_json_contract
   COMMAND
     /bin/sh -c
     "$<TARGET_FILE:lamusica_cli> schema --json > \"${LAMUSICA_CLI_SCHEMA_JSON}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-json \"${LAMUSICA_CLI_SCHEMA_JSON}\" schema")
+add_test(
+  NAME lamusica_cli_prepare_legacy_migrate_project
+  COMMAND
+    /bin/sh -c
+    "rm -rf \"${LAMUSICA_CLI_MIGRATE_PROJECT}\" && mkdir -p \"${LAMUSICA_CLI_MIGRATE_PROJECT}\" && printf '%s\n' '{\"schemaVersion\": 0, \"projectName\": \"CLI Legacy\"}' > \"${LAMUSICA_CLI_MIGRATE_PROJECT}/project.json\"")
+add_test(
+  NAME lamusica_cli_migrate_legacy_project_json
+  COMMAND
+    /bin/sh -c
+    "$<TARGET_FILE:lamusica_cli> migrate \"${LAMUSICA_CLI_MIGRATE_PROJECT}\" --json > \"${LAMUSICA_CLI_MIGRATE_JSON}\"")
+add_test(
+  NAME lamusica_cli_migrate_legacy_project_json_contract
+  COMMAND
+    lamusica_artifact_assertions assert-cli-json "${LAMUSICA_CLI_MIGRATE_JSON}" migrate)
 add_test(NAME lamusica_cli_create_first_track_dependency_project
          COMMAND lamusica_cli create-project "${LAMUSICA_CLI_LIFECYCLE_PROJECT}"
                  "CLI Lifecycle")
@@ -245,7 +302,8 @@ add_test(NAME lamusica_cli_assert_punch_first_track_take
          COMMAND lamusica_artifact_assertions assert-clip-timing
                  "${LAMUSICA_CLI_PUNCH_FIRST_TRACK_PROJECT}" recorded-take-1 48000 48000 0)
 add_test(NAME lamusica_cli_list_punch_first_track_takes
-         COMMAND lamusica_cli list-first-track-takes "${LAMUSICA_CLI_PUNCH_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> list-first-track-takes \"${LAMUSICA_CLI_PUNCH_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_PUNCH_TAKES_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_PUNCH_TAKES_TEXT}\" first-track-takes-punch")
 add_test(NAME lamusica_cli_create_mix_first_track
          COMMAND lamusica_cli create-first-track "${LAMUSICA_CLI_MIX_FIRST_TRACK_PROJECT}"
                  "CLI Mix First Track")
@@ -256,17 +314,50 @@ add_test(NAME lamusica_cli_assert_mix_first_track
          COMMAND lamusica_artifact_assertions assert-track-mix
                  "${LAMUSICA_CLI_MIX_FIRST_TRACK_PROJECT}" drums -12 0.25 false false)
 add_test(NAME lamusica_cli_list_mix_first_track
-         COMMAND lamusica_cli list-first-track-track-mix "${LAMUSICA_CLI_MIX_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> list-first-track-track-mix \"${LAMUSICA_CLI_MIX_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_MIX_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_MIX_TEXT}\" first-track-mix")
 add_test(NAME lamusica_cli_create_generic_project
          COMMAND lamusica_cli create-first-track "${LAMUSICA_CLI_GENERIC_PROJECT}"
                  "CLI Generic")
+add_test(
+  NAME lamusica_cli_prepare_arbitrary_id_project
+  COMMAND
+    /bin/sh -c
+    "rm -rf \"${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}\" && mkdir -p \"${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}\" && printf '%s\n' '{' '  \"schemaVersion\": 3,' '  \"name\": \"CLI Arbitrary IDs\",' '  \"projectSampleRate\": 48000.0,' '  \"loopEnabled\": false,' '  \"loopStartSample\": 0,' '  \"loopEndSample\": 0,' '  \"tempoMap\": [{\"samplePosition\": 0, \"bpm\": 120}],' '  \"timeSignatures\": [{\"samplePosition\": 0, \"numerator\": 4, \"denominator\": 4}],' '  \"markers\": [],' '  \"assets\": [],' '  \"tracks\": [{\"id\": \"track-custom\", \"name\": \"Custom Track\", \"type\": \"audio\"}],' '  \"clips\": [{' '    \"id\": \"custom-clip-alpha\",' '    \"trackId\": \"track-custom\",' '    \"type\": \"pattern\",' '    \"startSample\": 0,' '    \"lengthSamples\": 48000,' '    \"sourceOffsetSamples\": 0,' '    \"fadeInSamples\": 0,' '    \"fadeOutSamples\": 0,' '    \"gainDb\": -3.0,' '    \"muted\": false,' '    \"reversed\": false,' '    \"assetId\": \"\"' '  }],' '  \"midiClips\": [],' '  \"takeLanes\": [],' '  \"comps\": [],' '  \"routing\": [],' '  \"trackMix\": [],' '  \"plugins\": [],' '  \"automation\": [],' '  \"mcpAuditLog\": []' '}' > \"${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}/project.json\"")
+add_test(NAME lamusica_cli_query_arbitrary_id_project_json
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> query \"${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}\" --json > \"${LAMUSICA_CLI_ARBITRARY_ID_QUERY_JSON}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-json \"${LAMUSICA_CLI_ARBITRARY_ID_QUERY_JSON}\" query-arbitrary")
+add_test(NAME lamusica_cli_arbitrary_id_edit_preview
+         COMMAND lamusica_cli edit "${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}" set-clip-gain
+                 custom-clip-alpha -7.5 --dry-run)
+add_test(
+  NAME lamusica_cli_arbitrary_id_edit_preview_json
+  COMMAND
+    /bin/sh -c
+    "$<TARGET_FILE:lamusica_cli> edit \"${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}\" set-clip-gain custom-clip-alpha -7.5 --dry-run --json > \"${LAMUSICA_CLI_ARBITRARY_ID_PREVIEW_JSON}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-json \"${LAMUSICA_CLI_ARBITRARY_ID_PREVIEW_JSON}\" preview-arbitrary")
+add_test(NAME lamusica_cli_arbitrary_id_edit_preview_kept_project
+         COMMAND lamusica_artifact_assertions assert-clip-gain
+                 "${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}" custom-clip-alpha -3.0)
+add_test(NAME lamusica_cli_arbitrary_id_edit_confirm
+         COMMAND lamusica_cli edit "${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}" set-clip-gain
+                 custom-clip-alpha -7.5 --confirm
+                 set-clip-gain:clip-custom-clip-alpha:confirm)
+add_test(NAME lamusica_cli_arbitrary_id_edit_artifact
+         COMMAND lamusica_artifact_assertions assert-clip-gain
+                 "${LAMUSICA_CLI_ARBITRARY_ID_PROJECT}" custom-clip-alpha -7.5)
 add_test(NAME lamusica_cli_query_generic_project_json
-         COMMAND lamusica_cli query "${LAMUSICA_CLI_GENERIC_PROJECT}" --json)
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> query \"${LAMUSICA_CLI_GENERIC_PROJECT}\" --json > \"${LAMUSICA_CLI_GENERIC_QUERY_JSON}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-json \"${LAMUSICA_CLI_GENERIC_QUERY_JSON}\" query")
 add_test(
   NAME lamusica_cli_query_generic_project_json_contract
   COMMAND
     /bin/sh -c
     "$<TARGET_FILE:lamusica_cli> query \"${LAMUSICA_CLI_GENERIC_PROJECT}\" --json > \"${LAMUSICA_CLI_GENERIC_QUERY_JSON}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-json \"${LAMUSICA_CLI_GENERIC_QUERY_JSON}\" query")
+add_test(
+  NAME lamusica_cli_query_json_escapes_control_bytes
+  COMMAND
+    /bin/sh -c
+    "rm -rf \"${LAMUSICA_CLI_ESCAPED_PROJECT}\" && name=$(printf 'CLI \"Escaped\" \\\\ Path \\001 Tab\\t') && $<TARGET_FILE:lamusica_cli> create-project \"${LAMUSICA_CLI_ESCAPED_PROJECT}\" \"$name\" && $<TARGET_FILE:lamusica_cli> query \"${LAMUSICA_CLI_ESCAPED_PROJECT}\" --json > \"${LAMUSICA_CLI_ESCAPED_QUERY_JSON}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-json \"${LAMUSICA_CLI_ESCAPED_QUERY_JSON}\" query-escaped")
 add_test(NAME lamusica_cli_generic_edit_clip_gain_preview
          COMMAND lamusica_cli edit "${LAMUSICA_CLI_GENERIC_PROJECT}" set-clip-gain drum-loop -6
                  --dry-run)
@@ -279,6 +370,12 @@ add_test(
     /bin/sh -c
     "$<TARGET_FILE:lamusica_cli> edit \"${LAMUSICA_CLI_GENERIC_PROJECT}\" set-clip-gain drum-loop -6 --dry-run --json > \"${LAMUSICA_CLI_GENERIC_PREVIEW_JSON}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-json \"${LAMUSICA_CLI_GENERIC_PREVIEW_JSON}\" preview")
 add_test(NAME lamusica_cli_generic_edit_preview_kept_project
+         COMMAND lamusica_artifact_assertions assert-clip-gain
+                 "${LAMUSICA_CLI_GENERIC_PROJECT}" drum-loop -9)
+add_test(NAME lamusica_cli_generic_edit_clip_gain_reject_bad_confirm
+         COMMAND lamusica_cli edit "${LAMUSICA_CLI_GENERIC_PROJECT}" set-clip-gain drum-loop -6
+                 --confirm wrong-token)
+add_test(NAME lamusica_cli_generic_edit_bad_confirm_kept_project
          COMMAND lamusica_artifact_assertions assert-clip-gain
                  "${LAMUSICA_CLI_GENERIC_PROJECT}" drum-loop -9)
 add_test(NAME lamusica_cli_generic_edit_clip_gain_confirm
@@ -311,10 +408,12 @@ add_test(NAME lamusica_cli_generic_render_stems_artifact
                  48000 24 0.001)
 add_test(NAME lamusica_cli_first_track_render_clean
          COMMAND ${CMAKE_COMMAND} -E rm -f "${LAMUSICA_FIRST_TRACK_RENDER}"
-                 "${LAMUSICA_TUTORIAL_FIRST_TRACK_RENDER}")
-add_test(NAME lamusica_cli_render_created_first_track
-         COMMAND lamusica_cli render-project "${LAMUSICA_FIRST_TRACK_PROJECT}"
-                 "${LAMUSICA_FIRST_TRACK_RENDER}")
+                 "${LAMUSICA_TUTORIAL_FIRST_TRACK_RENDER}" "${LAMUSICA_FIRST_TRACK_RENDER_LOG}")
+add_test(
+  NAME lamusica_cli_render_created_first_track
+  COMMAND
+    /bin/sh -c
+    "$<TARGET_FILE:lamusica_cli> render-project \"${LAMUSICA_FIRST_TRACK_PROJECT}\" \"${LAMUSICA_FIRST_TRACK_RENDER}\" > \"${LAMUSICA_FIRST_TRACK_RENDER_LOG}\" && grep -F 'postDitherPeak=' \"${LAMUSICA_FIRST_TRACK_RENDER_LOG}\" && ! grep -F ' peak=' \"${LAMUSICA_FIRST_TRACK_RENDER_LOG}\"")
 add_test(NAME lamusica_cli_render_first_track_tutorial
          COMMAND lamusica_cli render-project
                  "${PROJECT_SOURCE_DIR}/fixtures/tutorials/first-song.Project.lamusica"
@@ -334,7 +433,8 @@ add_test(NAME lamusica_cli_create_edit_first_track
          COMMAND lamusica_cli create-first-track "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}"
                  "CLI Edited First Track")
 add_test(NAME lamusica_cli_list_initial_first_track_clips
-         COMMAND lamusica_cli list-first-track-clips "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> list-first-track-clips \"${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_INITIAL_CLIPS_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_INITIAL_CLIPS_TEXT}\" first-track-clips")
 add_test(NAME lamusica_cli_assert_initial_first_track_clips
          COMMAND lamusica_artifact_assertions assert-project
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" 3 2)
@@ -396,7 +496,8 @@ add_test(NAME lamusica_cli_assert_reverse_recorded_first_track_take
          COMMAND lamusica_artifact_assertions assert-clip-reversed
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" recorded-take-1 true)
 add_test(NAME lamusica_cli_list_recorded_first_track_takes
-         COMMAND lamusica_cli list-first-track-takes "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> list-first-track-takes \"${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_RECORDED_TAKES_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_RECORDED_TAKES_TEXT}\" first-track-takes")
 add_test(NAME lamusica_cli_mute_recorded_first_track_take
          COMMAND lamusica_cli mute-first-track-take
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" recorded-take-1 true)
@@ -404,7 +505,8 @@ add_test(NAME lamusica_cli_assert_mute_recorded_first_track_take
          COMMAND lamusica_artifact_assertions assert-clip-muted
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" recorded-take-1 true)
 add_test(NAME lamusica_cli_list_muted_first_track_takes
-         COMMAND lamusica_cli list-first-track-takes "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> list-first-track-takes \"${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_MUTED_TAKES_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_MUTED_TAKES_TEXT}\" first-track-takes-muted")
 add_test(NAME lamusica_cli_unmute_recorded_first_track_take
          COMMAND lamusica_cli mute-first-track-take
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" recorded-take-1 false)
@@ -449,9 +551,11 @@ add_test(NAME lamusica_cli_assert_unmute_imported_first_track
          COMMAND lamusica_artifact_assertions assert-clip-muted
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" imported-audio-copy false)
 add_test(NAME lamusica_cli_list_edited_first_track_clips
-         COMMAND lamusica_cli list-first-track-clips "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> list-first-track-clips \"${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_EDITED_CLIPS_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_EDITED_CLIPS_TEXT}\" first-track-clips-edited")
 add_test(NAME lamusica_cli_inspect_edit_first_track
-         COMMAND lamusica_cli inspect-project "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> inspect-project \"${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_INSPECT_READY_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_INSPECT_READY_TEXT}\" inspect-ready")
 add_test(NAME lamusica_cli_assert_edit_first_track_state
          COMMAND lamusica_artifact_assertions assert-first-track-state
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" 192000 12 true 0 96000 5 5)
@@ -472,7 +576,8 @@ add_test(NAME lamusica_cli_assert_edit_first_track_missing_media
          COMMAND lamusica_artifact_assertions assert-assets
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" 1 1)
 add_test(NAME lamusica_cli_inspect_edit_first_track_missing_media
-         COMMAND lamusica_cli inspect-project "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> inspect-project \"${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_INSPECT_MISSING_MEDIA_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_INSPECT_MISSING_MEDIA_TEXT}\" inspect-missing-media")
 add_test(NAME lamusica_daw_inspect_edit_first_track_missing_media
          COMMAND lamusica_daw_smoke --inspect-project "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
 add_test(NAME lamusica_cli_relink_edit_first_track_media
@@ -483,7 +588,8 @@ add_test(NAME lamusica_cli_assert_edit_first_track_relinked_media
          COMMAND lamusica_artifact_assertions assert-assets
                  "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}" 2 0)
 add_test(NAME lamusica_cli_inspect_edit_first_track_relinked_media
-         COMMAND lamusica_cli inspect-project "${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}")
+         COMMAND /bin/sh -c
+                 "$<TARGET_FILE:lamusica_cli> inspect-project \"${LAMUSICA_CLI_EDIT_FIRST_TRACK_PROJECT}\" > \"${LAMUSICA_CLI_INSPECT_RELINKED_TEXT}\" && $<TARGET_FILE:lamusica_artifact_assertions> assert-cli-text \"${LAMUSICA_CLI_INSPECT_RELINKED_TEXT}\" inspect-ready")
 
 set_tests_properties(lamusica_daw_create_first_track
                      PROPERTIES DEPENDS lamusica_daw_first_track_clean)
@@ -497,6 +603,13 @@ set_tests_properties(lamusica_daw_headless_binding
                      PROPERTIES DEPENDS lamusica_daw_first_track_clean LABELS gui)
 set_tests_properties(lamusica_daw_headless_binding_artifact
                      PROPERTIES DEPENDS lamusica_daw_headless_binding LABELS gui)
+set_tests_properties(lamusica_cli_schema_json_contract PROPERTIES LABELS cli)
+set_tests_properties(lamusica_cli_prepare_legacy_migrate_project
+                     PROPERTIES DEPENDS lamusica_cli_first_track_lifecycle_clean LABELS cli)
+set_tests_properties(lamusica_cli_migrate_legacy_project_json
+                     PROPERTIES DEPENDS lamusica_cli_prepare_legacy_migrate_project LABELS cli)
+set_tests_properties(lamusica_cli_migrate_legacy_project_json_contract
+                     PROPERTIES DEPENDS lamusica_cli_migrate_legacy_project_json LABELS cli)
 set_tests_properties(lamusica_cli_create_first_track_dependency_project
                      PROPERTIES DEPENDS lamusica_cli_first_track_lifecycle_clean)
 set_tests_properties(lamusica_cli_validate_first_track_dependency_project
@@ -543,26 +656,57 @@ set_tests_properties(lamusica_cli_list_mix_first_track
                      PROPERTIES DEPENDS lamusica_cli_assert_mix_first_track)
 set_tests_properties(lamusica_cli_create_generic_project
                      PROPERTIES DEPENDS lamusica_cli_first_track_lifecycle_clean)
+set_tests_properties(lamusica_cli_prepare_arbitrary_id_project
+                     PROPERTIES DEPENDS lamusica_cli_first_track_lifecycle_clean LABELS cli)
+set_tests_properties(lamusica_cli_query_arbitrary_id_project_json
+                     PROPERTIES DEPENDS lamusica_cli_prepare_arbitrary_id_project LABELS cli)
+set_tests_properties(lamusica_cli_arbitrary_id_edit_preview
+                     PROPERTIES DEPENDS lamusica_cli_query_arbitrary_id_project_json LABELS cli)
+set_tests_properties(lamusica_cli_arbitrary_id_edit_preview_json
+                     PROPERTIES DEPENDS lamusica_cli_arbitrary_id_edit_preview LABELS cli)
+set_tests_properties(lamusica_cli_arbitrary_id_edit_preview_kept_project
+                     PROPERTIES DEPENDS lamusica_cli_arbitrary_id_edit_preview_json LABELS cli)
+set_tests_properties(lamusica_cli_arbitrary_id_edit_confirm
+                     PROPERTIES DEPENDS lamusica_cli_arbitrary_id_edit_preview_kept_project
+                                LABELS cli)
+set_tests_properties(lamusica_cli_arbitrary_id_edit_artifact
+                     PROPERTIES DEPENDS lamusica_cli_arbitrary_id_edit_confirm LABELS cli)
 set_tests_properties(lamusica_cli_query_generic_project_json
                      PROPERTIES DEPENDS lamusica_cli_create_generic_project LABELS cli)
+set_tests_properties(lamusica_cli_query_generic_project_json_contract
+                     PROPERTIES DEPENDS lamusica_cli_query_generic_project_json LABELS cli)
+set_tests_properties(lamusica_cli_query_json_escapes_control_bytes
+                     PROPERTIES DEPENDS lamusica_cli_first_track_lifecycle_clean LABELS cli)
 set_tests_properties(lamusica_cli_generic_edit_clip_gain_preview
                      PROPERTIES DEPENDS lamusica_cli_query_generic_project_json LABELS cli)
 set_tests_properties(lamusica_cli_generic_edit_clip_gain_preview_json
                      PROPERTIES DEPENDS lamusica_cli_generic_edit_clip_gain_preview LABELS cli)
-set_tests_properties(lamusica_cli_generic_edit_preview_kept_project
+set_tests_properties(lamusica_cli_generic_edit_clip_gain_preview_json_contract
                      PROPERTIES DEPENDS lamusica_cli_generic_edit_clip_gain_preview_json LABELS cli)
+set_tests_properties(lamusica_cli_generic_edit_preview_kept_project
+                     PROPERTIES DEPENDS lamusica_cli_generic_edit_clip_gain_preview_json_contract
+                                LABELS cli)
+set_tests_properties(lamusica_cli_generic_edit_clip_gain_reject_bad_confirm
+                     PROPERTIES DEPENDS lamusica_cli_generic_edit_preview_kept_project LABELS cli
+                                WILL_FAIL TRUE)
+set_tests_properties(lamusica_cli_generic_edit_bad_confirm_kept_project
+                     PROPERTIES DEPENDS lamusica_cli_generic_edit_clip_gain_reject_bad_confirm
+                                LABELS cli)
 set_tests_properties(lamusica_cli_generic_edit_clip_gain_confirm
-                     PROPERTIES DEPENDS lamusica_cli_generic_edit_preview_kept_project LABELS cli)
+                     PROPERTIES DEPENDS lamusica_cli_generic_edit_bad_confirm_kept_project
+                                LABELS cli)
 set_tests_properties(lamusica_cli_generic_edit_clip_gain_artifact
                      PROPERTIES DEPENDS lamusica_cli_generic_edit_clip_gain_confirm LABELS cli)
 set_tests_properties(lamusica_cli_generic_render_range_24bit
                      PROPERTIES DEPENDS lamusica_cli_generic_edit_clip_gain_artifact LABELS cli)
+set_tests_properties(lamusica_cli_generic_render_range_24bit_json_contract
+                     PROPERTIES DEPENDS lamusica_cli_generic_render_range_24bit LABELS cli)
 set_tests_properties(lamusica_cli_generic_render_rejects_bad_format
                      PROPERTIES DEPENDS lamusica_cli_generic_edit_clip_gain_artifact LABELS cli
                                 WILL_FAIL TRUE)
 set_tests_properties(lamusica_cli_generic_render_range_artifact
                      PROPERTIES DEPENDS
-                                "lamusica_cli_generic_render_range_24bit;lamusica_cli_generic_render_rejects_bad_format"
+                                "lamusica_cli_generic_render_range_24bit_json_contract;lamusica_cli_generic_render_rejects_bad_format"
                                 LABELS cli)
 set_tests_properties(lamusica_cli_generic_render_stems_24bit
                      PROPERTIES DEPENDS lamusica_cli_generic_edit_clip_gain_artifact LABELS cli)
@@ -741,3 +885,10 @@ add_test(NAME lamusica_cli_verify_examples_rejects_missing_assets
          COMMAND lamusica_cli verify-examples "${CMAKE_CURRENT_BINARY_DIR}/missing-assets")
 set_tests_properties(lamusica_cli_verify_examples_rejects_missing_assets
                      PROPERTIES WILL_FAIL TRUE)
+
+get_property(LAMUSICA_REGISTERED_TESTS DIRECTORY PROPERTY TESTS)
+foreach(LAMUSICA_REGISTERED_TEST IN LISTS LAMUSICA_REGISTERED_TESTS)
+  if(LAMUSICA_REGISTERED_TEST MATCHES "^lamusica_cli_")
+    set_property(TEST "${LAMUSICA_REGISTERED_TEST}" APPEND PROPERTY LABELS cli)
+  endif()
+endforeach()

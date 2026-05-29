@@ -74,6 +74,12 @@ std::string readTextFile(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
 }
 
+std::string readBinaryFile(const std::filesystem::path& path) {
+    std::ifstream input{path, std::ios::binary};
+    require(static_cast<bool>(input), "test fixture binary file opens for reading");
+    return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+}
+
 } // namespace
 
 int main() {
@@ -164,12 +170,15 @@ int main() {
                                        .outputChannels = 2});
     std::vector<float> deviceBoundaryOutput(441 * 2);
     deviceBoundaryEngine.renderGraphDeviceBlock(graph, deviceBoundaryOutput, 441);
+    const auto expectedDeviceBoundarySample = static_cast<float>(
+        std::sin((440.0 * 2.0 * std::numbers::pi) / 44100.0) * 0.25 * 0.5 * 0.5 * 0.5);
     require(deviceBoundaryEngine.config().sampleRate == 48000.0 &&
                 deviceBoundaryEngine.device().sampleRate == 44100.0 &&
                 deviceBoundaryEngine.transport().samplePosition == 480 &&
+                std::abs(deviceBoundaryOutput[2] - expectedDeviceBoundarySample) < 0.0001F &&
                 std::ranges::any_of(deviceBoundaryOutput,
                                     [](float sample) { return sample != 0.0F; }),
-            "audio engine resamples project-rate graph blocks to device-rate output");
+            "audio engine resamples project-rate graph blocks to device-rate output without pitch drift");
     lamusica::audio::GraphNode noteSequenceNode;
     noteSequenceNode.id = "note-sequence";
     noteSequenceNode.kind = lamusica::audio::GraphNodeKind::Sine;
@@ -507,7 +516,8 @@ int main() {
                 mcpMixJob.resultManifestJson.find("\"type\":\"project_mix_export\"") !=
                     std::string::npos &&
                 mcpMixJob.resultManifestJson.find("\"explicitExport\":true") != std::string::npos &&
-                mcpMixJob.resultManifestJson.find("\"peakAfterDither\"") != std::string::npos,
+                mcpMixJob.resultManifestJson.find("\"peakAfterDither\"") != std::string::npos &&
+                mcpMixJob.resultManifestJson.find("\"postDitherPeak\"") != std::string::npos,
             "MCP project mix export uses session export path");
     require(std::filesystem::exists(mcpMixPath), "MCP project mix export writes WAV");
     const auto mcpBatchAPath = stemDirectory / "mcp-batch-a.wav";
@@ -531,7 +541,8 @@ int main() {
                     std::string::npos &&
                 mcpBatchJob.resultManifestJson.find("\"explicitExport\":true") !=
                     std::string::npos &&
-                mcpBatchJob.resultManifestJson.find("\"peakAfterDither\"") != std::string::npos,
+                mcpBatchJob.resultManifestJson.find("\"peakAfterDither\"") != std::string::npos &&
+                mcpBatchJob.resultManifestJson.find("\"postDitherPeak\"") != std::string::npos,
             "MCP batch project mix export writes explicit export manifest");
     require(std::filesystem::exists(mcpBatchAPath) && std::filesystem::exists(mcpBatchBPath),
             "MCP batch project mix export writes all requested files");
@@ -560,7 +571,8 @@ int main() {
                     std::string::npos &&
                 mcpStemJob.resultManifestJson.find("\"trackId\":\"stem-a\"") !=
                     std::string::npos &&
-                mcpStemJob.resultManifestJson.find("\"peakAfterDither\"") != std::string::npos,
+                mcpStemJob.resultManifestJson.find("\"peakAfterDither\"") != std::string::npos &&
+                mcpStemJob.resultManifestJson.find("\"postDitherPeak\"") != std::string::npos,
             "MCP stem export writes batch manifest");
     require(std::filesystem::exists(mcpStemDirectory / "stem-a.wav") &&
                 std::filesystem::exists(mcpStemDirectory / "stem-b.wav"),
@@ -849,7 +861,7 @@ int main() {
     std::filesystem::create_directories(compProjectRoot / "Media");
     const auto compTakeAPath = compProjectRoot / "Media" / "take-a.wav";
     const auto compTakeBPath = compProjectRoot / "Media" / "take-b.wav";
-    const std::vector<float> compTakeASamples(256, -0.75F);
+    const std::vector<float> compTakeASamples(256, 0.25F);
     const std::vector<float> compTakeBSamples(256, 0.75F);
     lamusica::audio::writePcm16Wav(
         compTakeAPath,
@@ -857,6 +869,8 @@ int main() {
     lamusica::audio::writePcm16Wav(
         compTakeBPath,
         {.channels = 1, .frames = 256, .interleavedSamples = compTakeBSamples}, 48000.0);
+    const auto compTakeABytesBefore = readBinaryFile(compTakeAPath);
+    const auto compTakeBBytesBefore = readBinaryFile(compTakeBPath);
 
     lamusica::session::ProjectManifest compManifest;
     compManifest.name = "Comp Render";
@@ -901,6 +915,33 @@ int main() {
                 roundTrippedCompManifest.takeLanes.size() == 1 &&
                 roundTrippedCompManifest.comps.size() == 1,
             "project manifest round-trips comp take lanes and segments");
+    bool rejectedMissingCompTake = false;
+    try {
+        auto invalidCompManifest = roundTrippedCompManifest;
+        invalidCompManifest.comps.front().segments.front().takeId = "missing-take";
+        lamusica::session::validateProjectManifest(invalidCompManifest);
+    } catch (const std::exception&) {
+        rejectedMissingCompTake = true;
+    }
+    bool rejectedOutOfRangeCompSegment = false;
+    try {
+        auto invalidCompManifest = roundTrippedCompManifest;
+        invalidCompManifest.comps.front().segments.front().takeSourceOffsetSamples = 127;
+        invalidCompManifest.comps.front().segments.front().lengthSamples = 2;
+        lamusica::session::validateProjectManifest(invalidCompManifest);
+    } catch (const std::exception&) {
+        rejectedOutOfRangeCompSegment = true;
+    }
+    bool rejectedNonAudioComp = false;
+    try {
+        auto invalidCompManifest = roundTrippedCompManifest;
+        invalidCompManifest.clips.front().type = lamusica::session::ClipType::Midi;
+        lamusica::session::validateProjectManifest(invalidCompManifest);
+    } catch (const std::exception&) {
+        rejectedNonAudioComp = true;
+    }
+    require(rejectedMissingCompTake && rejectedOutOfRangeCompSegment && rejectedNonAudioComp,
+            "project manifest rejects invalid comp take references and non-audio comps");
     const auto compGraph = lamusica::session::compileProjectAudioGraph(
         roundTrippedCompManifest, {}, {.projectRoot = compProjectRoot});
     const auto compSegmentNodeCount = std::ranges::count_if(
@@ -916,10 +957,23 @@ int main() {
         compRenderMaxDelta =
             std::max(compRenderMaxDelta, std::abs(compRender[frame] - compRender[frame - 1U]));
     }
-    require(compSegmentNodeCount == 2 && compRender[8] < -0.5F && compRender[120] > 0.5F &&
-                compRenderMaxDelta < 0.8F && compTakeASamples.front() == -0.75F &&
+    require(compSegmentNodeCount == 3 && compRender[8] > 0.2F && compRender[63] > 0.2F &&
+                compRender[64] > 0.2F && compRender[120] > 0.5F &&
+                compRenderMaxDelta < 0.2F && compTakeASamples.front() == 0.25F &&
                 compTakeBSamples.front() == 0.75F,
-            "graph compiler renders active comp segments click-free and nondestructively");
+            "graph compiler renders active comp segments with an overlapped tail crossfade and no seam dip");
+    const auto compExportPath = compProjectRoot / "comp-export.wav";
+    const auto compExport = lamusica::session::exportProjectMixToWav(
+        roundTrippedCompManifest, {}, {.outputPath = compExportPath,
+                                       .frames = 128,
+                                       .channels = 1,
+                                       .projectRoot = compProjectRoot});
+    const auto compExportWav = lamusica::audio::readPcm16Wav(compExportPath);
+    require(compExport.frames == 128 && compExportWav.audio.frames == 128 &&
+                compExportWav.audio.channels == 1 &&
+                compExportWav.audio.interleavedSamples[8] > 0.2F &&
+                compExportWav.audio.interleavedSamples[120] > 0.5F,
+            "project mix export reflects active comp segment rendering");
     auto editedCompManifest = roundTrippedCompManifest;
     editedCompManifest.comps.front().segments = {
         {.takeId = "take-b", .clipStartSample = 0, .lengthSamples = 64},
@@ -928,12 +982,24 @@ int main() {
         editedCompManifest, {}, {.projectRoot = compProjectRoot});
     std::vector<float> editedCompRender(128);
     lamusica::audio::renderGraph(editedCompGraph, compEngineConfig, 0, 128, editedCompRender);
+    const auto editedCompExportPath = compProjectRoot / "comp-edited-export.wav";
+    const auto editedCompExport = lamusica::session::exportProjectMixToWav(
+        editedCompManifest, {}, {.outputPath = editedCompExportPath,
+                                 .frames = 128,
+                                 .channels = 1,
+                                 .projectRoot = compProjectRoot});
+    const auto editedCompExportWav = lamusica::audio::readPcm16Wav(editedCompExportPath);
     require(editedCompRender != compRender &&
-                lamusica::audio::readPcm16Wav(compTakeAPath).audio.interleavedSamples.front() <
-                    -0.7F &&
+                editedCompExport.frames == 128 &&
+                editedCompExportWav.audio.interleavedSamples !=
+                    compExportWav.audio.interleavedSamples &&
+                readBinaryFile(compTakeAPath) == compTakeABytesBefore &&
+                readBinaryFile(compTakeBPath) == compTakeBBytesBefore &&
+                lamusica::audio::readPcm16Wav(compTakeAPath).audio.interleavedSamples.front() >
+                    0.2F &&
                 lamusica::audio::readPcm16Wav(compTakeBPath).audio.interleavedSamples.front() >
                     0.7F,
-            "editing a comp changes rendered PCM without rewriting take source assets");
+            "editing a comp changes rendered and exported PCM without rewriting take source assets");
     const auto renderCompWithBlockSize = [&](std::uint32_t blockSize) {
         std::vector<float> rendered(128);
         const lamusica::audio::EngineConfig config{
@@ -982,7 +1048,7 @@ int main() {
             mutedTakeMaxDelta,
             std::abs(mutedTakeCompRender[frame] - mutedTakeCompRender[frame - 1U]));
     }
-    require(compSegmentNodePresent(mutedTakeCompGraph) && mutedTakeCompRender[8] < -0.5F &&
+    require(compSegmentNodePresent(mutedTakeCompGraph) && mutedTakeCompRender[8] > 0.2F &&
                 std::abs(mutedTakeCompRender[120]) < 0.000001F && mutedTakeMaxDelta < 0.8F,
             "muted comp take renders silence without breaking adjacent crossfades");
     std::filesystem::remove_all(compProjectRoot);
@@ -1918,6 +1984,47 @@ int main() {
     require(lamusica::mcp_bridge::renderJobJson(renderJob).find("\"type\":\"wav_analysis\"") !=
                 std::string::npos,
             "MCP test tone render includes result manifest");
+    const lamusica::mcp_bridge::RenderJob escapedRenderJob{
+        .id = "render\njob",
+        .status = lamusica::mcp_bridge::RenderJobStatus::Failed,
+        .outputPath = std::filesystem::path{"render\toutput.wav"},
+        .message = "bad control\001bytes",
+        .confirmationToken = "token\rconfirm"};
+    const auto escapedRenderJobJson = lamusica::mcp_bridge::renderJobJson(escapedRenderJob);
+    require(escapedRenderJobJson.find("render\\njob") != std::string::npos &&
+                escapedRenderJobJson.find("render\\toutput.wav") != std::string::npos &&
+                escapedRenderJobJson.find("bad control\\u0001bytes") != std::string::npos &&
+                escapedRenderJobJson.find("token\\rconfirm") != std::string::npos,
+            "MCP render job JSON escapes control characters");
+    const auto escapedEditJson = lamusica::mcp_bridge::editToolResultJson(
+        {.commandId = "cmd\nid",
+         .auditId = "audit\tid",
+         .message = "message\rtext",
+         .preview = "preview\002text"});
+    lamusica::session::ProjectManifest escapedQueryManifest;
+    escapedQueryManifest.name = "Query\nProject\003";
+    const auto escapedQueryJson =
+        lamusica::mcp_bridge::projectSummaryJson(escapedQueryManifest);
+    const lamusica::mcp_bridge::WorkflowPlan escapedWorkflowPlan{
+        .id = "workflow\nid",
+        .name = "Workflow\tName",
+        .steps = {{.id = "step\004id",
+                   .description = "description\rtext",
+                   .commandName = "command\nname",
+                   .commandPreview = "preview\ttext",
+                   .validationMessage = "validation\005text"}}};
+    const auto escapedWorkflowJson =
+        lamusica::mcp_bridge::workflowPlanJson(escapedWorkflowPlan);
+    require(escapedEditJson.find("cmd\\nid") != std::string::npos &&
+                escapedEditJson.find("audit\\tid") != std::string::npos &&
+                escapedEditJson.find("message\\rtext") != std::string::npos &&
+                escapedEditJson.find("preview\\u0002text") != std::string::npos &&
+                escapedQueryJson.find("Query\\nProject\\u0003") != std::string::npos &&
+                escapedWorkflowJson.find("workflow\\nid") != std::string::npos &&
+                escapedWorkflowJson.find("Workflow\\tName") != std::string::npos &&
+                escapedWorkflowJson.find("step\\u0004id") != std::string::npos &&
+                escapedWorkflowJson.find("validation\\u0005text") != std::string::npos,
+            "MCP edit/query/workflow JSON escapes control characters");
     require(renderJob.resultManifestJson.find("\"explicitExport\":true") != std::string::npos,
             "MCP generated test tone is marked as an explicit export");
     const auto analysisJob = renderQueue.enqueueAnalyzeWav(editSession, "analyze-1", mcpRenderPath);
@@ -1956,6 +2063,8 @@ int main() {
             "MCP render queue bounces selected graph range");
     require(bounceJob.resultManifestJson.find("\"explicitExport\":true") != std::string::npos,
             "MCP graph bounce is marked as an explicit export");
+    require(bounceJob.resultManifestJson.find("\"postDitherPeak\"") != std::string::npos,
+            "MCP graph bounce reports CLI-aligned post-dither peak");
     require(std::abs(lamusica::audio::peakAbsoluteSample(
                          lamusica::audio::readPcm16Wav(mcpBouncePath).audio) -
                      0.5F) < 0.001F,
@@ -2070,6 +2179,8 @@ int main() {
     require(bounceInPlaceJob.resultManifestJson.find("\"assetRegistered\":true") !=
                 std::string::npos,
             "MCP bounce-in-place manifest records asset registration");
+    require(bounceInPlaceJob.resultManifestJson.find("\"postDitherPeak\"") != std::string::npos,
+            "MCP bounce-in-place manifest reports CLI-aligned post-dither peak");
     const auto duplicateBounceInPlace = renderQueue.enqueueBounceInPlace(
         editSession, "bip-duplicate", bounceInPlaceManifest, mcpBounceGraph,
         {.outputPath = mcpBounceInPlacePath,
@@ -2135,7 +2246,8 @@ int main() {
             "MCP freeze mutes source clips and places frozen render");
     require(freezeJob.resultManifestJson.find("\"type\":\"freeze_track\"") != std::string::npos &&
                 freezeJob.resultManifestJson.find(
-                    "\"mutedSourceClips\":[\"freeze-source-clip\"]") != std::string::npos,
+                    "\"mutedSourceClips\":[\"freeze-source-clip\"]") != std::string::npos &&
+                freezeJob.resultManifestJson.find("\"postDitherPeak\"") != std::string::npos,
             "MCP freeze manifest records muted source clips");
     const auto duplicateFreeze = renderQueue.enqueueFreezeTrack(
         editSession, "freeze-duplicate", freezeManifest, mcpBounceGraph,
@@ -2460,7 +2572,10 @@ int main() {
     manifest.tracks.push_back(
         {.id = "master", .name = "Master", .type = lamusica::session::TrackType::Master});
     manifest.assets.push_back(
-        {.id = "asset-1", .relativePath = "Audio Files/tone.wav", .mediaType = "audio/wav"});
+        {.id = "asset-1",
+         .relativePath = "Audio Files/tone.wav",
+         .mediaType = "audio/wav",
+         .sourceSampleRate = 44100.0});
     manifest.markers.push_back({.id = "marker-1", .name = "Verse", .samplePosition = 48000});
     manifest.clips.push_back({.id = "clip-round-trip",
                               .trackId = "track-1",
@@ -2496,6 +2611,25 @@ int main() {
         {.id = "audit-1", .toolName = "query_project_summary", .capability = "read_project"});
 
     const auto manifestJson = lamusica::session::serializeProjectManifest(manifest);
+    const auto projectV3Schema = readTextFile("docs/schemas/project-v3.schema.json");
+    const auto projectV1Schema = readTextFile("docs/schemas/project-v1.schema.json");
+    require(projectV3Schema == projectV1Schema,
+            "compatibility project-v1 schema copy matches authoritative v3 schema");
+    for (const auto* requiredSchemaText :
+         {"\"$id\": \"dev.lamusica.schemas.project-v3\"",
+          "\"title\": \"LaMusica Project Manifest v3\"",
+          "\"schemaVersion\": { \"const\": 3 }", "\"projectSampleRate\"",
+          "\"sourceSampleRate\"", "\"takeLanes\"", "\"comps\"", "\"mcpAuditLog\"",
+          "\"additionalProperties\": false"}) {
+        require(projectV3Schema.find(requiredSchemaText) != std::string::npos,
+                "project v3 schema publishes required current manifest contract");
+    }
+    for (const auto* requiredSerializedField :
+         {"\"schemaVersion\": 3", "\"projectSampleRate\": 48000", "\"takeLanes\": [",
+          "\"sourceSampleRate\": 44100", "\"comps\": [", "\"mcpAuditLog\": ["}) {
+        require(manifestJson.find(requiredSerializedField) != std::string::npos,
+                "serialized manifest includes fields required by project v3 schema");
+    }
     const auto parsedManifest = lamusica::session::parseProjectManifest(manifestJson);
     require(parsedManifest.name == "Round Trip", "project manifest name round trip");
     require(parsedManifest.schemaVersion == lamusica::session::currentProjectSchemaVersion,
@@ -2504,7 +2638,8 @@ int main() {
                 parsedManifest.markers.front().samplePosition == 48000,
             "project manifest markers round trip");
     require(parsedManifest.assets.size() == 1 &&
-                parsedManifest.assets.front().relativePath == "Audio Files/tone.wav",
+                parsedManifest.assets.front().relativePath == "Audio Files/tone.wav" &&
+                parsedManifest.assets.front().sourceSampleRate == 44100.0,
             "project manifest assets round trip");
     require(parsedManifest.tracks.size() == 2 &&
                 parsedManifest.tracks.front().type == lamusica::session::TrackType::Audio,
@@ -2557,6 +2692,39 @@ int main() {
     }
     require(rejectedUnknownTopLevelField,
             "project manifest rejects unknown top-level schema fields");
+    bool rejectedZeroProjectSampleRate = false;
+    try {
+        (void)lamusica::session::parseProjectManifest(
+            "{\"schemaVersion\": 2, \"name\": \"Bad\", \"projectSampleRate\": 0, "
+            "\"tempoMap\": [], \"timeSignatures\": [], \"markers\": [], \"assets\": [], "
+            "\"tracks\": [], \"clips\": [], \"midiClips\": [], \"takeLanes\": [], "
+            "\"comps\": [], \"routing\": [], \"plugins\": [], \"automation\": [], "
+            "\"mcpAuditLog\": []}");
+    } catch (const std::exception&) {
+        rejectedZeroProjectSampleRate = true;
+    }
+    require(rejectedZeroProjectSampleRate,
+            "project manifest rejects non-positive project sample rate");
+    bool rejectedNonFiniteProjectSampleRate = false;
+    try {
+        auto invalidSampleRate = manifest;
+        invalidSampleRate.projectSampleRate = std::numeric_limits<double>::infinity();
+        (void)lamusica::session::serializeProjectManifest(invalidSampleRate);
+    } catch (const std::exception&) {
+        rejectedNonFiniteProjectSampleRate = true;
+    }
+    require(rejectedNonFiniteProjectSampleRate,
+            "project manifest rejects non-finite project sample rate");
+    bool rejectedInvalidAssetSourceSampleRate = false;
+    try {
+        auto invalidAssetSampleRate = manifest;
+        invalidAssetSampleRate.assets.front().sourceSampleRate = -44100.0;
+        (void)lamusica::session::serializeProjectManifest(invalidAssetSampleRate);
+    } catch (const std::exception&) {
+        rejectedInvalidAssetSourceSampleRate = true;
+    }
+    require(rejectedInvalidAssetSourceSampleRate,
+            "project manifest rejects invalid asset source sample rate");
     bool rejectedInvalidTempo = false;
     try {
         auto invalidTempo = manifest;
@@ -2604,6 +2772,25 @@ int main() {
     require(migratedManifest.schemaVersion == lamusica::session::currentProjectSchemaVersion,
             "project manifest migrates legacy schema version");
     require(migratedManifest.name == "Old", "project manifest migrates legacy project name");
+    require(migratedManifest.projectSampleRate == 48000.0,
+            "project manifest migration defaults legacy sample rate to 48 kHz");
+    const auto migratedV1Manifest = lamusica::session::parseProjectManifest(
+        "{\"schemaVersion\": 1, \"name\": \"V1\", \"tempoMap\": "
+        "[{\"samplePosition\": 0, \"bpm\": 90}], \"timeSignatures\": "
+        "[{\"samplePosition\": 0, \"numerator\": 3, \"denominator\": 4}], "
+        "\"markers\": [], \"assets\": [], \"tracks\": [], \"clips\": [], "
+        "\"midiClips\": [], \"routing\": [], \"plugins\": [], \"automation\": [], "
+        "\"mcpAuditLog\": []}");
+    require(migratedV1Manifest.schemaVersion == lamusica::session::currentProjectSchemaVersion &&
+                migratedV1Manifest.projectSampleRate == 48000.0 &&
+                migratedV1Manifest.tempoMap.front().bpm == 90.0 &&
+                migratedV1Manifest.timeSignatures.front().numerator == 3,
+            "project manifest migration chains v1 through sample-rate schema");
+    const auto migratedJson = lamusica::session::serializeProjectManifest(migratedManifest);
+    const auto migratedRoundTrip = lamusica::session::serializeProjectManifest(
+        lamusica::session::parseProjectManifest(migratedJson));
+    require(migratedJson == migratedRoundTrip,
+            "project manifest migration is byte-stable after resave");
     require(migratedManifest.tempoMap.size() == 1 && migratedManifest.timeSignatures.size() == 1,
             "project manifest migration creates default musical metadata");
     const auto starterManifest =
@@ -3032,7 +3219,8 @@ int main() {
                 std::ranges::any_of(appSession.currentDocument()->manifest().assets,
                                     [&appRecording](const lamusica::session::Asset& asset) {
                                         return asset.id == appRecording.assetId &&
-                                               asset.mediaType == "audio/wav";
+                                               asset.mediaType == "audio/wav" &&
+                                               asset.sourceSampleRate == 48000.0;
                                     }) &&
                 std::ranges::any_of(appSession.currentDocument()->manifest().clips,
                                     [&appRecording](const lamusica::session::Clip& clip) {
@@ -3148,7 +3336,7 @@ int main() {
         std::filesystem::temp_directory_path() / "lamusica-app-first-track-import-source.wav";
     lamusica::audio::AudioEngine appImportEngine{{}};
     auto appImportAudio = appImportEngine.renderSineOffline(24000, 523.25, 0.35F);
-    lamusica::audio::writePcm16Wav(appImportSource, appImportAudio, 48000.0);
+    lamusica::audio::writePcm16Wav(appImportSource, appImportAudio, 44100.0);
     const auto appImport = appSession.importAudioFileToFirstTrack(appImportSource, 24000);
     require(appImport.trackId == "imported-audio" && appImport.frames == 24000 &&
                 appImport.channels == 2 && std::filesystem::exists(appImport.copiedPath) &&
@@ -3174,7 +3362,14 @@ int main() {
                 importedAudioNode->lengthSamples == 12000 &&
                 importedAudioNode->sourceOffsetSamples == 6000 &&
                 importedAudioNode->sampleFrames == 24000 &&
-                importedAudioNode->sampleChannels == 2 && !importedAudioNode->samples.empty(),
+                importedAudioNode->sampleChannels == 2 &&
+                importedAudioNode->sampleRate == 44100.0 &&
+                !importedAudioNode->samples.empty() &&
+                std::ranges::any_of(appSession.currentDocument()->manifest().assets,
+                                    [&appImport](const lamusica::session::Asset& asset) {
+                                        return asset.id == appImport.assetId &&
+                                               asset.sourceSampleRate == 44100.0;
+                                    }),
             "application shell renders retimed first-track imported audio from project assets");
     appSession.setClipMuted(appImport.clipId, true);
     const auto mutedImportGraph = lamusica::session::compileProjectAudioGraph(
@@ -3627,11 +3822,37 @@ int main() {
     } catch (const std::exception&) {
         rejectedPlaintextDiagnosticsEndpoint = true;
     }
+    bool rejectedEmptyHostDiagnosticsEndpoint = false;
+    try {
+        auto preferences = appSession.preferences();
+        preferences.diagnosticsConsent = lamusica::session::DiagnosticsConsent::Granted;
+        preferences.shareDiagnostics = true;
+        preferences.telemetryEnabled = false;
+        preferences.diagnosticsEndpoint = "https://";
+        appSession.setPreferences(preferences);
+    } catch (const std::exception&) {
+        rejectedEmptyHostDiagnosticsEndpoint = true;
+    }
+    bool rejectedMissingAuthorityDiagnosticsEndpoint = false;
+    try {
+        auto preferences = appSession.preferences();
+        preferences.diagnosticsConsent = lamusica::session::DiagnosticsConsent::Granted;
+        preferences.shareDiagnostics = true;
+        preferences.telemetryEnabled = false;
+        preferences.diagnosticsEndpoint = "https://:9443/crash";
+        appSession.setPreferences(preferences);
+    } catch (const std::exception&) {
+        rejectedMissingAuthorityDiagnosticsEndpoint = true;
+    }
     auto grantedDiagnostics = appSession.preferences();
     grantedDiagnostics.diagnosticsConsent = lamusica::session::DiagnosticsConsent::Granted;
     grantedDiagnostics.shareDiagnostics = true;
     grantedDiagnostics.telemetryEnabled = false;
     grantedDiagnostics.diagnosticsEndpoint = "LAMUSICA_DIAGNOSTICS_ENDPOINT";
+    appSession.setPreferences(grantedDiagnostics);
+    auto localhostDiagnostics = appSession.preferences();
+    localhostDiagnostics.diagnosticsEndpoint = "https://localhost:9443/crash";
+    appSession.setPreferences(localhostDiagnostics);
     appSession.setPreferences(grantedDiagnostics);
     const auto diagnosticsPayload = lamusica::session::makeDiagnosticsPayload(
         {.applicationName = "LaMusica",
@@ -3643,16 +3864,63 @@ int main() {
              "frame /Users/alex/Projects/Secret Song.Project.lamusica/Audio/Take.wav\n"
              "project Secret Song\nsignal=11\n",
          .projectName = "Secret Song"});
+    for (const auto* requiredPayloadField :
+         {"applicationName", "version", "gitCommit", "osVersion", "signal", "backtrace"}) {
+        require(diagnosticsPayload.fields.contains(requiredPayloadField),
+                "diagnostics payload exposes only documented crash-report fields");
+    }
+    require(diagnosticsPayload.fields.size() == 6U,
+            "diagnostics payload field whitelist must not grow without policy docs");
+    const auto escapedDiagnosticsPayload = lamusica::session::makeDiagnosticsPayload(
+        {.applicationName = "La\"Musica",
+         .version = "0.1.0",
+         .gitCommit = "commit\tid",
+         .osVersion = "macOS",
+         .signalNumber = 11,
+         .rawBacktrace = "frame bad\001bytes\nnext",
+         .projectName = "safe"});
+    const auto windowsDiagnosticsPayload = lamusica::session::makeDiagnosticsPayload(
+        {.applicationName = "LaMusica",
+         .version = "0.1.0",
+         .gitCommit = "test",
+         .osVersion = "Windows",
+         .signalNumber = 11,
+         .rawBacktrace =
+             "frame C:\\Users\\alex\\Documents\\Secret Song.Project.lamusica\\Audio\\Take.wav\n"
+             "frame \\\\studio-share\\Users\\alex\\Secret Song.Project.lamusica\\project.json\n",
+         .projectName = "Secret Song"});
+    const auto metadataDiagnosticsPayload = lamusica::session::makeDiagnosticsPayload(
+        {.applicationName = "LaMusica Secret Song",
+         .version = "/Users/alex/builds/Secret Song.Project.lamusica/version.txt",
+         .gitCommit = "file:///Users/alex/la-musica/.git/HEAD",
+         .osVersion = "Windows C:\\Users\\alex\\Secret Song.Project.lamusica",
+         .signalNumber = 11,
+         .rawBacktrace = "frame safe",
+         .projectName = "Secret Song"});
     require(rejectedUndecidedDiagnostics && rejectedDeclinedTelemetry &&
-                rejectedPlaintextDiagnosticsEndpoint &&
+                rejectedPlaintextDiagnosticsEndpoint && rejectedEmptyHostDiagnosticsEndpoint &&
+                rejectedMissingAuthorityDiagnosticsEndpoint &&
                 lamusica::session::diagnosticsUploadPermitted(
                     appSession.preferences().diagnosticsConsent,
                     appSession.preferences().shareDiagnostics) &&
                 diagnosticsPayload.json.find("/Users/alex") == std::string::npos &&
                 diagnosticsPayload.json.find("Secret Song") == std::string::npos &&
                 diagnosticsPayload.json.find(".Project.lamusica") == std::string::npos &&
-                diagnosticsPayload.json.find("<path>") != std::string::npos,
-            "diagnostics consent gates upload and scrubbed payload removes project PII");
+                diagnosticsPayload.json.find("<path>") != std::string::npos &&
+                escapedDiagnosticsPayload.json.find("La\\\"Musica") != std::string::npos &&
+                escapedDiagnosticsPayload.json.find("commit\\tid") != std::string::npos &&
+                escapedDiagnosticsPayload.json.find("bad\\u0001bytes\\nnext") !=
+                    std::string::npos &&
+                windowsDiagnosticsPayload.json.find("C:\\\\Users") == std::string::npos &&
+                windowsDiagnosticsPayload.json.find("studio-share") == std::string::npos &&
+                windowsDiagnosticsPayload.json.find("Secret Song") == std::string::npos &&
+                windowsDiagnosticsPayload.json.find(".Project.lamusica") == std::string::npos &&
+                metadataDiagnosticsPayload.json.find("/Users/alex") == std::string::npos &&
+                metadataDiagnosticsPayload.json.find("C:\\\\Users") == std::string::npos &&
+                metadataDiagnosticsPayload.json.find("Secret Song") == std::string::npos &&
+                metadataDiagnosticsPayload.json.find(".Project.lamusica") == std::string::npos &&
+                windowsDiagnosticsPayload.json.find("<path>") != std::string::npos,
+            "diagnostics consent gates upload and scrubbed payload removes project PII from all fields with valid JSON escaping");
     const auto deniedDiagnosticsUpload = lamusica::session::makeDiagnosticsUploadRequest(
         lamusica::session::DiagnosticsConsent::Declined, true,
         "https://diagnostics.lamusica.dev/v1/crash", {}, {.applicationName = "LaMusica",
@@ -3667,6 +3935,73 @@ int main() {
     require(!deniedDiagnosticsUpload.permitted && deniedDiagnosticsUpload.endpoint.empty() &&
                 deniedDiagnosticsUpload.payload.json.empty(),
             "diagnostics upload preparation must not resolve endpoint or payload without consent");
+    const auto overrideDiagnosticsUpload = lamusica::session::makeDiagnosticsUploadRequest(
+        lamusica::session::DiagnosticsConsent::Granted, true, "LAMUSICA_DIAGNOSTICS_ENDPOINT",
+        "https://selfhosted.example.test/crash", {.applicationName = "LaMusica",
+                                                  .version = "0.1.0",
+                                                  .gitCommit = "test",
+                                                  .osVersion = "macOS",
+                                                  .signalNumber = 11,
+                                                  .rawBacktrace = "frame safe",
+                                                  .projectName = "safe"});
+    const auto invalidOverrideDiagnosticsUpload =
+        lamusica::session::makeDiagnosticsUploadRequest(
+            lamusica::session::DiagnosticsConsent::Granted, true,
+            "LAMUSICA_DIAGNOSTICS_ENDPOINT", "http://selfhosted.example.test/crash",
+            {.applicationName = "LaMusica",
+             .version = "0.1.0",
+             .gitCommit = "test",
+             .osVersion = "macOS",
+             .signalNumber = 11,
+             .rawBacktrace = "frame safe",
+             .projectName = "safe"});
+    const auto missingOverrideDiagnosticsUpload =
+        lamusica::session::makeDiagnosticsUploadRequest(
+            lamusica::session::DiagnosticsConsent::Granted, true,
+            "LAMUSICA_DIAGNOSTICS_ENDPOINT", "",
+            {.applicationName = "LaMusica",
+             .version = "0.1.0",
+             .gitCommit = "test",
+             .osVersion = "macOS",
+             .signalNumber = 11,
+             .rawBacktrace = "frame safe",
+             .projectName = "safe"});
+    require(overrideDiagnosticsUpload.permitted &&
+                overrideDiagnosticsUpload.endpoint == "https://selfhosted.example.test/crash" &&
+                overrideDiagnosticsUpload.reason == "ready" &&
+                lamusica::session::diagnosticsEndpointAllowed("https://localhost:9443/crash") &&
+                !lamusica::session::diagnosticsEndpointAllowed("https://:9443/crash") &&
+                !invalidOverrideDiagnosticsUpload.permitted &&
+                invalidOverrideDiagnosticsUpload.reason == "diagnostics endpoint is not HTTPS" &&
+                !missingOverrideDiagnosticsUpload.permitted &&
+                missingOverrideDiagnosticsUpload.endpoint.empty() &&
+                missingOverrideDiagnosticsUpload.reason == "diagnostics endpoint is not HTTPS",
+            "diagnostics endpoint override must resolve to an explicit HTTPS upload target");
+    lamusica::session::ApplicationSession firstRunConsentSession;
+    require(firstRunConsentSession.preferences().diagnosticsConsent ==
+                    lamusica::session::DiagnosticsConsent::Undecided &&
+                !firstRunConsentSession.preferences().shareDiagnostics,
+            "first-run diagnostics consent should start undecided and private");
+    firstRunConsentSession.setDiagnosticsConsent(false);
+    require(firstRunConsentSession.preferences().diagnosticsConsent ==
+                    lamusica::session::DiagnosticsConsent::Declined &&
+                !firstRunConsentSession.preferences().shareDiagnostics &&
+                !firstRunConsentSession.preferences().telemetryEnabled &&
+                firstRunConsentSession.preferences().diagnosticsEndpoint.empty() &&
+                !lamusica::session::diagnosticsUploadPermitted(
+                    firstRunConsentSession.preferences().diagnosticsConsent,
+                    firstRunConsentSession.preferences().shareDiagnostics),
+            "dismissed first-run diagnostics consent must persist as declined with no upload");
+    firstRunConsentSession.setDiagnosticsConsent(true);
+    require(firstRunConsentSession.preferences().diagnosticsConsent ==
+                    lamusica::session::DiagnosticsConsent::Granted &&
+                firstRunConsentSession.preferences().shareDiagnostics &&
+                !firstRunConsentSession.preferences().telemetryEnabled &&
+                firstRunConsentSession.preferences().diagnosticsEndpoint.empty() &&
+                lamusica::session::diagnosticsUploadPermitted(
+                    firstRunConsentSession.preferences().diagnosticsConsent,
+                    firstRunConsentSession.preferences().shareDiagnostics),
+            "granted first-run diagnostics consent must enable crash sharing only");
     const auto relativeBundleScrubbed = lamusica::session::scrubDiagnosticsText(
         "frame Secret Relative.Project.lamusica/Audio/take.wav\n"
         "frame Users/alex/Library/Logs/LaMusica.crashlog\n");
@@ -3674,6 +4009,18 @@ int main() {
                 relativeBundleScrubbed.find("Users/alex") == std::string::npos &&
                 relativeBundleScrubbed.find("<path>") != std::string::npos,
             "diagnostics scrubber removes relative project bundles and username paths");
+    const auto windowsBundleScrubbed = lamusica::session::scrubDiagnosticsText(
+        "frame C:\\Users\\alex\\Documents\\Secret Song.Project.lamusica\\take.wav\n"
+        "frame Users\\alex\\AppData\\Local\\LaMusica\\LaMusica.crashlog\n"
+        "frame \\\\studio-nas\\sessions\\Secret Song.Project.lamusica\\take.wav\n",
+        "Secret Song");
+    require(windowsBundleScrubbed.find("C:\\") == std::string::npos &&
+                windowsBundleScrubbed.find("\\\\studio-nas") == std::string::npos &&
+                windowsBundleScrubbed.find("Users\\alex") == std::string::npos &&
+                windowsBundleScrubbed.find("Secret Song") == std::string::npos &&
+                windowsBundleScrubbed.find(".Project.lamusica") == std::string::npos &&
+                windowsBundleScrubbed.find("<path>") != std::string::npos,
+            "diagnostics scrubber removes Windows project bundles and username paths");
     const auto appShellRoutingProject =
         std::filesystem::temp_directory_path() / "lamusica-app-shell-routing.Project.lamusica";
     std::filesystem::remove_all(appShellRoutingProject);
@@ -5536,6 +5883,37 @@ int main() {
     require(lamusica::session::makeWarpCacheKey(conformedWarp) !=
                 lamusica::session::makeWarpCacheKey(retargetedWarp),
             "warp tempo conform changes render-cache identity with marker metadata");
+    const auto baseWarpCacheKey = lamusica::session::makeWarpCacheKey(warp);
+    auto warpWithEnabledEdit = warp;
+    warpWithEnabledEdit.enabled = false;
+    auto warpWithSourceTempoEdit = warp;
+    warpWithSourceTempoEdit.sourceTempoBpm = 121.0;
+    auto warpWithTargetTempoEdit = warp;
+    warpWithTargetTempoEdit.targetTempoBpm = 61.0;
+    auto warpWithPitchEdit = warp;
+    warpWithPitchEdit.pitchShiftSemitones = 3.0F;
+    auto warpWithQualityEdit = warp;
+    warpWithQualityEdit.quality = lamusica::session::StretchQuality::High;
+    auto warpWithMarkerIdEdit = warp;
+    warpWithMarkerIdEdit.markers.back().id = "w2-edited";
+    auto warpWithMarkerSourceEdit = warp;
+    warpWithMarkerSourceEdit.markers.back().sourceSample = 48001;
+    auto warpWithMarkerTimelineEdit = warp;
+    warpWithMarkerTimelineEdit.markers.back().timelineSample = 96001;
+    require(lamusica::session::makeWarpCacheKey(warpWithEnabledEdit) != baseWarpCacheKey &&
+                lamusica::session::makeWarpCacheKey(warpWithSourceTempoEdit) !=
+                    baseWarpCacheKey &&
+                lamusica::session::makeWarpCacheKey(warpWithTargetTempoEdit) !=
+                    baseWarpCacheKey &&
+                lamusica::session::makeWarpCacheKey(warpWithPitchEdit) != baseWarpCacheKey &&
+                lamusica::session::makeWarpCacheKey(warpWithQualityEdit) != baseWarpCacheKey &&
+                lamusica::session::makeWarpCacheKey(warpWithMarkerIdEdit) !=
+                    baseWarpCacheKey &&
+                lamusica::session::makeWarpCacheKey(warpWithMarkerSourceEdit) !=
+                    baseWarpCacheKey &&
+                lamusica::session::makeWarpCacheKey(warpWithMarkerTimelineEdit) !=
+                    baseWarpCacheKey,
+            "warp render-cache identity changes for every warp edit field");
     const auto slices = lamusica::session::makeBeatSlices(warp, transients, 48000);
     require(slices.size() == 2 && slices.front().sourceStartSample == 2,
             "warp beat slicing creates transient slices");
@@ -5632,6 +6010,38 @@ int main() {
                                                                       "Cache/new-warp-render.wav");
     require(cachedWarpPlan.cacheHit && cachedWarpPlan.relativePath == "Cache/clip-warp.wav",
             "warp render plan reuses valid cache entry");
+    const auto requireWarpEditCacheMiss =
+        [&renderCache](const lamusica::session::WarpState& editedWarp,
+                       std::string_view outputPath,
+                       std::string_view message) {
+            const auto editedPlan = lamusica::session::makeWarpRenderPlan(
+                editedWarp, renderCache, 0, 48000, std::string{outputPath});
+            require(!editedPlan.cacheHit && editedPlan.relativePath == outputPath, message);
+        };
+    requireWarpEditCacheMiss(warpWithEnabledEdit,
+                             "Cache/enabled-edit-warp-render.wav",
+                             "warp enabled edit forces a re-render cache miss");
+    requireWarpEditCacheMiss(warpWithSourceTempoEdit,
+                             "Cache/source-tempo-edit-warp-render.wav",
+                             "warp source tempo edit forces a re-render cache miss");
+    requireWarpEditCacheMiss(warpWithTargetTempoEdit,
+                             "Cache/target-tempo-edit-warp-render.wav",
+                             "warp target tempo edit forces a re-render cache miss");
+    requireWarpEditCacheMiss(warpWithPitchEdit,
+                             "Cache/pitch-edit-warp-render.wav",
+                             "warp pitch edit forces a re-render cache miss");
+    requireWarpEditCacheMiss(warpWithQualityEdit,
+                             "Cache/quality-edit-warp-render.wav",
+                             "warp quality edit forces a re-render cache miss");
+    requireWarpEditCacheMiss(warpWithMarkerIdEdit,
+                             "Cache/marker-id-edit-warp-render.wav",
+                             "warp marker id edit forces a re-render cache miss");
+    requireWarpEditCacheMiss(warpWithMarkerSourceEdit,
+                             "Cache/marker-source-edit-warp-render.wav",
+                             "warp marker source edit forces a re-render cache miss");
+    requireWarpEditCacheMiss(warpWithMarkerTimelineEdit,
+                             "Cache/marker-timeline-edit-warp-render.wav",
+                             "warp marker timeline edit forces a re-render cache miss");
     require(cachedWarpPlan.timelineEndSample == 96000 && cachedWarpPlan.stretchRatio == 2.0,
             "warp render plan maps source range to timeline range");
     require(std::abs(cachedWarpPlan.pitchRatio - lamusica::session::pitchShiftRatio(2.0F)) <
@@ -5761,7 +6171,7 @@ int main() {
     require(keyAnalysis.analysis.musicalKey == "A major",
             "asset media analysis estimates musical key from pitch content");
     const auto mediaAnalysisJob =
-        lamusica::session::scheduleMediaAnalysis(catalog, "analysis-1", "kick");
+        lamusica::session::scheduleMediaAnalysis(catalog, "analysis-48000", "kick", 48000.0);
     require(mediaAnalysisJob.status == lamusica::session::MediaAnalysisJobStatus::Pending &&
                 catalog.analysisJobs.size() == 1 && catalog.analyses.size() == 1,
             "asset media analysis scheduling does not block by computing inline");
@@ -5777,15 +6187,27 @@ int main() {
                 !lamusica::session::waveformOverviewMatchesSampleRate(
                     *lamusica::session::findWaveform(catalog, "kick"), 44100.0),
             "project sample-rate change invalidates stale analysis and waveform cache");
-    lamusica::session::upsertAnalysis(catalog, analysisResult.analysis);
-    lamusica::session::upsertWaveform(catalog, analysisResult.waveform);
+    require(catalog.analysisJobs.front().status == lamusica::session::MediaAnalysisJobStatus::Failed,
+            "project sample-rate change invalidates pending stale analysis jobs");
+    bool rejectedStaleAnalysisCompletion = false;
+    try {
+        lamusica::session::completeMediaAnalysis(catalog, "analysis-48000", analysisResult);
+    } catch (const std::exception&) {
+        rejectedStaleAnalysisCompletion = true;
+    }
+    require(rejectedStaleAnalysisCompletion,
+            "project sample-rate change rejects stale async analysis completion");
+    (void)lamusica::session::scheduleMediaAnalysis(catalog, "analysis-44100", "kick", 44100.0);
     const auto completedAnalysis =
-        lamusica::session::analyzeAudioAsset("kick", analyzedAudio, 48000.0, 4);
-    lamusica::session::completeMediaAnalysis(catalog, "analysis-1", completedAnalysis);
-    require(catalog.analysisJobs.front().status ==
+        lamusica::session::analyzeAudioAsset("kick", analyzedAudio, 44100.0, 4);
+    lamusica::session::completeMediaAnalysis(catalog, "analysis-44100", completedAnalysis);
+    require(catalog.analysisJobs.back().status ==
                     lamusica::session::MediaAnalysisJobStatus::Completed &&
-                catalog.analysisJobs.front().result.has_value(),
-            "asset media analysis completion stores result off the realtime path");
+                catalog.analysisJobs.back().result.has_value() &&
+                lamusica::session::findAnalysis(catalog, "kick")->sampleRate == 44100.0 &&
+                lamusica::session::waveformOverviewMatchesSampleRate(
+                    *lamusica::session::findWaveform(catalog, "kick"), 44100.0),
+            "recomputed media analysis completion records the new project sample rate");
     lamusica::session::relinkAsset(catalog, "kick", "Audio/kick.wav");
     require(lamusica::session::findAnalysis(catalog, "kick") == nullptr,
             "asset relink invalidates stale analysis");

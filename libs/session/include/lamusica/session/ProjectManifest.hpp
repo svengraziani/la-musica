@@ -33,6 +33,7 @@ struct Asset {
     std::string id;
     std::filesystem::path relativePath;
     std::string mediaType;
+    double sourceSampleRate{0.0};
 };
 
 enum class TrackType {

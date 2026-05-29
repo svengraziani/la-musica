@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lamusica/session/ApplicationSession.hpp"
+#include "ui/a11y/MotionPreferences.hpp"
 
 #include <span>
 #include <string>
@@ -13,7 +14,14 @@ struct GuidedTourStep {
     std::string bodyKey;
 };
 
+struct GuidedTourMotionPolicy {
+    bool animated{true};
+    unsigned transitionMilliseconds{180U};
+};
+
 [[nodiscard]] std::span<const GuidedTourStep> guidedTourSteps() noexcept;
+[[nodiscard]] GuidedTourMotionPolicy guidedTourMotionPolicy(
+    const a11y::MotionPreferences& motionPreferences) noexcept;
 void markGuidedTourSeen(session::ApplicationSession& session, bool seen);
 [[nodiscard]] bool shouldShowGuidedTour(const session::ApplicationSession& session) noexcept;
 

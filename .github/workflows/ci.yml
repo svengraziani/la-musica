@@ -11,6 +11,21 @@ jobs:
       LAMUSICA_JUCE_PATH: ${{ github.workspace }}/external/JUCE
     steps:
       - uses: actions/checkout@v4
+      - name: Release script self-tests
+        run: |
+          scripts/archive-dsyms.sh --self-test
+          scripts/sign-macos.sh --self-test
+          scripts/notarize-macos.sh --self-test
+          scripts/verify-signature.sh --self-test
+          scripts/sign-checksums.sh --self-test
+          scripts/sbom.sh --self-test
+          scripts/verify-provenance.sh --self-test
+          scripts/verify-release-evidence.sh --self-test
+          scripts/verify-release-workflow.sh --self-test
+          scripts/verify-ci-workflow.sh --self-test
+          scripts/verify-symbolication.sh --self-test
+          cmake -DLAMUSICA_DEPENDENCY_LOCK_SELF_TEST=ON -P cmake/CheckDependencyLock.cmake
+          cmake -DLAMUSICA_VERIFY_PACKAGE_SELF_TEST=ON -P cmake/VerifyPackage.cmake
       - name: Checkout JUCE
         uses: actions/checkout@v4
         with:
@@ -35,6 +50,16 @@ jobs:
         run: ctest --test-dir build/unix-debug -L audio-correctness --output-on-failure
       - name: Behavior artifact gate
         run: ctest --test-dir build/unix-debug -L behavior --output-on-failure
+      - name: CLI production gate
+        run: ctest --test-dir build/unix-debug -L cli --output-on-failure
+      - name: Accessibility gate
+        run: ctest --test-dir build/unix-debug -L a11y --output-on-failure
+      - name: Localization gate
+        run: ctest --test-dir build/unix-debug -L i18n --output-on-failure
+      - name: Onboarding gate
+        run: ctest --test-dir build/unix-debug -L onboarding --output-on-failure
+      - name: Privacy diagnostics gate
+        run: ctest --test-dir build/unix-debug -L privacy --output-on-failure
       - name: Realtime deadline gate
         run: ctest --test-dir build/unix-debug -L perf --output-on-failure
       - name: Headless GUI binding gate
@@ -75,6 +100,7 @@ jobs:
           build/unix-release/tools/cli/lamusica_cli validate fixtures/empty.Project.lamusica
           build/unix-release/tools/cli/lamusica_cli validate fixtures/examples/generated-tone.Project.lamusica
           build/unix-release/tools/cli/lamusica_cli validate fixtures/tutorials/first-song.Project.lamusica
+          build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/examples
           build/unix-release/tools/cli/lamusica_cli verify-examples fixtures/tutorials
       - name: Package release
         run: cpack -G TGZ --config build/unix-release/CPackConfig.cmake

@@ -1,8 +1,10 @@
 #include "lamusica/session/Warp.hpp"
 
+#include "lamusica/audio/AudioEngine.hpp"
 #include "lamusica/audio/AudioGraph.hpp"
 #include "lamusica/audio/WavFile.hpp"
 #include "lamusica/session/GraphCompiler.hpp"
+#include "lamusica/session/Performance.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -27,6 +29,16 @@ lamusica::audio::RenderedAudio sine(double frequency, std::uint32_t frames) {
     for (std::uint32_t frame = 0; frame < frames; ++frame) {
         audio.interleavedSamples[frame] = static_cast<float>(
             std::sin(2.0 * 3.14159265358979323846 * frequency * frame / 48000.0));
+    }
+    return audio;
+}
+
+lamusica::audio::RenderedAudio rampedSine(double frequency, std::uint32_t frames) {
+    auto audio = sine(frequency, frames);
+    for (std::uint32_t frame = 0; frame < frames; ++frame) {
+        const auto envelope =
+            0.25F + (0.75F * static_cast<float>(frame) / static_cast<float>(frames - 1U));
+        audio.interleavedSamples[frame] *= envelope;
     }
     return audio;
 }
@@ -115,11 +127,24 @@ void requireSameSamples(const lamusica::audio::RenderedAudio& left,
     }
 }
 
+void requireHalvesDiffer(const lamusica::audio::RenderedAudio& audio, const std::string& message) {
+    require(audio.channels == 1U && audio.frames % 2U == 0U, message + " layout mismatch");
+    float maxDelta = 0.0F;
+    const auto halfFrames = audio.frames / 2U;
+    for (std::uint32_t frame = 0; frame < halfFrames; ++frame) {
+        maxDelta = std::max(
+            maxDelta,
+            std::abs(audio.interleavedSamples[frame] - audio.interleavedSamples[halfFrames + frame]));
+    }
+    require(maxDelta > 0.01F, message);
+}
+
 } // namespace
 
 int main() {
     try {
         const auto source = sine(440.0, 96000);
+        const auto stretchSource = rampedSine(440.0, 96000);
         const lamusica::session::WarpState stretchWarp{
             .clipId = "warp-fixture",
             .enabled = true,
@@ -129,9 +154,9 @@ int main() {
             .markers = {{"start", 0, 0}, {"middle", 24000, 48000}, {"end", 48000, 96000}}};
         const auto stretchPlan =
             lamusica::session::makeWarpRenderPlan(stretchWarp, {}, 0, 48000, "stretch-cache.wav");
-        const auto stretched = lamusica::session::renderWarpedAudio(source, stretchPlan);
-        const auto stretchedAgain = lamusica::session::renderWarpedAudio(source, stretchPlan);
-        const auto stretchedPreview = lamusica::session::renderWarpPreview(source, stretchPlan);
+        const auto stretched = lamusica::session::renderWarpedAudio(stretchSource, stretchPlan);
+        const auto stretchedAgain = lamusica::session::renderWarpedAudio(stretchSource, stretchPlan);
+        const auto stretchedPreview = lamusica::session::renderWarpPreview(stretchSource, stretchPlan);
         requireSameSamples(stretched, stretchedAgain,
                            "repeated stretch render is not deterministic");
         requireSameSamples(stretched, stretchedPreview,
@@ -150,6 +175,7 @@ int main() {
         const auto stretchedFundamental = dominantFrequencyHz(stretched, 380.0, 500.0);
         require(std::abs(stretchedFundamental - 440.0) < 5.0,
                 "time-stretch changed the dominant pitch");
+        requireHalvesDiffer(stretched, "time-stretch fell back to repeated source tiling");
         require(lamusica::session::mapSourceToTimeline(stretchWarp, 24000) == 48000,
                 "transient did not land at warp marker");
 
@@ -183,6 +209,30 @@ int main() {
                             .frames = stretched.frames,
                             .interleavedSamples = graphWarpedPlayback},
                            "precomputed warped buffer does not match graph playback path");
+        lamusica::audio::AudioEngine liveWarpEngine{
+            {.sampleRate = 48000.0, .maxBlockSize = 512, .outputChannels = stretched.channels}};
+        std::vector<float> liveWarpedPlayback(stretched.interleavedSamples.size());
+        for (std::uint32_t offset = 0; offset < stretched.frames; offset += 512U) {
+            const auto blockFrames = std::min<std::uint32_t>(512U, stretched.frames - offset);
+            auto block = std::span<float>{liveWarpedPlayback}.subspan(
+                static_cast<std::size_t>(offset) * stretched.channels,
+                static_cast<std::size_t>(blockFrames) * stretched.channels);
+            liveWarpEngine.renderGraphBlock(warpedPlaybackGraph, block, blockFrames);
+        }
+        requireSameSamples(stretched,
+                           {.channels = stretched.channels,
+                            .frames = stretched.frames,
+                            .interleavedSamples = liveWarpedPlayback},
+                           "precomputed warped buffer does not match bounded live graph path");
+        const auto realtimeWarpAudit = lamusica::session::auditRealtimeGraphCallback(
+            warpedPlaybackGraph,
+            {.sampleRate = 48000.0, .maxBlockSize = 512, .outputChannels = stretched.channels},
+            512);
+        require(realtimeWarpAudit.callbackCompleted && realtimeWarpAudit.policy.allocationFree &&
+                    realtimeWarpAudit.policy.lockFree && realtimeWarpAudit.policy.noFileIo &&
+                    realtimeWarpAudit.policy.noLogging && realtimeWarpAudit.policy.noJsonParsing &&
+                    realtimeWarpAudit.policy.noMcpWork,
+                "precomputed warped buffer playback failed realtime callback policy audit");
 
         const auto projectRoot =
             std::filesystem::temp_directory_path() / "lamusica-warp-graphcompiler.Project.lamusica";
@@ -230,6 +280,108 @@ int main() {
                             .frames = 96000,
                             .interleavedSamples = compiledWarpRender},
                            "GraphCompiler warped clip render does not match precomputed DSP");
+
+        std::filesystem::create_directories(projectRoot / "Cache");
+        const auto cachedWarpPath = projectRoot / "Cache" / "cached-warp.wav";
+        const lamusica::audio::RenderedAudio cachedWarpAudio{
+            .channels = 1,
+            .frames = 96000,
+            .interleavedSamples = std::vector<float>(96000, 0.25F)};
+        lamusica::audio::writePcm16Wav(cachedWarpPath, cachedWarpAudio, 48000.0);
+        const auto decodedCachedWarp = lamusica::audio::readPcm16Wav(cachedWarpPath);
+        auto cachedCompileOptions = compileOptions;
+        cachedCompileOptions.warpRenderCache = {
+            {.clipId = compileWarp.clipId,
+             .cacheKey = compiledExpectedPlan.cacheKey,
+             .relativePath = "Cache/cached-warp.wav",
+             .valid = true}};
+        const auto cachedCompiledWarpGraph =
+            lamusica::session::compileProjectAudioGraph(manifest, {}, cachedCompileOptions);
+        std::vector<float> cachedCompiledWarpRender(96000);
+        lamusica::audio::renderGraph(
+            cachedCompiledWarpGraph,
+            {.sampleRate = 48000.0, .maxBlockSize = 512, .outputChannels = 1}, 0, 96000,
+            cachedCompiledWarpRender);
+        requireSameSamples(decodedCachedWarp.audio,
+                           {.channels = 1,
+                            .frames = 96000,
+                            .interleavedSamples = cachedCompiledWarpRender},
+                           "GraphCompiler ignored a valid warped render cache entry");
+        require(cachedCompiledWarpRender != compiledWarpRender,
+                "warped render cache test did not distinguish cached and recomputed audio");
+
+        const auto staleCachedWarpPath = projectRoot / "Cache" / "stale-warp.wav";
+        const lamusica::audio::RenderedAudio staleCachedWarpAudio{
+            .channels = 1,
+            .frames = 48000,
+            .interleavedSamples = std::vector<float>(48000, 0.5F)};
+        lamusica::audio::writePcm16Wav(staleCachedWarpPath, staleCachedWarpAudio, 44100.0);
+        auto staleCachedCompileOptions = compileOptions;
+        staleCachedCompileOptions.warpRenderCache = {
+            {.clipId = compileWarp.clipId,
+             .cacheKey = compiledExpectedPlan.cacheKey,
+             .relativePath = "Cache/stale-warp.wav",
+             .valid = true}};
+        const auto staleCachedCompiledWarpGraph =
+            lamusica::session::compileProjectAudioGraph(manifest, {}, staleCachedCompileOptions);
+        std::vector<float> staleCachedCompiledWarpRender(96000);
+        lamusica::audio::renderGraph(
+            staleCachedCompiledWarpGraph,
+            {.sampleRate = 48000.0, .maxBlockSize = 512, .outputChannels = 1}, 0, 96000,
+            staleCachedCompiledWarpRender);
+        requireSameSamples(compiledExpected,
+                           {.channels = 1,
+                            .frames = 96000,
+                            .interleavedSamples = staleCachedCompiledWarpRender},
+                           "GraphCompiler used a stale warped render cache artifact");
+
+        const auto wrongChannelCachedWarpPath = projectRoot / "Cache" / "wrong-channel-warp.wav";
+        const lamusica::audio::RenderedAudio wrongChannelCachedWarpAudio{
+            .channels = 2,
+            .frames = 96000,
+            .interleavedSamples = std::vector<float>(96000 * 2U, 0.75F)};
+        lamusica::audio::writePcm16Wav(wrongChannelCachedWarpPath, wrongChannelCachedWarpAudio,
+                                       48000.0);
+        auto wrongChannelCachedCompileOptions = compileOptions;
+        wrongChannelCachedCompileOptions.warpRenderCache = {
+            {.clipId = compileWarp.clipId,
+             .cacheKey = compiledExpectedPlan.cacheKey,
+             .relativePath = "Cache/wrong-channel-warp.wav",
+             .valid = true}};
+        const auto wrongChannelCachedCompiledWarpGraph = lamusica::session::compileProjectAudioGraph(
+            manifest, {}, wrongChannelCachedCompileOptions);
+        std::vector<float> wrongChannelCachedCompiledWarpRender(96000);
+        lamusica::audio::renderGraph(
+            wrongChannelCachedCompiledWarpGraph,
+            {.sampleRate = 48000.0, .maxBlockSize = 512, .outputChannels = 1}, 0, 96000,
+            wrongChannelCachedCompiledWarpRender);
+        requireSameSamples(compiledExpected,
+                           {.channels = 1,
+                            .frames = 96000,
+                            .interleavedSamples = wrongChannelCachedCompiledWarpRender},
+                           "GraphCompiler used a channel-mismatched warped cache artifact");
+
+        const auto escapedCachedWarpPath = projectRoot.parent_path() / "escaped-warp-cache.wav";
+        lamusica::audio::writePcm16Wav(escapedCachedWarpPath, cachedWarpAudio, 48000.0);
+        auto escapedCachedCompileOptions = compileOptions;
+        escapedCachedCompileOptions.warpRenderCache = {
+            {.clipId = compileWarp.clipId,
+             .cacheKey = compiledExpectedPlan.cacheKey,
+             .relativePath = "../escaped-warp-cache.wav",
+             .valid = true}};
+        const auto escapedCachedCompiledWarpGraph =
+            lamusica::session::compileProjectAudioGraph(manifest, {}, escapedCachedCompileOptions);
+        std::vector<float> escapedCachedCompiledWarpRender(96000);
+        lamusica::audio::renderGraph(
+            escapedCachedCompiledWarpGraph,
+            {.sampleRate = 48000.0, .maxBlockSize = 512, .outputChannels = 1}, 0, 96000,
+            escapedCachedCompiledWarpRender);
+        requireSameSamples(compiledExpected,
+                           {.channels = 1,
+                            .frames = 96000,
+                            .interleavedSamples = escapedCachedCompiledWarpRender},
+                           "GraphCompiler used a warped cache path outside the project root");
+        std::filesystem::remove(escapedCachedWarpPath);
         std::filesystem::remove_all(projectRoot);
 
         const lamusica::session::WarpState pitchWarp{
