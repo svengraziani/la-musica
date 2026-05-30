@@ -4,7 +4,7 @@
 > **Current state:** `scaffold` (see [Production Readiness Assessment](production-readiness-assessment.md)).
 > **Tasks:** concrete, code-grounded task files live in [`tasks/`](tasks/) (P01–P34).
 
-This roadmap turns the audited gaps into 34 dependency-ordered tasks across 8 phases. It is the
+This roadmap turns the audited gaps into dependency-ordered tasks across 8 phases. It is the
 active execution plan. It **supersedes the ordering** of `docs/tasks/026-036` (which is UI-first and
 assumes a working engine); those files remain as background acceptance criteria, and each task here
 records its mapping back to them. Task-level tradeoffs are tracked in the
@@ -166,6 +166,7 @@ DSP they assert); without P28 those tests would exercise nonexistent behavior.
 | P26 | Determinism + RT verification suite | 7 | blocker/L |
 | P27 | Release: signing / notarization | 7 | blocker/L |
 | P32 | Crash-report consent + privacy | 7 | medium/S |
+| P35 | English-only scope + run-readiness cleanup | 7 | high/M |
 
 ## How To Use This Plan
 

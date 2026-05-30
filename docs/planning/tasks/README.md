@@ -5,6 +5,9 @@ production macOS DAW. **Start here:** [../production-roadmap.md](../production-r
 phase order, dependency graph, and critical path. For the audit that produced these, see
 [../production-readiness-assessment.md](../production-readiness-assessment.md).
 
+P35 records the 2026-05-29 corrective audit for an English-only product scope and current
+run-readiness blockers.
+
 Each task file follows the repo task template (Objective · Dependencies · Deliverables · Decisions
 To Make · Compromises And Tradeoffs · Acceptance Gates · Notes For Agents) and cites real
 `file:line` evidence in the current tree. Work tasks in dependency order; do not start one until its

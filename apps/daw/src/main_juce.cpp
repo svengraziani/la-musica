@@ -4,6 +4,7 @@
 #include "lamusica/crash_report/CrashReporter.hpp"
 #include "i18n/Localization.hpp"
 #include "i18n/NumberFormat.hpp"
+#include "i18n/StringTables.hpp"
 #include "onboarding/GuidedTour.hpp"
 #include "onboarding/ProjectTemplates.hpp"
 #include "onboarding/WelcomeWindow.hpp"
@@ -99,6 +100,30 @@ bool runHeadlessBindingCheck(const std::filesystem::path& projectPath) {
     }
 }
 
+juce::String juceStringFromUtf8(std::string_view text) {
+    return juce::String::fromUTF8(text.data(), static_cast<int>(text.size()));
+}
+
+std::string_view bundledStringTableForLocale(std::string_view locale) {
+    for (const auto& table : lamusica::daw::i18n::bundledStringTables()) {
+        if (table.locale == locale) {
+            return table.contents;
+        }
+    }
+    return lamusica::daw::i18n::englishStringTable();
+}
+
+void installJuceLocalisedStrings(std::string_view locale) {
+    auto* mappings =
+        new juce::LocalisedStrings{juceStringFromUtf8(bundledStringTableForLocale(locale)), false};
+    if (locale != "en") {
+        mappings->setFallback(
+            new juce::LocalisedStrings{juceStringFromUtf8(lamusica::daw::i18n::englishStringTable()),
+                                       false});
+    }
+    juce::LocalisedStrings::setCurrentMappings(mappings);
+}
+
 class StatusPanel final : public juce::Component {
   public:
     StatusPanel(juce::String title, juce::Colour background)
@@ -157,6 +182,7 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
                 ? std::optional<std::string_view>{}
                 : std::optional<std::string_view>{session_.preferences().preferredLocale},
             juce::SystemStats::getDisplayLanguage().toStdString()));
+        installJuceLocalisedStrings(catalog_.activeLocale());
         setAccessible(true);
         setWantsKeyboardFocus(true);
         setTitle(tr("LaMusica"));
@@ -230,6 +256,7 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
 
     ~MainComponent() override {
         menuBar_.setModel(nullptr);
+        juce::LocalisedStrings::setCurrentMappings(nullptr);
     }
 
     void resized() override {
@@ -410,7 +437,7 @@ class MainComponent final : public juce::Component, public juce::MenuBarModel {
     }
 
     juce::String tr(std::string_view key) const {
-        return juce::String{catalog_.translate(key)};
+        return TRANS(juceStringFromUtf8(key));
     }
 
     juce::String displayNumber(double value, int decimals) const {

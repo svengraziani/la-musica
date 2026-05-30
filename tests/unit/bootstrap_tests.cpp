@@ -3770,6 +3770,7 @@ int main() {
     std::filesystem::remove_all(appFirstTrackPackage);
     std::filesystem::remove_all(appFirstTrackProject);
     lamusica::session::ApplicationPreferences appPreferences{
+        .preferredLocale = "es_MX",
         .audioDeviceId = "built-in-output",
         .enabledMidiInputIds = {"keyboard"},
         .pluginSearchPaths = {"/Library/Audio/Plug-Ins/VST3"},
@@ -3778,9 +3779,13 @@ int main() {
         .keyboardShortcuts = {{.command = "transport.play", .keyEquivalent = "space"}},
         .allowUserFolderScanning = true,
         .shareDiagnostics = false,
-        .diagnosticsConsent = lamusica::session::DiagnosticsConsent::Declined};
+        .diagnosticsConsent = lamusica::session::DiagnosticsConsent::Declined,
+        .diagnosticsEndpoint = "",
+        .telemetryEnabled = false,
+        .guidedTourSeen = false};
     appSession.setPreferences(appPreferences);
     require(appSession.preferences().audioDeviceId == "built-in-output" &&
+                appSession.preferences().preferredLocale == "es_MX" &&
                 appSession.preferences().enabledMidiInputIds.front() == "keyboard" &&
                 appSession.preferences().pluginSearchPaths.front().find("VST3") !=
                     std::string::npos &&
@@ -4136,7 +4141,10 @@ int main() {
     appSession.setFirstTrackLoopToIntro();
     bool rejectedUnsafeMcpPreferences = false;
     try {
-        appSession.setPreferences({.mcpEnabled = false, .allowMcpProjectMutation = true});
+        lamusica::session::ApplicationPreferences unsafePreferences;
+        unsafePreferences.mcpEnabled = false;
+        unsafePreferences.allowMcpProjectMutation = true;
+        appSession.setPreferences(unsafePreferences);
     } catch (const std::exception&) {
         rejectedUnsafeMcpPreferences = true;
     }

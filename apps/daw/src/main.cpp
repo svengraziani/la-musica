@@ -673,6 +673,7 @@ int appSessionRenderFirstTrackSmoke() {
 int appSessionPreferencesFirstTrackSmoke() {
     lamusica::session::ApplicationSession session;
     lamusica::session::ApplicationPreferences preferences{
+        .preferredLocale = "es_MX",
         .audioDeviceId = "first-track-output",
         .enabledMidiInputIds = {"first-track-keyboard"},
         .pluginSearchPaths = {"/Library/Audio/Plug-Ins/Components"},
@@ -681,7 +682,10 @@ int appSessionPreferencesFirstTrackSmoke() {
         .keyboardShortcuts = {{.command = "transport.play", .keyEquivalent = "space"}},
         .allowUserFolderScanning = true,
         .shareDiagnostics = false,
-        .diagnosticsConsent = lamusica::session::DiagnosticsConsent::Declined};
+        .diagnosticsConsent = lamusica::session::DiagnosticsConsent::Declined,
+        .diagnosticsEndpoint = "",
+        .telemetryEnabled = false,
+        .guidedTourSeen = false};
     session.setPreferences(preferences);
     session.setKeyboardShortcut("transport.play", "p");
     bool rejectedUnsafeMutation = false;
@@ -697,6 +701,7 @@ int appSessionPreferencesFirstTrackSmoke() {
     const auto& stored = session.preferences();
     const bool ready =
         stored.audioDeviceId == "first-track-output" &&
+        stored.preferredLocale == "es_MX" &&
         stored.enabledMidiInputIds == std::vector<std::string>{"first-track-keyboard"} &&
         stored.pluginSearchPaths.size() == 1 && stored.mcpEnabled &&
         stored.allowMcpProjectMutation && stored.keyboardShortcuts.size() == 1 &&
@@ -704,6 +709,7 @@ int appSessionPreferencesFirstTrackSmoke() {
         stored.keyboardShortcuts.front().keyEquivalent == "p" && stored.allowUserFolderScanning &&
         !stored.shareDiagnostics && rejectedUnsafeMutation;
     std::cout << "LaMusica DAW app-session preferences: audioDevice=" << stored.audioDeviceId
+              << " locale=" << stored.preferredLocale
               << " midiInputs=" << stored.enabledMidiInputIds.size()
               << " pluginPaths=" << stored.pluginSearchPaths.size()
               << " mcpEnabled=" << (stored.mcpEnabled ? "true" : "false")
